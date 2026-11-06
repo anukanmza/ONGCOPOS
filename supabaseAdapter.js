@@ -250,6 +250,30 @@ async function getSupabaseBootstrapData() {
     low_stock_threshold: Number(i.low_stock_threshold || 0)
   }));
 
+  let customers = [];
+  try {
+    customers = await sbRest('customers?select=*&order=total_spent.desc');
+  } catch {
+    customers = [
+      { id: 'CUS-001', name: 'ป้าสมศรี (ซอย 3)', phone: '081-234-5678', tier: 'VIP', points: 120, total_spent: 3450, note: 'ชอบสั่งกะเพราเผ็ดน้อย' },
+      { id: 'CUS-002', name: 'พี่เอก (ช่างแอร์)', phone: '089-876-5432', tier: 'ขาประจำ', points: 45, total_spent: 1120, note: 'ซื้อน้ำแข็งและเครื่องดื่มประจำ' }
+    ];
+  }
+
+  const allBills = allValidOrders.map(o => {
+    const tbl = o.table_id ? tableMap.get(o.table_id) : null;
+    return {
+      ...o,
+      subtotal: Number(o.subtotal || 0),
+      discount: Number(o.discount || 0),
+      total_amount: Number(o.total_amount || 0),
+      total_cost: Number(o.total_cost || 0),
+      table_name: tbl ? tbl.name : null,
+      zone_name: tbl ? tbl.zone_name : null,
+      items: normalizedItems.filter(i => i.order_id === o.id)
+    };
+  });
+
   return {
     categories,
     products,
@@ -257,6 +281,8 @@ async function getSupabaseBootstrapData() {
     ingredients: normalizedIngredients,
     recipeItems,
     tables,
+    customers: customers.map(c => ({ ...c, points: Number(c.points || 0), total_spent: Number(c.total_spent || 0) })),
+    allBills,
     kitchenQueue,
     stockInReceipts,
     inventoryLogs: inventoryLogs.map(l => ({ ...l, change_qty: Number(l.change_qty), balance_after: Number(l.balance_after) })),

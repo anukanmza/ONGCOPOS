@@ -228,8 +228,13 @@ module.exports = async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/api/orders/submit') {
       const {
+        order_id: existingOrderId = null,
         order_type = 'RETAIL',
         table_id = null,
+        bill_title = '',
+        bill_note = '',
+        customer_id = null,
+        customer_name = '',
         items = [],
         payment_method = 'CASH',
         cash_received = 0,
@@ -240,16 +245,36 @@ module.exports = async (req, res) => {
 
       const data = await getSupabaseBootstrapData();
       const now = new Date().toISOString();
-      let orderId = `ORD-${Date.now().toString().slice(-6)}`;
+      let orderId = existingOrderId || `ORD-${Date.now().toString().slice(-6)}`;
       let orderRound = 1;
-      let contextLabel = 'ขายหน้าร้าน (Walk-in)';
+      let contextLabel = bill_title ? `บิล: ${bill_title}` : 'ขายหน้าร้าน (Walk-in)';
 
-      if (order_type === 'DINE_IN' && table_id) {
+      if (existingOrderId) {
+        try {
+          await sbRest(`orders?id=eq.${encodeURIComponent(existingOrderId)}`, {
+            method: 'PATCH',
+            body: {
+              bill_title,
+              bill_note,
+              customer_id,
+              customer_name,
+              status: settle_immediately ? 'PAID' : 'OPEN',
+              paid_at: settle_immediately ? now : null
+            }
+          });
+        } catch {}
+      } else if (order_type === 'DINE_IN' && table_id) {
         const tbl = data.tables.find(t => t.id === table_id);
         if (tbl) contextLabel = tbl.name;
         if (tbl && tbl.active_order) {
           orderId = tbl.active_order.id;
           orderRound = Math.max(1, ...tbl.active_order.items.map(i => Number(i.order_round || 1))) + 1;
+          try {
+            await sbRest(`orders?id=eq.${encodeURIComponent(orderId)}`, {
+              method: 'PATCH',
+              body: { bill_title, bill_note, customer_id, customer_name }
+            });
+          } catch {}
         } else {
           await sbRest('orders', {
             method: 'POST',
@@ -257,6 +282,10 @@ module.exports = async (req, res) => {
               id: orderId,
               order_type: 'DINE_IN',
               table_id,
+              bill_title: bill_title || (tbl ? tbl.name : ''),
+              bill_note,
+              customer_id,
+              customer_name,
               status: 'OPEN',
               subtotal: 0,
               discount: 0,
@@ -278,6 +307,10 @@ module.exports = async (req, res) => {
             id: orderId,
             order_type: 'RETAIL',
             table_id: null,
+            bill_title: bill_title || (settle_immediately ? 'ขายหน้าร้าน' : 'พักบิลหน้าร้าน'),
+            bill_note,
+            customer_id,
+            customer_name,
             status: settle_immediately ? 'PAID' : 'OPEN',
             subtotal: 0,
             discount: Number(discount) || 0,
@@ -739,6 +772,34 @@ module.exports = async (req, res) => {
         }
       });
       return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/orders/update-meta') {
+      const { order_id, bill_title = '', bill_note = '', customer_id = null, customer_name = '' } = body;
+      try {
+        await sbRest(`orders?id=eq.${encodeURIComponent(order_id)}`, {
+          method: 'PATCH',
+          body: { bill_title, bill_note, customer_id, customer_name }
+        });
+      } catch {
+        // Fallback if columns not added yet in remote Supabase
+      }
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/customers/save') {
+      const { id, name, phone = '', tier = 'ขาประจำ', points = 0, note = '' } = body;
+      const cusId = id || `CUS-${Date.now().toString().slice(-4)}`;
+      try {
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: { id: cusId, name, phone, tier, points: Number(points) || 0, note }
+        });
+      } catch {
+        // Fallback if table not created yet in remote Supabase
+      }
+      return send(200, { success: true, cusId, data: await getSupabaseBootstrapData() });
     }
 
     return send(404, { error: `API route not found: ${pathname}` });

@@ -2,7 +2,7 @@
 // Ensures ONG CO POS works 100% on Vercel even before SUPABASE_URL env vars are configured,
 // and also supports direct browser-to-Supabase connection if configured in UI!
 
-const STORAGE_KEY = 'ONG_CO_POS_DB_V1';
+const STORAGE_KEY = 'ONG_CO_POS_DB_V2';
 
 function createInitialSeedState() {
   const now = new Date().toISOString();
@@ -106,10 +106,15 @@ function createInitialSeedState() {
       { id: 'T6', name: 'โต๊ะ 6', zone_name: 'โซนหน้าร้าน', voice_aliases: ['โต๊ะ 6', 'โต๊ะหก', 'โต๊ะที่ 6', 'เบอร์ 6'], status: 'AVAILABLE', current_order_id: null }
     ],
     orders: [
-      { id: 'ORD-20261106-001', order_type: 'RETAIL', table_id: null, status: 'PAID', subtotal: 114, discount: 0, total_amount: 114, total_cost: 89.5, payment_method: 'CASH', cash_received: 120, change_amount: 6, created_at: tPaid1, paid_at: tPaid1 },
-      { id: 'ORD-20261106-002', order_type: 'DINE_IN', table_id: 'T2', status: 'PAID', subtotal: 215, discount: 0, total_amount: 215, total_cost: 116.9, payment_method: 'QR_PROMPTPAY', cash_received: 215, change_amount: 0, created_at: tPaid2, paid_at: tPaid2 },
-      { id: 'ORD-SAMPLE-OPEN-1', order_type: 'DINE_IN', table_id: 'T1', status: 'OPEN', subtotal: 180, discount: 0, total_amount: 180, total_cost: 88.2, payment_method: 'CASH', cash_received: 0, change_amount: 0, created_at: tOpen1, paid_at: null },
-      { id: 'ORD-SAMPLE-OPEN-3', order_type: 'DINE_IN', table_id: 'T3', status: 'OPEN', subtotal: 175, discount: 0, total_amount: 175, total_cost: 99.6, payment_method: 'CASH', cash_received: 0, change_amount: 0, created_at: tOpen3, paid_at: null }
+      { id: 'ORD-20261106-001', order_type: 'RETAIL', table_id: null, bill_title: 'ซื้อของชำหน้าร้าน', bill_note: '', customer_id: 'CUS-002', customer_name: 'ป้าสมศรี (บ้านท้ายซอย)', status: 'PAID', subtotal: 114, discount: 0, total_amount: 114, total_cost: 89.5, payment_method: 'CASH', cash_received: 120, change_amount: 6, created_at: tPaid1, paid_at: tPaid1 },
+      { id: 'ORD-20261106-002', order_type: 'DINE_IN', table_id: 'T2', bill_title: 'โต๊ะ 2', bill_note: '', customer_id: null, customer_name: '', status: 'PAID', subtotal: 215, discount: 0, total_amount: 215, total_cost: 116.9, payment_method: 'QR_PROMPTPAY', cash_received: 215, change_amount: 0, created_at: tPaid2, paid_at: tPaid2 },
+      { id: 'ORD-SAMPLE-OPEN-1', order_type: 'DINE_IN', table_id: 'T1', bill_title: 'โต๊ะ 1 - พี่เอก', bill_note: 'ไม่ใส่ผงชูรส', customer_id: 'CUS-001', customer_name: 'พี่เอก (ช่างแอร์)', status: 'OPEN', subtotal: 180, discount: 0, total_amount: 180, total_cost: 88.2, payment_method: 'CASH', cash_received: 0, change_amount: 0, created_at: tOpen1, paid_at: null },
+      { id: 'ORD-SAMPLE-OPEN-3', order_type: 'DINE_IN', table_id: 'T3', bill_title: 'โต๊ะ 3', bill_note: 'แยกน้ำซุป', customer_id: null, customer_name: '', status: 'OPEN', subtotal: 175, discount: 0, total_amount: 175, total_cost: 99.6, payment_method: 'CASH', cash_received: 0, change_amount: 0, created_at: tOpen3, paid_at: null }
+    ],
+    customers: [
+      { id: 'CUS-001', name: 'พี่เอก (ช่างแอร์)', phone: '081-234-5678', tier: 'VIP', points: 145, total_spent: 3620, visit_count: 18, note: 'ชอบกะเพราเผ็ดจัด ไม่ใส่ถั่วฝักยาว' },
+      { id: 'CUS-002', name: 'ป้าสมศรี (บ้านท้ายซอย)', phone: '089-876-5432', tier: 'ขาประจำ', points: 88, total_spent: 2210, visit_count: 14, note: 'ซื้อของชำประจำต้นเดือน' },
+      { id: 'CUS-003', name: 'น้องมายด์ (ออฟฟิศปากซอย)', phone: '062-345-6789', tier: 'สมาชิกใหม่', points: 32, total_spent: 810, visit_count: 5, note: 'สั่งกลับบ้านช่วงเที่ยง' }
     ],
     orderItems: [
       { id: 'OI-101', order_id: 'ORD-20261106-001', product_id: 'G-011', product_name: 'น้ำปลาแท้ ทิพรส (700 มล.)', item_type: 'GROCERY', order_round: 1, quantity: 1, returned_qty: 0, unit_price: 35, unit_cost: 28, modifiers: [], recipe_snapshot: [], item_status: 'ACTIVE', kitchen_status: 'NONE', input_source: 'BARCODE', created_at: tPaid1 },
@@ -286,6 +291,17 @@ function buildLocalBootstrap() {
   const stockInPurchases = db.stockInReceipts.reduce((s, r) => s + r.total_cost, 0);
   const netProfit = grossProfit - wasteCost - operatingExpenses;
 
+  const allBills = db.orders.map(o => {
+    const tbl = o.table_id ? tableMap.get(o.table_id) : null;
+    const items = db.orderItems.filter(i => i.order_id === o.id);
+    return {
+      ...o,
+      table_name: tbl ? tbl.name : null,
+      zone_name: tbl ? tbl.zone_name : null,
+      items
+    };
+  });
+
   return {
     categories: db.categories,
     products,
@@ -293,6 +309,8 @@ function buildLocalBootstrap() {
     ingredients: db.ingredients,
     recipeItems: enrichedRecipes,
     tables,
+    customers: db.customers || [],
+    allBills,
     kitchenQueue,
     stockInReceipts: db.stockInReceipts,
     inventoryLogs: db.inventoryLogs,
@@ -486,28 +504,62 @@ window.LocalPosEngine = {
   submitOrder(body) {
     const db = loadLocalDb();
     const now = new Date().toISOString();
-    const { order_type = 'RETAIL', table_id = null, items = [], payment_method = 'CASH', cash_received = 0, discount = 0, settle_immediately = false, input_source = 'TOUCH' } = body;
+    const {
+      order_id: existingOrderId = null,
+      order_type = 'RETAIL',
+      table_id = null,
+      bill_title = '',
+      bill_note = '',
+      customer_id = null,
+      customer_name = '',
+      items = [],
+      payment_method = 'CASH',
+      cash_received = 0,
+      discount = 0,
+      settle_immediately = false,
+      input_source = 'TOUCH'
+    } = body;
 
-    let orderId = `ORD-${Date.now().toString().slice(-6)}`;
+    let orderId = existingOrderId || `ORD-${Date.now().toString().slice(-6)}`;
     let orderRound = 1;
-    let contextLabel = 'ขายหน้าร้าน (Walk-in)';
+    let contextLabel = bill_title ? `บิล: ${bill_title}` : 'ขายหน้าร้าน (Walk-in)';
 
-    if (order_type === 'DINE_IN' && table_id) {
+    if (existingOrderId) {
+      const existing = db.orders.find(o => o.id === existingOrderId);
+      if (existing) {
+        orderId = existing.id;
+        orderRound += 1;
+        existing.bill_title = bill_title || existing.bill_title || '';
+        existing.bill_note = bill_note !== undefined ? bill_note : (existing.bill_note || '');
+        existing.customer_id = customer_id || existing.customer_id || null;
+        existing.customer_name = customer_name || existing.customer_name || '';
+        if (settle_immediately) {
+          existing.status = 'PAID';
+          existing.paid_at = now;
+        }
+      }
+    } else if (order_type === 'DINE_IN' && table_id) {
       const tbl = db.tables.find(t => t.id === table_id);
       if (tbl) contextLabel = tbl.name;
       const existing = tbl && tbl.current_order_id ? db.orders.find(o => o.id === tbl.current_order_id && o.status === 'OPEN') : null;
       if (existing) {
         orderId = existing.id;
         orderRound += 1;
+        if (bill_title) existing.bill_title = bill_title;
+        if (bill_note !== undefined) existing.bill_note = bill_note;
+        if (customer_id) {
+          existing.customer_id = customer_id;
+          existing.customer_name = customer_name;
+        }
       } else {
-        db.orders.unshift({ id: orderId, order_type: 'DINE_IN', table_id, status: 'OPEN', subtotal: 0, discount: 0, total_amount: 0, total_cost: 0, payment_method, cash_received: 0, change_amount: 0, created_at: now, paid_at: null });
+        db.orders.unshift({ id: orderId, order_type: 'DINE_IN', table_id, bill_title: bill_title || (tbl ? tbl.name : ''), bill_note, customer_id, customer_name, status: 'OPEN', subtotal: 0, discount: 0, total_amount: 0, total_cost: 0, payment_method, cash_received: 0, change_amount: 0, created_at: now, paid_at: null });
         if (tbl) {
           tbl.status = 'OCCUPIED';
           tbl.current_order_id = orderId;
         }
       }
     } else {
-      db.orders.unshift({ id: orderId, order_type: 'RETAIL', table_id: null, status: settle_immediately ? 'PAID' : 'OPEN', subtotal: 0, discount: Number(discount) || 0, total_amount: 0, total_cost: 0, payment_method, cash_received: Number(cash_received) || 0, change_amount: 0, created_at: now, paid_at: settle_immediately ? now : null });
+      db.orders.unshift({ id: orderId, order_type: 'RETAIL', table_id: null, bill_title: bill_title || (settle_immediately ? 'ขายหน้าร้าน' : 'พักบิลหน้าร้าน'), bill_note, customer_id, customer_name, status: settle_immediately ? 'PAID' : 'OPEN', subtotal: 0, discount: Number(discount) || 0, total_amount: 0, total_cost: 0, payment_method, cash_received: Number(cash_received) || 0, change_amount: 0, created_at: now, paid_at: settle_immediately ? now : null });
     }
 
     for (const it of items) {
@@ -556,6 +608,17 @@ window.LocalPosEngine = {
     }
 
     recalcLocalOrder(db, orderId);
+    if (settle_immediately) {
+      const ord = db.orders.find(o => o.id === orderId);
+      if (ord && ord.customer_id && Array.isArray(db.customers)) {
+        const cus = db.customers.find(c => c.id === ord.customer_id);
+        if (cus) {
+          cus.points = (cus.points || 0) + Math.floor((ord.total_amount || 0) / 25);
+          cus.total_spent = Math.round(((cus.total_spent || 0) + (ord.total_amount || 0)) * 100) / 100;
+          cus.visit_count = (cus.visit_count || 0) + 1;
+        }
+      }
+    }
     saveLocalDb(db);
     return { success: true, orderId, data: buildLocalBootstrap() };
   },
@@ -611,9 +674,60 @@ window.LocalPosEngine = {
           tbl.current_order_id = null;
         }
       }
+      if (ord.customer_id && Array.isArray(db.customers)) {
+        const cus = db.customers.find(c => c.id === ord.customer_id);
+        if (cus) {
+          cus.points = (cus.points || 0) + Math.floor((ord.total_amount || 0) / 25);
+          cus.total_spent = Math.round(((cus.total_spent || 0) + (ord.total_amount || 0)) * 100) / 100;
+          cus.visit_count = (cus.visit_count || 0) + 1;
+        }
+      }
       saveLocalDb(db);
     }
     return { success: true, change, data: buildLocalBootstrap() };
+  },
+
+  updateOrderMeta(body) {
+    const db = loadLocalDb();
+    const { order_id, bill_title = '', bill_note = '', customer_id = null, customer_name = '' } = body;
+    const ord = db.orders.find(o => o.id === order_id);
+    if (ord) {
+      ord.bill_title = bill_title;
+      ord.bill_note = bill_note;
+      ord.customer_id = customer_id;
+      ord.customer_name = customer_name;
+      saveLocalDb(db);
+    }
+    return { success: true, data: buildLocalBootstrap() };
+  },
+
+  saveCustomer(body) {
+    const db = loadLocalDb();
+    if (!Array.isArray(db.customers)) db.customers = [];
+    const cusId = body.id || `CUS-${Date.now().toString().slice(-4)}`;
+    const existing = db.customers.find(c => c.id === cusId);
+    if (existing) {
+      Object.assign(existing, {
+        name: body.name,
+        phone: body.phone || '',
+        tier: body.tier || 'ขาประจำ',
+        points: Number(body.points) || existing.points || 0,
+        note: body.note || ''
+      });
+    } else {
+      db.customers.unshift({
+        id: cusId,
+        name: body.name,
+        phone: body.phone || '',
+        tier: body.tier || 'สมาชิกใหม่',
+        points: Number(body.points) || 10,
+        total_spent: 0,
+        visit_count: 0,
+        note: body.note || ''
+      });
+    }
+    saveLocalDb(db);
+    return { success: true, cusId, data: buildLocalBootstrap() };
   },
 
   updateKds(body) {
@@ -757,3 +871,4 @@ window.LocalPosEngine = {
     return { success: true, data: buildLocalBootstrap() };
   }
 };
+

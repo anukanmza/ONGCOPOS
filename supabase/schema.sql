@@ -71,11 +71,27 @@ CREATE TABLE IF NOT EXISTS dining_tables (
   current_order_id TEXT
 );
 
+-- 6.1 ตารางสมาชิกลูกค้า (Customers)
+CREATE TABLE IF NOT EXISTS customers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL DEFAULT '',
+  tier TEXT NOT NULL DEFAULT 'ขาประจำ',
+  points INTEGER NOT NULL DEFAULT 0,
+  total_spent NUMERIC(12,2) NOT NULL DEFAULT 0,
+  note TEXT DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- 7. ตารางบิลขาย (Orders)
 CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY,
   order_type TEXT NOT NULL CHECK (order_type IN ('RETAIL', 'DINE_IN')),
   table_id TEXT,
+  bill_title TEXT DEFAULT '',
+  bill_note TEXT DEFAULT '',
+  customer_id TEXT,
+  customer_name TEXT DEFAULT '',
   status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'PAID', 'CANCELLED')),
   subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,
   discount NUMERIC(12,2) NOT NULL DEFAULT 0,
@@ -87,6 +103,12 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   paid_at TIMESTAMPTZ
 );
+
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS bill_title TEXT DEFAULT '';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS bill_note TEXT DEFAULT '';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_id TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_name TEXT DEFAULT '';
+ALTER TABLE customers DISABLE ROW LEVEL SECURITY;
 
 -- 8. ตารางรายการในบิล (Order Items)
 CREATE TABLE IF NOT EXISTS order_items (

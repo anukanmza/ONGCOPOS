@@ -104,21 +104,25 @@ function getFullBootstrapData() {
   });
 
   const rawTables = db.prepare('SELECT * FROM dining_tables ORDER BY id').all();
+  const customers = db.prepare('SELECT * FROM customers ORDER BY total_spent DESC, created_at DESC').all();
   const openOrders = db.prepare("SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at DESC").all();
-  const openOrderIds = openOrders.map(o => o.id);
+  const allRecentOrders = db.prepare("SELECT * FROM orders WHERE status IN ('OPEN', 'PAID', 'CANCELLED') ORDER BY created_at DESC LIMIT 60").all();
+  const allOrderIds = allRecentOrders.map(o => o.id);
 
-  let allOpenItems = [];
-  if (openOrderIds.length > 0) {
-    allOpenItems = db.prepare(`
+  let allOrderItemsWithMeta = [];
+  if (allOrderIds.length > 0) {
+    allOrderItemsWithMeta = db.prepare(`
       SELECT * FROM order_items
-      WHERE order_id IN (${openOrderIds.map(() => '?').join(',')})
+      WHERE order_id IN (${allOrderIds.map(() => '?').join(',')})
       ORDER BY created_at ASC
-    `).all(...openOrderIds).map(it => ({
+    `).all(...allOrderIds).map(it => ({
       ...it,
       modifiers: JSON.parse(it.modifiers_json || '[]'),
       recipe_snapshot: JSON.parse(it.recipe_snapshot_json || '[]')
     }));
   }
+
+  const allOpenItems = allOrderItemsWithMeta;
 
   const tables = rawTables.map(t => {
     const activeOrder = openOrders.find(o => o.id === t.current_order_id || (o.table_id === t.id && o.status === 'OPEN')) || null;
@@ -127,6 +131,17 @@ function getFullBootstrapData() {
       ...t,
       voice_aliases: JSON.parse(t.voice_aliases || '[]'),
       active_order: activeOrder ? { ...activeOrder, items } : null
+    };
+  });
+
+  const tableMap = new Map(rawTables.map(t => [t.id, t]));
+  const allBills = allRecentOrders.map(o => {
+    const tbl = o.table_id ? tableMap.get(o.table_id) : null;
+    return {
+      ...o,
+      table_name: tbl ? tbl.name : null,
+      zone_name: tbl ? tbl.zone_name : null,
+      items: allOrderItemsWithMeta.filter(i => i.order_id === o.id)
     };
   });
 
@@ -260,6 +275,8 @@ function getFullBootstrapData() {
     ingredients,
     recipeItems,
     tables,
+    customers,
+    allBills,
     kitchenQueue: kdsRows,
     stockInReceipts,
     inventoryLogs,
@@ -385,12 +402,17 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result);
     }
 
-    // Submit Order (Either Walk-in Retail Checkout OR Add to Dine-In Table)
+    // Submit Order (Walk-in Retail, Held Bill, or Dine-In Table)
     if (req.method === 'POST' && pathname === '/api/orders/submit') {
       const body = await parseJsonBody(req);
       const {
+        order_id = null,
         order_type = 'RETAIL',
         table_id = null,
+        bill_title = '',
+        bill_note = '',
+        customer_id = null,
+        customer_name = '',
         items = [],
         payment_method = 'CASH',
         cash_received = 0,
@@ -404,11 +426,26 @@ const server = http.createServer(async (req, res) => {
       }
 
       const now = new Date().toISOString();
-      let orderId = null;
+      let orderId = order_id;
       let orderRound = 1;
-      let contextLabel = 'ขายหน้าร้าน (Walk-in)';
+      let contextLabel = bill_title ? `บิล: ${bill_title}` : 'ขายหน้าร้าน (Walk-in)';
 
-      if (order_type === 'DINE_IN' && table_id) {
+      if (orderId) {
+        const existingById = db.prepare("SELECT * FROM orders WHERE id = ? AND status = 'OPEN'").get(orderId);
+        if (existingById) {
+          const maxRoundRow = db.prepare('SELECT MAX(order_round) as mr FROM order_items WHERE order_id = ?').get(orderId);
+          orderRound = (maxRoundRow && maxRoundRow.mr ? maxRoundRow.mr : 1) + 1;
+          db.prepare(`
+            UPDATE orders SET bill_title = COALESCE(NULLIF(?, ''), bill_title), bill_note = COALESCE(NULLIF(?, ''), bill_note),
+            customer_id = COALESCE(?, customer_id), customer_name = COALESCE(NULLIF(?, ''), customer_name)
+            WHERE id = ?
+          `).run(bill_title, bill_note, customer_id, customer_name, orderId);
+        } else {
+          orderId = null;
+        }
+      }
+
+      if (!orderId && order_type === 'DINE_IN' && table_id) {
         const tableRow = db.prepare('SELECT * FROM dining_tables WHERE id = ?').get(table_id);
         if (!tableRow) return sendJson(res, 404, { error: 'ไม่พบโต๊ะที่เลือก' });
         contextLabel = tableRow.name;
@@ -421,23 +458,28 @@ const server = http.createServer(async (req, res) => {
           orderId = existingOrder.id;
           const maxRoundRow = db.prepare('SELECT MAX(order_round) as mr FROM order_items WHERE order_id = ?').get(orderId);
           orderRound = (maxRoundRow && maxRoundRow.mr ? maxRoundRow.mr : 1) + 1;
+          db.prepare(`
+            UPDATE orders SET bill_title = COALESCE(NULLIF(?, ''), bill_title), bill_note = COALESCE(NULLIF(?, ''), bill_note),
+            customer_id = COALESCE(?, customer_id), customer_name = COALESCE(NULLIF(?, ''), customer_name)
+            WHERE id = ?
+          `).run(bill_title, bill_note, customer_id, customer_name, orderId);
         } else {
           orderId = `ORD-${Date.now().toString().slice(-6)}`;
           db.prepare(`
-            INSERT INTO orders (id, order_type, table_id, status, subtotal, discount, total_amount, total_cost, payment_method, created_at)
-            VALUES (?, 'DINE_IN', ?, 'OPEN', 0, 0, 0, 0, ?, ?)
-          `).run(orderId, table_id, payment_method, now);
+            INSERT INTO orders (id, order_type, table_id, bill_title, bill_note, customer_id, customer_name, status, subtotal, discount, total_amount, total_cost, payment_method, created_at)
+            VALUES (?, 'DINE_IN', ?, ?, ?, ?, ?, 'OPEN', 0, 0, 0, 0, ?, ?)
+          `).run(orderId, table_id, bill_title, bill_note, customer_id, customer_name, payment_method, now);
 
           db.prepare("UPDATE dining_tables SET status = 'OCCUPIED', current_order_id = ? WHERE id = ?").run(orderId, table_id);
         }
-      } else {
-        // RETAIL Walk-in
+      } else if (!orderId) {
+        // RETAIL Walk-in or Held Bill
         orderId = `ORD-${Date.now().toString().slice(-6)}`;
         const status = settle_immediately ? 'PAID' : 'OPEN';
         db.prepare(`
-          INSERT INTO orders (id, order_type, table_id, status, subtotal, discount, total_amount, total_cost, payment_method, cash_received, change_amount, created_at, paid_at)
-          VALUES (?, 'RETAIL', NULL, ?, 0, ?, 0, 0, ?, ?, 0, ?, ?)
-        `).run(orderId, status, discount, payment_method, cash_received, now, settle_immediately ? now : null);
+          INSERT INTO orders (id, order_type, table_id, bill_title, bill_note, customer_id, customer_name, status, subtotal, discount, total_amount, total_cost, payment_method, cash_received, change_amount, created_at, paid_at)
+          VALUES (?, 'RETAIL', NULL, ?, ?, ?, ?, ?, 0, ?, 0, 0, ?, ?, 0, ?, ?)
+        `).run(orderId, bill_title || (settle_immediately ? 'ขายหน้าร้าน' : 'บิลเปิดค้างไว้'), bill_note, customer_id, customer_name, status, discount, payment_method, cash_received, now, settle_immediately ? now : null);
       }
 
       const insertItem = db.prepare(`
@@ -501,10 +543,49 @@ const server = http.createServer(async (req, res) => {
           UPDATE orders SET status = 'PAID', payment_method = ?, cash_received = ?, change_amount = ?, paid_at = ?
           WHERE id = ?
         `).run(payment_method, received, change, now, orderId);
+
+        if (updatedOrder.customer_id && updatedOrder.total_amount > 0) {
+          const pts = Math.floor(updatedOrder.total_amount / 25);
+          db.prepare('UPDATE customers SET points = points + ?, total_spent = total_spent + ? WHERE id = ?')
+            .run(pts, updatedOrder.total_amount, updatedOrder.customer_id);
+        }
       }
 
       broadcastUpdate('order_submitted', { orderId, table_id });
       return sendJson(res, 200, { success: true, orderId, data: getFullBootstrapData() });
+    }
+
+    // Update Bill Meta (Title, Note, Customer Member)
+    if (req.method === 'POST' && pathname === '/api/orders/update-meta') {
+      const body = await parseJsonBody(req);
+      const { order_id, bill_title = '', bill_note = '', customer_id = null, customer_name = '' } = body;
+      if (!order_id) return sendJson(res, 400, { error: 'กรุณาระบุเลขที่บิล' });
+      db.prepare(`
+        UPDATE orders
+        SET bill_title = ?, bill_note = ?, customer_id = ?, customer_name = ?
+        WHERE id = ?
+      `).run(bill_title, bill_note, customer_id, customer_name, order_id);
+      broadcastUpdate('order_meta_updated', { order_id });
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    // Save Customer Member
+    if (req.method === 'POST' && pathname === '/api/customers/save') {
+      const body = await parseJsonBody(req);
+      const { id, name, phone = '', tier = 'ขาประจำ', points = 0, note = '' } = body;
+      if (!name) return sendJson(res, 400, { error: 'กรุณาระบุชื่อสมาชิกลูกค้า' });
+      const cusId = id || `CUS-${Date.now().toString().slice(-4)}`;
+      const now = new Date().toISOString();
+      const existing = db.prepare('SELECT id FROM customers WHERE id = ?').get(cusId);
+      if (existing) {
+        db.prepare('UPDATE customers SET name = ?, phone = ?, tier = ?, points = ?, note = ? WHERE id = ?')
+          .run(name, phone, tier, Number(points) || 0, note, cusId);
+      } else {
+        db.prepare('INSERT INTO customers (id, name, phone, tier, points, total_spent, note, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)')
+          .run(cusId, name, phone, tier, Number(points) || 0, note, now);
+      }
+      broadcastUpdate('customer_saved', { cusId });
+      return sendJson(res, 200, { success: true, cusId, data: getFullBootstrapData() });
     }
 
     // Return / Void Item from Table or Order (Supports RETURNED_RESTOCK vs VOID_WASTE)
@@ -661,6 +742,12 @@ const server = http.createServer(async (req, res) => {
 
       if (refreshed.table_id) {
         db.prepare("UPDATE dining_tables SET status = 'AVAILABLE', current_order_id = NULL WHERE id = ?").run(refreshed.table_id);
+      }
+
+      if (refreshed.customer_id && refreshed.total_amount > 0) {
+        const pts = Math.floor(refreshed.total_amount / 25);
+        db.prepare('UPDATE customers SET points = points + ?, total_spent = total_spent + ? WHERE id = ?')
+          .run(pts, refreshed.total_amount, refreshed.customer_id);
       }
 
       broadcastUpdate('order_paid', { orderId: targetOrder.id, tableId: refreshed.table_id });

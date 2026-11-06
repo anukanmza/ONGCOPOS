@@ -1,29 +1,37 @@
 const state = {
   theme: 'teal',
-  showHeroBanner: true,
-  activeView: 'pos', // 'pos' | 'tables' | 'kds' | 'inventory' | 'dashboard'
+  activeView: 'pos', // 'pos' | 'bills' | 'tables' | 'kds' | 'inventory' | 'customers' | 'dashboard'
   inventoryTab: 'stock_in', // 'stock_in' | 'products' | 'recipes' | 'audit'
+  billsFilter: 'OPEN', // 'OPEN' | 'PAID' | 'ALL'
   posMode: 'DINE_IN', // 'RETAIL' | 'DINE_IN'
   selectedTableId: 'T1',
+  activeHeldOrderId: null, // When resuming an open/held retail bill
+  billTitle: '',
+  billNote: '',
+  selectedCustomerId: '',
+  billDrawerOpen: false, // Floating Bill Drawer toggle state
   categoryFilter: 'ALL',
   searchQuery: '',
   zoneFilter: 'ALL',
-  cart: [], // Draft items before submitting to walk-in or table
+  customerSearch: '',
+  cart: [], // New draft items before submitting to table/held bill or checking out
   voiceListening: false,
   voiceText: '',
-  voicePreview: null,
+  lastVoiceSummary: null, // Feedback banner after instant voice-to-bill
   // Modals
   modifierModalProduct: null,
   selectedModifiers: [],
   modifierQty: 1,
-  checkoutModalOrder: null, // { mode: 'CART' | 'TABLE', tableId, orderId, totalAmount, subtotal, label }
+  checkoutModalOrder: null, // { mode: 'CART' | 'ORDER', tableId, orderId, totalAmount, subtotal, label }
   checkoutPaymentMethod: 'CASH',
   checkoutCashReceived: '',
   checkoutDiscount: 0,
+  editingBillMetaOrder: null, // Modal to edit bill_title, bill_note, customer_id of any bill
   showNewTableModal: false,
   showNewProductModal: false,
   showNewIngredientModal: false,
   showNewExpenseModal: false,
+  showNewCustomerModal: false,
   // Stock-In Draft State
   stockInSupplier: 'แม็คโคร & ตลาดสด',
   stockInNote: '',
@@ -53,7 +61,7 @@ function showToast(msg) {
   toastTimer = setTimeout(() => {
     state.toastMessage = null;
     render();
-  }, 3800);
+  }, 3600);
 }
 
 function formatMoney(num) {
@@ -98,12 +106,14 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
   if (endpoint === '/api/orders/submit') return eng.submitOrder(bodyObj || {});
   if (endpoint === '/api/orders/item-return') return eng.returnItem(bodyObj || {});
   if (endpoint === '/api/orders/checkout') return eng.checkoutOrder(bodyObj || {});
+  if (endpoint === '/api/orders/update-meta') return eng.updateOrderMeta(bodyObj || {});
   if (endpoint === '/api/kds/status') return eng.updateKds(bodyObj || {});
   if (endpoint === '/api/stock-in') return eng.stockIn(bodyObj || {});
   if (endpoint === '/api/products/save') return eng.saveProduct(bodyObj || {});
   if (endpoint === '/api/ingredients/save') return eng.saveIngredient(bodyObj || {});
   if (endpoint === '/api/tables/save') return eng.saveTable(bodyObj || {});
   if (endpoint === '/api/expenses/save') return eng.saveExpense(bodyObj || {});
+  if (endpoint === '/api/customers/save') return eng.saveCustomer(bodyObj || {});
   return eng.getBootstrap();
 }
 
@@ -112,11 +122,79 @@ async function fetchBootstrap() {
   if (data && Array.isArray(data.products)) {
     state.data = data;
     syncBomEditorWithProduct(state.selectedBomFoodId);
+    syncCurrentBillMetaFromContext();
   } else if (window.LocalPosEngine) {
     state.data = window.LocalPosEngine.getBootstrap();
     syncBomEditorWithProduct(state.selectedBomFoodId);
+    syncCurrentBillMetaFromContext();
   }
   render();
+}
+
+function getActiveContextOrder() {
+  if (!state.data) return null;
+  if (state.posMode === 'DINE_IN') {
+    const tbl = state.data.tables.find(t => t.id === state.selectedTableId);
+    return tbl && tbl.active_order ? tbl.active_order : null;
+  }
+  if (state.activeHeldOrderId) {
+    const allBills = state.data.allBills || [];
+    return allBills.find(b => b.id === state.activeHeldOrderId && b.status === 'OPEN') || null;
+  }
+  return null;
+}
+
+function syncCurrentBillMetaFromContext() {
+  const activeOrd = getActiveContextOrder();
+  if (activeOrd) {
+    state.billTitle = activeOrd.bill_title || '';
+    state.billNote = activeOrd.bill_note || '';
+    state.selectedCustomerId = activeOrd.customer_id || '';
+  } else {
+    state.billTitle = '';
+    state.billNote = '';
+    state.selectedCustomerId = '';
+  }
+}
+
+function selectPosContext(mode, tableId = null, heldOrderId = null) {
+  state.posMode = mode;
+  if (tableId) state.selectedTableId = tableId;
+  state.activeHeldOrderId = heldOrderId;
+  syncCurrentBillMetaFromContext();
+  render();
+}
+
+function resumeBillInPos(orderId) {
+  if (!state.data) return;
+  const allBills = state.data.allBills || [];
+  const ord = allBills.find(b => b.id === orderId);
+  if (!ord) return;
+
+  if (ord.table_id) {
+    state.posMode = 'DINE_IN';
+    state.selectedTableId = ord.table_id;
+    state.activeHeldOrderId = null;
+  } else {
+    state.posMode = 'RETAIL';
+    state.activeHeldOrderId = ord.id;
+  }
+  syncCurrentBillMetaFromContext();
+  state.activeView = 'pos';
+  state.billDrawerOpen = true;
+  render();
+  showToast(`🧾 เปิดบิล "${ord.bill_title || ord.id}" เพื่อสั่งเพิ่มหรือเช็คบิลแล้ว`);
+}
+
+function startNewRetailBill() {
+  state.posMode = 'RETAIL';
+  state.activeHeldOrderId = null;
+  state.cart = [];
+  state.billTitle = '';
+  state.billNote = '';
+  state.selectedCustomerId = '';
+  render();
+  showToast('🆕 เริ่มบิลขายหน้าร้านใบใหม่แล้ว');
 }
 
 function syncBomEditorWithProduct(foodId) {
@@ -133,7 +211,9 @@ function syncBomEditorWithProduct(foodId) {
   }
 }
 
-// Initialize Web Speech API for Thai Voice Ordering
+// ============================================================================
+// VOICE ORDERING: Instant Add to Draft Bill (No confirmation step required!)
+// ============================================================================
 function initSpeechRecognition() {
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRec) return null;
@@ -178,7 +258,7 @@ function toggleVoiceMic() {
     recognition = initSpeechRecognition();
   }
   if (!recognition) {
-    showToast('เบราว์เซอร์นี้ไม่รองรับไมค์โดยตรง สามารถพิมพ์หรือกดปุ่มตัวอย่างคำสั่งเสียงด้านล่างได้เลยครับ');
+    showToast('เบราว์เซอร์นี้ไม่รองรับไมค์โดยตรง สามารถพิมพ์หรือกดปุ่มตัวอย่างคำสั่งเสียงได้เลยครับ');
     const inputEl = document.getElementById('voice-command-input');
     if (inputEl) inputEl.focus();
     return;
@@ -187,28 +267,25 @@ function toggleVoiceMic() {
     recognition.stop();
   } else {
     state.voiceText = '';
-    state.voicePreview = null;
     recognition.start();
   }
 }
 
 async function analyzeVoiceCommand(text) {
   const query = (text !== undefined ? text : state.voiceText).trim();
-  state.voiceText = query;
   if (!query) {
-    showToast('กรุณาพูดหรือเลือกประโยคคำสั่งเสียง');
+    showToast('กรุณาพูดหรือพิมพ์คำสั่งออเดอร์');
     return;
   }
   const fallbackTableId = state.posMode === 'DINE_IN' ? state.selectedTableId : null;
-  const parsed = await apiCall('/api/voice/parse', 'POST', { text: query, fallbackTableId });
-  state.voicePreview = parsed;
-  render();
-}
+  const pv = await apiCall('/api/voice/parse', 'POST', { text: query, fallbackTableId });
 
-async function confirmVoicePreview() {
-  const pv = state.voicePreview;
-  if (!pv || !pv.success || pv.items.length === 0) return;
+  if (!pv || !pv.success || !Array.isArray(pv.items) || pv.items.length === 0) {
+    showToast(`⚠️ ไม่พบชื่อเมนูหรือสินค้าจากคำว่า "${query}"`);
+    return;
+  }
 
+  // Case 1: Return command by voice
   if (pv.intent === 'RETURN') {
     const targetTableId = pv.table ? pv.table.id : state.selectedTableId;
     for (const it of pv.items) {
@@ -219,55 +296,46 @@ async function confirmVoicePreview() {
         reason_note: `สั่งคืนด้วยเสียง: "${pv.raw_text}"`
       });
     }
-    state.voicePreview = null;
     state.voiceText = '';
     await fetchBootstrap();
-    showToast(`คืนสินค้าจากคำสั่งเสียงเรียบร้อยแล้ว (${pv.return_mode === 'VOID_WASTE' ? 'ตัดของเสีย' : 'บวกกลับเข้าสต็อก'})`);
+    showToast(`↩️ คืนสินค้าจากเสียง "${pv.items.map(i => i.name).join(', ')}" เรียบร้อย`);
     return;
   }
 
-  // Otherwise intent === 'ORDER'
-  if (pv.table) {
+  // Case 2: Order command by voice -> ALWAYS put into Draft Bill (state.cart) immediately!
+  // Never auto-submit to committed table items so staff can inspect/adjust in the bill first.
+  if (pv.table && pv.raw_text.includes(pv.table.name.replace(/\s+/g, '')) || (pv.table && /โต๊ะ\s*\d+/.test(pv.raw_text))) {
     state.posMode = 'DINE_IN';
     state.selectedTableId = pv.table.id;
-    const out = await apiCall('/api/orders/submit', 'POST', {
-      order_type: 'DINE_IN',
-      table_id: pv.table.id,
-      items: pv.items.map(i => ({
-        product_id: i.product_id,
-        quantity: i.quantity,
-        modifiers: i.modifiers,
-        unit_price: i.unit_price,
-        input_source: 'VOICE'
-      })),
+    state.activeHeldOrderId = null;
+    syncCurrentBillMetaFromContext();
+  }
+
+  for (const i of pv.items) {
+    addToCartDirect({
+      product_id: i.product_id,
+      name: i.name,
+      item_type: i.item_type,
+      unit: i.unit,
+      unit_price: i.unit_price,
+      quantity: i.quantity,
+      modifiers: i.modifiers || [],
+      send_to_kitchen: Boolean(i.send_to_kitchen),
       input_source: 'VOICE'
     });
-    if (out && out.data) state.data = out.data;
-    state.voicePreview = null;
-    state.voiceText = '';
-    render();
-    showToast(`🎙️ ส่งออเดอร์เสียงเข้า ${pv.table.name} เรียบร้อย! (แยกของชำตัดสต็อก & ส่งอาหารเข้าจอครัว KDS แล้ว)`);
-  } else {
-    // Add to Walk-in Retail Cart
-    state.posMode = 'RETAIL';
-    for (const i of pv.items) {
-      addToCartDirect({
-        product_id: i.product_id,
-        name: i.name,
-        item_type: i.item_type,
-        unit: i.unit,
-        unit_price: i.unit_price,
-        quantity: i.quantity,
-        modifiers: i.modifiers,
-        send_to_kitchen: i.send_to_kitchen,
-        input_source: 'VOICE'
-      });
-    }
-    state.voicePreview = null;
-    state.voiceText = '';
-    render();
-    showToast(`🎙️ เพิ่ม ${pv.items.length} รายการจากเสียงลงตะกร้าขายหน้าร้านแล้ว`);
   }
+
+  const summaryNames = pv.items.map(i => `${i.name}${i.modifiers?.length ? ' (' + i.modifiers.join(',') + ')' : ''} x${i.quantity}`).join(', ');
+  state.lastVoiceSummary = {
+    text: summaryNames,
+    total: pv.total_preview,
+    targetLabel: state.posMode === 'DINE_IN'
+      ? (state.data.tables.find(t => t.id === state.selectedTableId)?.name || 'โต๊ะ')
+      : (state.billTitle || 'บิลหน้าร้าน')
+  };
+  state.voiceText = '';
+  render();
+  showToast(`🎙️ เพิ่ม ${summaryNames} เข้าบิล (รายการใหม่) แล้ว!`);
 }
 
 function addToCartDirect(itemObj) {
@@ -315,7 +383,7 @@ function handleProductCardClick(productId) {
       input_source: 'TOUCH'
     });
     render();
-    showToast(`+ เพิ่ม "${prod.name}" ลงรายการแล้ว`);
+    showToast(`+ เพิ่ม "${prod.name}" เข้าบิลแล้ว`);
   }
 }
 
@@ -325,7 +393,7 @@ function handleBarcodeScan(barcodeStr) {
   if (!code) return;
   const prod = state.data.products.find(p => p.barcode === code || p.id.toLowerCase() === code.toLowerCase());
   if (!prod) {
-    showToast(`⚠️ ไม่พบรหัสบาร์โค้ด "${code}" ในระบบ`);
+    showToast(`⚠️ ไม่พบรหัสบาร์โค้ด "${code}"`);
     return;
   }
   addToCartDirect({
@@ -341,50 +409,150 @@ function handleBarcodeScan(barcodeStr) {
   });
   state.searchQuery = '';
   render();
-  showToast(`🔫 ยิงบาร์โค้ด "${prod.name}" (${formatMoney(prod.price)}) สำเร็จ!`);
+  showToast(`🔫 ยิงบาร์โค้ด "${prod.name}" (${formatMoney(prod.price)}) เข้าบิลแล้ว`);
 }
 
-async function submitDraftCartToTable() {
-  if (state.cart.length === 0) return;
+function getSelectedCustomerObj() {
+  if (!state.data || !state.selectedCustomerId) return null;
+  return (state.data.customers || []).find(c => c.id === state.selectedCustomerId) || null;
+}
+
+// Hold Bill / Save Open Bill with Name & Note (เปิดบิลทิ้งไว้ / ส่งเข้าโต๊ะ)
+async function saveOrHoldCurrentBill(mode = 'HOLD') {
+  const activeOrd = getActiveContextOrder();
+  const cus = getSelectedCustomerObj();
+  const customerId = cus ? cus.id : null;
+  const customerName = cus ? cus.name : '';
+
+  // If no new items in cart, but there's an existing open order, just update its title/note/member
+  if (state.cart.length === 0 && activeOrd) {
+    const out = await apiCall('/api/orders/update-meta', 'POST', {
+      order_id: activeOrd.id,
+      bill_title: state.billTitle.trim(),
+      bill_note: state.billNote.trim(),
+      customer_id: customerId,
+      customer_name: customerName
+    });
+    if (out && out.data) state.data = out.data;
+    render();
+    showToast(`📌 บันทึกชื่อบิล/โน้ตของ "${state.billTitle || activeOrd.id}" เรียบร้อย`);
+    return;
+  }
+
+  if (state.cart.length === 0) {
+    showToast('⚠️ กรุณาเลือกสินค้าหรือเมนูเข้าบิลก่อนเปิดบิลทิ้งไว้');
+    return;
+  }
+
+  const defaultTitle = state.posMode === 'DINE_IN'
+    ? (state.data.tables.find(t => t.id === state.selectedTableId)?.name || 'บิลโต๊ะ')
+    : (cus ? `บิลคุณ${cus.name}` : `บิลพักไว้ #${String(Date.now()).slice(-3)}`);
+
+  const finalTitle = state.billTitle.trim() || defaultTitle;
+
   const out = await apiCall('/api/orders/submit', 'POST', {
-    order_type: 'DINE_IN',
-    table_id: state.selectedTableId,
+    order_id: activeOrd ? activeOrd.id : null,
+    order_type: state.posMode,
+    table_id: state.posMode === 'DINE_IN' ? state.selectedTableId : null,
+    bill_title: finalTitle,
+    bill_note: state.billNote.trim(),
+    customer_id: customerId,
+    customer_name: customerName,
     items: state.cart,
+    settle_immediately: false,
     input_source: 'TOUCH'
   });
+
   if (out && out.data) state.data = out.data;
   state.cart = [];
+  state.lastVoiceSummary = null;
+
+  if (state.posMode === 'RETAIL' && out?.orderId) {
+    state.activeHeldOrderId = out.orderId;
+  }
+  syncCurrentBillMetaFromContext();
   render();
-  const tbl = state.data.tables.find(t => t.id === state.selectedTableId);
-  showToast(`✅ ส่งรายการเข้า ${tbl ? tbl.name : 'โต๊ะ'} เรียบร้อย (ตัดสต็อกของชำ & ส่งเมนูอาหารเข้าจอครัวแล้ว)`);
+
+  if (mode === 'TABLE_SEND') {
+    showToast(`📤 ส่งรายการเข้า "${finalTitle}" และส่งครัวเรียบร้อย!`);
+  } else {
+    showToast(`📌 เปิดบิลทิ้งไว้ "${finalTitle}" เรียบร้อย! (ดูได้ที่หน้าจัดการบิล)`);
+  }
 }
 
 async function handleReturnTableItem(orderItemId, mode) {
   const label = mode === 'VOID_WASTE'
     ? 'ยืนยันตัดรายการนี้เป็น "ของเสีย/ชำรุด" (หักยอดเงินลูกค้า ไม่บวกสต็อกกลับ และบันทึกเป็นต้นทุนของเสีย)?'
-    : 'ยืนยัน "คืนสินค้าเข้าสต็อก" (หักยอดเงินออกจากบิลโต๊ะ และบวกสต็อกกลับเข้าคลังอัตโนมัติ)?';
+    : 'ยืนยัน "คืนสินค้าเข้าสต็อก" (หักยอดเงินออกจากบิล และบวกสต็อกกลับเข้าคลังอัตโนมัติ)?';
   if (!window.confirm(label)) return;
 
   const out = await apiCall('/api/orders/item-return', 'POST', { order_item_id: orderItemId, mode });
   if (out && out.data) state.data = out.data;
   render();
-  showToast(mode === 'VOID_WASTE' ? '🗑️ ตัดเป็นของเสียและหักยอดออกจากบิลโต๊ะแล้ว' : '↩️ คืนสินค้ากลับเข้าสต็อกและหักยอดบิลโต๊ะเรียบร้อย');
+  showToast(mode === 'VOID_WASTE' ? '🗑️ ตัดเป็นของเสียและหักยอดออกจากบิลแล้ว' : '↩️ คืนสินค้ากลับเข้าสต็อกและหักยอดบิลเรียบร้อย');
 }
 
-function openCheckoutModalForCart() {
-  const subtotal = state.cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
-  if (subtotal <= 0) return;
+async function openCheckoutForCurrentBill() {
+  const activeOrd = getActiveContextOrder();
+  const draftTotal = state.cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
+
+  // If there is an open order AND new unsent draft items, commit the draft items into that order first
+  if (activeOrd && state.cart.length > 0) {
+    await saveOrHoldCurrentBill('SILENT');
+  }
+
+  const refreshedOrd = getActiveContextOrder();
+  if (refreshedOrd) {
+    state.checkoutModalOrder = {
+      mode: 'ORDER',
+      tableId: refreshedOrd.table_id || null,
+      orderId: refreshedOrd.id,
+      subtotal: refreshedOrd.subtotal,
+      totalAmount: refreshedOrd.total_amount,
+      label: refreshedOrd.bill_title || (refreshedOrd.table_name ? `บิล ${refreshedOrd.table_name}` : `บิล ${refreshedOrd.id}`)
+    };
+    state.checkoutPaymentMethod = 'CASH';
+    state.checkoutDiscount = refreshedOrd.discount || 0;
+    state.checkoutCashReceived = String(refreshedOrd.total_amount);
+    render();
+    return;
+  }
+
+  if (draftTotal <= 0) {
+    showToast('⚠️ ยังไม่มีรายการสินค้าในบิล');
+    return;
+  }
+
   state.checkoutModalOrder = {
     mode: 'CART',
-    tableId: null,
+    tableId: state.posMode === 'DINE_IN' ? state.selectedTableId : null,
     orderId: null,
-    subtotal,
-    totalAmount: subtotal,
-    label: 'บิลขายด่วนหน้าร้าน (Walk-in Retail)'
+    subtotal: draftTotal,
+    totalAmount: draftTotal,
+    label: state.billTitle.trim() || (state.posMode === 'DINE_IN' ? `เช็คบิลโต๊ะ` : 'บิลขายหน้าร้าน (Walk-in)')
   };
   state.checkoutPaymentMethod = 'CASH';
   state.checkoutDiscount = 0;
-  state.checkoutCashReceived = String(subtotal);
+  state.checkoutCashReceived = String(draftTotal);
+  render();
+}
+
+function openCheckoutModalByOrderId(orderId) {
+  if (!state.data) return;
+  const ord = (state.data.allBills || []).find(b => b.id === orderId);
+  if (!ord) return;
+
+  state.checkoutModalOrder = {
+    mode: 'ORDER',
+    tableId: ord.table_id || null,
+    orderId: ord.id,
+    subtotal: ord.subtotal,
+    totalAmount: ord.total_amount,
+    label: ord.bill_title || (ord.table_name ? `เช็คบิล ${ord.table_name}` : `บิล ${ord.id}`)
+  };
+  state.checkoutPaymentMethod = 'CASH';
+  state.checkoutDiscount = ord.discount || 0;
+  state.checkoutCashReceived = String(ord.total_amount);
   render();
 }
 
@@ -392,21 +560,7 @@ function openCheckoutModalForTable(tableId) {
   if (!state.data) return;
   const tbl = state.data.tables.find(t => t.id === tableId);
   if (!tbl || !tbl.active_order) return;
-
-  // If there are unsent cart items while on this table, alert user
-  const subtotal = tbl.active_order.subtotal;
-  state.checkoutModalOrder = {
-    mode: 'TABLE',
-    tableId: tbl.id,
-    orderId: tbl.active_order.id,
-    subtotal,
-    totalAmount: tbl.active_order.total_amount,
-    label: `เช็คบิล ${tbl.name} (${tbl.zone_name})`
-  };
-  state.checkoutPaymentMethod = 'CASH';
-  state.checkoutDiscount = tbl.active_order.discount || 0;
-  state.checkoutCashReceived = String(tbl.active_order.total_amount);
-  render();
+  openCheckoutModalByOrderId(tbl.active_order.id);
 }
 
 async function confirmCheckoutPayment() {
@@ -415,10 +569,16 @@ async function confirmCheckoutPayment() {
   const discount = Math.max(0, Number(state.checkoutDiscount) || 0);
   const netTotal = Math.max(0, co.subtotal - discount);
   const cashRec = Number(state.checkoutCashReceived) || netTotal;
+  const cus = getSelectedCustomerObj();
 
   if (co.mode === 'CART') {
     const out = await apiCall('/api/orders/submit', 'POST', {
-      order_type: 'RETAIL',
+      order_type: state.posMode,
+      table_id: co.tableId,
+      bill_title: state.billTitle.trim() || co.label,
+      bill_note: state.billNote.trim(),
+      customer_id: cus ? cus.id : null,
+      customer_name: cus ? cus.name : '',
       items: state.cart,
       payment_method: state.checkoutPaymentMethod,
       discount,
@@ -427,9 +587,13 @@ async function confirmCheckoutPayment() {
     });
     if (out && out.data) state.data = out.data;
     state.cart = [];
+    state.billTitle = '';
+    state.billNote = '';
+    state.selectedCustomerId = '';
     state.checkoutModalOrder = null;
+    state.billDrawerOpen = false;
     render();
-    showToast(`💰 รับชำระเงินหน้าร้าน ${formatMoney(netTotal)} สำเร็จ!`);
+    showToast(`💰 รับชำระเงิน ${formatMoney(netTotal)} สำเร็จ!${cus ? ` (สะสมแต้มสมาชิก +${Math.floor(netTotal / 25)} แต้ม)` : ''}`);
   } else {
     const out = await apiCall('/api/orders/checkout', 'POST', {
       order_id: co.orderId,
@@ -439,9 +603,14 @@ async function confirmCheckoutPayment() {
       cash_received: cashRec
     });
     if (out && out.data) state.data = out.data;
+    if (state.activeHeldOrderId === co.orderId) {
+      state.activeHeldOrderId = null;
+    }
     state.checkoutModalOrder = null;
+    state.billDrawerOpen = false;
+    syncCurrentBillMetaFromContext();
     render();
-    showToast(`💰 เช็คบิล ${co.label} ยอด ${formatMoney(netTotal)} เรียบร้อย! (ทอน ${formatMoney(out?.change || 0)})`);
+    showToast(`💰 เช็คบิล "${co.label}" ยอด ${formatMoney(netTotal)} เรียบร้อย! (เงินทอน ${formatMoney(out?.change || 0)})`);
   }
 }
 
@@ -449,7 +618,7 @@ async function updateKdsStatus(orderItemId, nextStatus) {
   const out = await apiCall('/api/kds/status', 'POST', { order_item_id: orderItemId, kitchen_status: nextStatus });
   if (out && out.data) state.data = out.data;
   render();
-  showToast(nextStatus === 'COOKING' ? '🍳 เริ่มผัด/ทำอาหารรายการนี้แล้ว' : '✅ อาหารเสร็จพร้อมเสิร์ฟแล้ว!');
+  showToast(nextStatus === 'COOKING' ? '🍳 เริ่มทำอาหารรายการนี้แล้ว' : '✅ อาหารเสร็จพร้อมเสิร์ฟแล้ว!');
 }
 
 // Stock-In Helper Functions
@@ -512,12 +681,11 @@ function addLineToStockInDraft() {
   }
 
   render();
-  showToast('➕ เพิ่มลงใบรับของเข้าสต็อกแล้ว (ตรวจสอบก่อนกดยืนยันด้านล่าง)');
+  showToast('➕ เพิ่มลงใบรับของเข้าสต็อกแล้ว');
 }
 
 async function submitStockInReceipt() {
   if (state.stockInDraftItems.length === 0) {
-    // If user didn't click add line yet, add current form line automatically
     addLineToStockInDraft();
     if (state.stockInDraftItems.length === 0) return;
   }
@@ -532,7 +700,7 @@ async function submitStockInReceipt() {
   state.stockInDraftItems = [];
   state.stockInNote = '';
   render();
-  showToast(`📦 บันทึกใบรับของเข้าสต็อก ${out?.receiptId || ''} สำเร็จ! ระบบบวกสต็อกเพิ่มให้เรียบร้อยแล้ว`);
+  showToast(`📦 บันทึกใบรับของเข้าสต็อก ${out?.receiptId || ''} สำเร็จ!`);
 }
 
 async function saveBomForSelectedFood() {
@@ -549,10 +717,9 @@ async function saveBomForSelectedFood() {
     syncBomEditorWithProduct(state.selectedBomFoodId);
   }
   render();
-  showToast(`🍲 บันทึกสูตรวัตถุดิบ (Recipe BOM) ของ "${prod.name}" และคำนวณต้นทุนจานใหม่เรียบร้อย!`);
+  showToast(`🍲 บันทึกสูตรวัตถุดิบของ "${prod.name}" เรียบร้อย!`);
 }
 
-// SVG Logo matching #teal-treasury-landing
 function renderLogoSvg(size = 24) {
   return `
     <svg class="ttl-svg" width="${size}" height="${size}" viewBox="0 0 32 32" aria-hidden="true">
@@ -563,92 +730,58 @@ function renderLogoSvg(size = 24) {
   `;
 }
 
+// ============================================================================
+// VOICE CONSOLE (Instant-Add to Draft Bill)
+// ============================================================================
 function renderVoiceConsole() {
-  const pv = state.voicePreview;
   return `
     <section class="ttl-voice-console">
       <div class="ttl-voice-bar">
         <div class="ttl-voice-top">
           <button type="button" class="ttl-mic-btn" data-listening="${state.voiceListening}" onclick="toggleVoiceMic()">
-            <span>${state.voiceListening ? '🔴 กำลังฟังเสียงภาษาไทย...' : '🎙️ กดพูดสั่งออเดอร์ / คืนของ'}</span>
+            <span>${state.voiceListening ? '🔴 กำลังฟังเสียง... (พูดเสร็จระบบเพิ่มเข้าบิลทันที)' : '🎙️ กดพูดสั่งออเดอร์ (เข้าบิลทันที ไม่ต้องกดยืนยันซ้ำ)'}</span>
           </button>
 
           <form class="ttl-voice-input-wrap" onsubmit="event.preventDefault(); analyzeVoiceCommand(document.getElementById('voice-command-input').value);">
             <input
               id="voice-command-input"
               type="text"
-              placeholder='พูดหรือพิมพ์ เช่น "โต๊ะ 1 กะเพราหมูกรอบไข่ดาวไม่สุก 2 โค้กขวดเล็ก 2" หรือ "โต๊ะ 1 คืนโค้ก 1 ขวด"'
+              placeholder='พูดหรือพิมพ์ เช่น "กะเพราหมูกรอบไข่ดาว 2 โค้กเล็ก 2" แล้วกด Enter'
               value="${(state.voiceText || '').replace(/"/g, '&quot;')}"
               oninput="state.voiceText = this.value"
             />
-            <button type="submit" class="ttl-btn ttl-btn-sm ttl-btn-lilac">วิเคราะห์คำสั่งเสียง ➔</button>
+            <button type="submit" class="ttl-btn ttl-btn-sm ttl-btn-lilac">สั่งเข้าบิล ➔</button>
           </form>
         </div>
 
         <div class="ttl-voice-presets">
-          <span>💡 ทดลองกดคำสั่งเสียงตัวอย่าง:</span>
+          <span>💡 กดทดสอบเสียงสั่งเข้าบิลทันที:</span>
           <button type="button" class="ttl-preset-chip" onclick="analyzeVoiceCommand('โต๊ะ 1 กะเพราหมูกรอบไข่ดาวไม่สุก 2 โค้กขวดเล็ก 2')">
             "โต๊ะ 1 กะเพราหมูกรอบไข่ดาวไม่สุก 2 โค้กขวดเล็ก 2"
           </button>
-          <button type="button" class="ttl-preset-chip" onclick="analyzeVoiceCommand('โต๊ะ 2 ข้าวผัดกุ้งพิเศษ 1 ต้มยำกุ้ง 1 น้ำแข็ง 1 ถัง')">
-            "โต๊ะ 2 ข้าวผัดกุ้งพิเศษ 1 ต้มยำกุ้ง 1 น้ำแข็ง 1 ถัง"
+          <button type="button" class="ttl-preset-chip" onclick="analyzeVoiceCommand('ข้าวผัดกุ้งพิเศษ 1 ต้มยำกุ้ง 1 น้ำแข็ง 1 ถัง')">
+            "ข้าวผัดกุ้งพิเศษ 1 ต้มยำกุ้ง 1 น้ำแข็ง 1 ถัง"
+          </button>
+          <button type="button" class="ttl-preset-chip" onclick="analyzeVoiceCommand('มาม่าหมูสับ 3 ซอง น้ำปลาทิพรส 1 ขวด')">
+            "มาม่าหมูสับ 3 ซอง น้ำปลาทิพรส 1 ขวด"
           </button>
           <button type="button" class="ttl-preset-chip" onclick="analyzeVoiceCommand('โต๊ะ 1 คืนโค้กขวดเล็ก 1 ขวด')">
-            "โต๊ะ 1 คืนโค้กขวดเล็ก 1 ขวด" (คืนเข้าสต็อก)
-          </button>
-          <button type="button" class="ttl-preset-chip" onclick="analyzeVoiceCommand('มาม่าหมูสับ 3 ซอง น้ำปลาทิพรส 1 ขวด เอ็มร้อย 2 ขวด')">
-            "มาม่าหมูสับ 3 ซอง น้ำปลาทิพรส 1 ขวด เอ็มร้อย 2 ขวด" (หน้าร้าน)
+            "โต๊ะ 1 คืนโค้กขวดเล็ก 1 ขวด"
           </button>
         </div>
 
-        ${pv ? `
-          <div class="ttl-voice-preview">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
-              <div class="ttl-flow-row">
-                <span class="ttl-flow-chip">
-                  <i></i>
-                  <b>${pv.intent === 'RETURN' ? '↩️ คำสั่งคืน/ยกเลิกสินค้า' : '🎙️ แยกคำสั่งเสียงอัตโนมัติ'}</b>
-                </span>
-                <span>⇢</span>
-                <span class="ttl-flow-chip ttl-flow-chip-b">
-                  <i></i>
-                  <b>${pv.table ? `${pv.table.name} (${pv.table.zone_name})` : 'ขายด่วนหน้าร้าน (Walk-in Retail)'}</b>
-                </span>
-                <span style="font-size:12px; color:var(--ttl-deep-muted);">(${pv.message})</span>
-              </div>
-              <div style="display:flex; gap:8px;">
-                <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.voicePreview = null; render();">ยกเลิก</button>
-                ${pv.success ? `
-                  <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-gold" onclick="confirmVoicePreview()">
-                    ✓ ยืนยันทำรายการ (${formatMoney(pv.total_preview)})
-                  </button>
-                ` : ''}
-              </div>
+        ${state.lastVoiceSummary ? `
+          <div class="ttl-voice-instant-banner">
+            <div>
+              <b>✅ เพิ่มเข้าบิล (${state.lastVoiceSummary.targetLabel}) ในช่องรายการใหม่แล้ว:</b>
+              <span style="margin-left:4px;">${state.lastVoiceSummary.text} (${formatMoney(state.lastVoiceSummary.total)})</span>
             </div>
-
-            ${pv.items.length > 0 ? `
-              <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(270px, 1fr)); gap:8px;">
-                ${pv.items.map(item => `
-                  <div style="padding:10px 12px; border-radius:10px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.12); display:flex; flex-direction:column; gap:4px;">
-                    <div style="display:flex; justify-content:space-between; font-weight:600;">
-                      <span>${item.name} × ${item.quantity} ${item.unit}</span>
-                      <span style="color:var(--ttl-gold);">${formatMoney(item.line_total)}</span>
-                    </div>
-                    ${item.modifiers && item.modifiers.length > 0 ? `
-                      <div style="font-size:12px; color:#f7dccb;">✨ ตัวเลือกเสริม: ${item.modifiers.join(', ')}</div>
-                    ` : ''}
-                    <div style="font-size:11.5px; color:var(--ttl-deep-muted);">
-                      ${item.send_to_kitchen ? '🍳 ส่งเข้าจอครัว (KDS)' : '📦 ของชำ: ตัดสต็อกหน้าร้านทันที'}
-                    </div>
-                    ${item.recipe_deductions && item.recipe_deductions.length > 0 ? `
-                      <div style="font-size:11px; color:#cdc8f6;">
-                        🥩 ตัดวัตถุดิบครัว: ${item.recipe_deductions.map(r => `${r.name} -${r.qty}${r.unit}`).join(', ')}
-                      </div>
-                    ` : ''}
-                  </div>
-                `).join('')}
-              </div>
-            ` : ''}
+            <div style="display:flex; gap:6px; align-items:center;">
+              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-gold" onclick="state.billDrawerOpen=true; render();">
+                🧾 เปิดดูบิลเพื่อตรวจสอบ
+              </button>
+              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:28px; padding:0 8px;" onclick="state.lastVoiceSummary=null; render();">✕</button>
+            </div>
           </div>
         ` : ''}
       </div>
@@ -656,9 +789,14 @@ function renderVoiceConsole() {
   `;
 }
 
+// ============================================================================
+// VIEW 1: POS CASHIER (Clean Full-Width Grid + No Food Cost Shown)
+// ============================================================================
 function renderPosView() {
-  const { products, categories, tables } = state.data;
+  const { products, categories, tables, allBills = [] } = state.data;
   const activeTable = tables.find(t => t.id === state.selectedTableId) || tables[0];
+  const activeOrd = getActiveContextOrder();
+  const heldRetailBills = allBills.filter(b => b.status === 'OPEN' && !b.table_id);
 
   const filteredProducts = products.filter(p => {
     if (state.categoryFilter === 'GROCERY' && p.item_type !== 'GROCERY') return false;
@@ -676,277 +814,545 @@ function renderPosView() {
     return true;
   });
 
+  const draftCount = state.cart.reduce((s, i) => s + i.quantity, 0);
   const draftTotal = state.cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
-  const openOrder = state.posMode === 'DINE_IN' && activeTable ? activeTable.active_order : null;
+  const committedActiveCount = activeOrd ? (activeOrd.items || []).filter(i => i.item_status === 'ACTIVE').reduce((s, i) => s + i.quantity, 0) : 0;
+  const committedTotal = activeOrd ? Number(activeOrd.total_amount || 0) : 0;
 
   return `
-    <div class="pos-grid">
-      <!-- Left Catalog -->
-      <div>
-        <div class="pos-toolbar">
+    <div>
+      <!-- Top Context Bar: Switch Dine-in vs Walk-in / Held Bills + Quick Open Bill Button -->
+      <div class="pos-context-bar">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
           <div class="ttl-seg" role="tablist">
-            <button type="button" aria-selected="${state.posMode === 'DINE_IN'}" onclick="state.posMode='DINE_IN'; render();">
-              🍽️ โหมดโต๊ะอาหาร (Dine-in)
+            <button type="button" aria-selected="${state.posMode === 'DINE_IN'}" onclick="selectPosContext('DINE_IN', state.selectedTableId, null)">
+              🍽️ โต๊ะอาหาร
             </button>
-            <button type="button" aria-selected="${state.posMode === 'RETAIL'}" onclick="state.posMode='RETAIL'; render();">
-              🛒 ขายด่วนของชำหน้าร้าน (Walk-in)
+            <button type="button" aria-selected="${state.posMode === 'RETAIL'}" onclick="selectPosContext('RETAIL', null, state.activeHeldOrderId)">
+              🛍️ ขายหน้าร้าน / เปิดบิลพักไว้
             </button>
           </div>
 
           ${state.posMode === 'DINE_IN' ? `
-            <select class="ttl-select" style="width:auto; font-weight:600;" onchange="state.selectedTableId=this.value; render();">
+            <select class="ttl-select" style="width:auto; font-weight:600; height:36px;" onchange="selectPosContext('DINE_IN', this.value, null)">
               ${tables.map(t => `
                 <option value="${t.id}" ${t.id === state.selectedTableId ? 'selected' : ''}>
-                  ${t.name} (${t.zone_name}) — ${t.status === 'OCCUPIED' ? 'มีลูกค้า ' + formatMoney(t.active_order ? t.active_order.total_amount : 0) : 'โต๊ะว่าง'}
+                  ${t.name} (${t.zone_name}) ${t.status === 'OCCUPIED' ? '• มีลูกค้า ' + formatMoney(t.active_order?.total_amount || 0) : '• ว่าง'}
                 </option>
               `).join('')}
             </select>
+          ` : `
+            <select class="ttl-select" style="width:auto; font-weight:600; height:36px;" onchange="this.value ? selectPosContext('RETAIL', null, this.value) : startNewRetailBill()">
+              <option value="" ${!state.activeHeldOrderId ? 'selected' : ''}>🆕 บิลขายหน้าร้านใบใหม่</option>
+              ${heldRetailBills.map(b => `
+                <option value="${b.id}" ${b.id === state.activeHeldOrderId ? 'selected' : ''}>
+                  📌 ${b.bill_title || b.id} (${formatMoney(b.total_amount)})
+                </option>
+              `).join('')}
+            </select>
+            ${state.activeHeldOrderId ? `
+              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="startNewRetailBill()">+ เปิดบิลใหม่</button>
+            ` : ''}
+          `}
+        </div>
+
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          ${activeOrd ? `
+            <span class="ttl-tag ttl-tag-food" style="font-size:12px; padding:5px 10px;">
+              📌 บิลเปิดอยู่: <b>${activeOrd.bill_title || activeOrd.id}</b>
+              ${activeOrd.customer_name ? ` • 👤 ${activeOrd.customer_name}` : ''}
+            </span>
           ` : ''}
-
-          <form class="barcode-box" onsubmit="event.preventDefault(); handleBarcodeScan(state.searchQuery);">
-            <span>🔫</span>
-            <input
-              type="text"
-              placeholder="ยิงบาร์โค้ด หรือค้นหาชื่อสินค้า/เมนู..."
-              value="${state.searchQuery.replace(/"/g, '&quot;')}"
-              oninput="state.searchQuery=this.value; render();"
-            />
-          </form>
-        </div>
-
-        <!-- Quick Barcode Simulation & Category Filters -->
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
-          <div class="ttl-seg">
-            <button type="button" aria-selected="${state.categoryFilter === 'ALL'}" onclick="state.categoryFilter='ALL'; render();">ทั้งหมด (${products.length})</button>
-            <button type="button" aria-selected="${state.categoryFilter === 'GROCERY'}" onclick="state.categoryFilter='GROCERY'; render();">📦 สินค้าของชำ</button>
-            <button type="button" aria-selected="${state.categoryFilter === 'FOOD'}" onclick="state.categoryFilter='FOOD'; render();">🍳 เมนูอาหารตามสั่ง</button>
-            ${categories.map(c => `
-              <button type="button" aria-selected="${state.categoryFilter === c.id}" onclick="state.categoryFilter='${c.id}'; render();">${c.name.split(' ')[0]}</button>
-            `).join('')}
-          </div>
-
-          <div style="display:flex; gap:6px; align-items:center; font-size:12px;">
-            <span class="ttl-k">จำลองยิงบาร์โค้ด:</span>
-            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="handleBarcodeScan('8851959132012')">🔫 โค้กเล็ก</button>
-            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="handleBarcodeScan('8850987101083')">🔫 มาม่าหมูสับ</button>
-            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="handleBarcodeScan('8850545111114')">🔫 น้ำปลาทิพรส</button>
-          </div>
-        </div>
-
-        <!-- Product Grid -->
-        <div class="product-cards">
-          ${filteredProducts.map(p => {
-            const isLow = p.item_type === 'GROCERY' && p.track_stock && p.stock_qty <= p.low_stock_threshold;
-            return `
-              <button type="button" class="ttl-acc-card" onclick="handleProductCardClick('${p.id}')">
-                <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
-                  <span class="ttl-tag ${p.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">
-                    ${p.item_type === 'FOOD' ? '🍳 ส่งครัว KDS' : '📦 ของชำ'}
-                  </span>
-                  ${p.item_type === 'GROCERY' ? `
-                    <span class="ttl-tag ${isLow ? 'ttl-tag-low' : ''}" style="font-variant-numeric:tabular-nums;">
-                      คงเหลือ ${p.stock_qty} ${p.unit}
-                    </span>
-                  ` : `
-                    <span style="font-size:11px; color:var(--ttl-muted);">ทุนสูตร ฿${p.cost}</span>
-                  `}
-                </div>
-
-                <div style="font-weight:600; font-size:14px; color:var(--ttl-ink); margin-top:4px;">
-                  ${p.name}
-                </div>
-
-                ${p.item_type === 'FOOD' && p.recipe_items && p.recipe_items.length > 0 ? `
-                  <div style="font-size:11px; color:var(--ttl-muted); line-height:1.35;">
-                    วัตถุดิบ: ${p.recipe_items.map(r => `${r.ingredient_name.split(' ')[0]} ${r.quantity_used}${r.stock_unit}`).join(', ')}
-                  </div>
-                ` : `
-                  <div style="font-size:11px; color:var(--ttl-muted);">
-                    ${p.barcode ? `บาร์โค้ด: ${p.barcode}` : ''}
-                  </div>
-                `}
-
-                <div style="display:flex; justify-content:space-between; align-items:baseline; width:100%; margin-top:4px; padding-top:6px; border-top:1px solid var(--ttl-rule);">
-                  <span style="font-size:16px; font-weight:700; color:var(--ttl-ink); font-variant-numeric:tabular-nums;">
-                    ${formatMoney(p.price)}<small style="font-weight:400; font-size:11px; color:var(--ttl-muted);">/${p.unit}</small>
-                  </span>
-                  <span style="font-size:11px; color:var(--ttl-gold); font-weight:600;">+ เลือก</span>
-                </div>
-              </button>
-            `;
-          }).join('')}
+          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-dark" onclick="state.billDrawerOpen=true; render();">
+            🧾 เปิดดูบิล (${draftCount + committedActiveCount} รายการ • ${formatMoney(draftTotal + committedTotal)})
+          </button>
         </div>
       </div>
 
-      <!-- Right Bill & Table Control Panel -->
-      <div class="pos-bill-panel">
-        <div class="pos-bill-head">
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div>
-              <div class="ttl-k">${state.posMode === 'DINE_IN' ? 'บิลโต๊ะอาหาร (DINE-IN)' : 'บิลขายด่วนหน้าร้าน (WALK-IN)'}</div>
-              <div style="font-size:18px; font-weight:700;">
-                ${state.posMode === 'DINE_IN' && activeTable ? `${activeTable.name} • ${activeTable.zone_name}` : 'ลูกค้าซื้อหน้าร้าน / กลับบ้าน'}
-              </div>
-            </div>
-            ${openOrder ? `
-              <span class="ttl-live"><i></i> เปิดโต๊ะอยู่ (${openOrder.id})</span>
-            ` : `
-              <span class="ttl-tag ttl-tag-grocery">พร้อมรับออเดอร์</span>
-            `}
-          </div>
+      <!-- Search & Barcode Input -->
+      <div class="pos-toolbar">
+        <form class="barcode-box" onsubmit="event.preventDefault(); handleBarcodeScan(state.searchQuery);">
+          <span>🔍</span>
+          <input
+            type="text"
+            placeholder="ค้นหาชื่อเมนู / สินค้า หรือยิงบาร์โค้ด..."
+            value="${state.searchQuery.replace(/"/g, '&quot;')}"
+            oninput="state.searchQuery=this.value; render();"
+          />
+          ${state.searchQuery ? `<button type="button" style="color:var(--ttl-muted); font-size:12px;" onclick="state.searchQuery=''; render();">ล้าง</button>` : ''}
+        </form>
+
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="handleBarcodeScan('8851959132012')">🔫 โค้กเล็ก</button>
+          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="handleBarcodeScan('8850987101083')">🔫 มาม่า</button>
+          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="handleBarcodeScan('8850545111114')">🔫 น้ำปลา</button>
         </div>
+      </div>
 
-        <div class="pos-bill-body">
-          <!-- Section A: Existing Open Table Items (with Return to Stock vs Waste buttons!) -->
-          ${openOrder && openOrder.items.length > 0 ? `
-            <div style="display:flex; flex-direction:column; gap:8px;">
-              <div style="display:flex; justify-content:space-between; align-items:center;">
-                <span class="ttl-k">รายการที่สั่งเข้า ${activeTable.name} แล้ว (ตัดสต็อกแล้ว)</span>
-                <span style="font-size:12px; font-weight:600;">รวม ${formatMoney(openOrder.total_amount)}</span>
+      <!-- Category Filter Pills -->
+      <div class="category-pills">
+        <button type="button" class="cat-pill" data-active="${state.categoryFilter === 'ALL'}" onclick="state.categoryFilter='ALL'; render();">
+          ทั้งหมด (${products.length})
+        </button>
+        <button type="button" class="cat-pill" data-active="${state.categoryFilter === 'FOOD'}" onclick="state.categoryFilter='FOOD'; render();">
+          🍳 เมนูอาหารส่งครัว
+        </button>
+        <button type="button" class="cat-pill" data-active="${state.categoryFilter === 'GROCERY'}" onclick="state.categoryFilter='GROCERY'; render();">
+          📦 สินค้าของชำ
+        </button>
+        ${categories.map(c => `
+          <button type="button" class="cat-pill" data-active="${state.categoryFilter === c.id}" onclick="state.categoryFilter='${c.id}'; render();">
+            ${c.name.split('(')[0].trim()}
+          </button>
+        `).join('')}
+      </div>
+
+      <!-- Clean Product Cards Grid (NO cost shown on FOOD items!) -->
+      <div class="product-cards">
+        ${filteredProducts.map(p => {
+          const isLow = p.item_type === 'GROCERY' && p.track_stock && p.stock_qty <= p.low_stock_threshold;
+          return `
+            <button type="button" class="ttl-acc-card" onclick="handleProductCardClick('${p.id}')">
+              <div style="display:flex; justify-content:space-between; align-items:center; width:100%; gap:4px;">
+                <span class="ttl-tag ${p.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">
+                  ${p.item_type === 'FOOD' ? '🍳 ส่งครัว' : '📦 ของชำ'}
+                </span>
+                ${p.item_type === 'GROCERY' ? `
+                  <span class="ttl-tag ${isLow ? 'ttl-tag-low' : ''}" style="font-variant-numeric:tabular-nums;">
+                    เหลือ ${p.stock_qty} ${p.unit}
+                  </span>
+                ` : `
+                  <span style="font-size:11px; color:var(--ttl-muted);">เลือกตัวเลือกได้</span>
+                `}
               </div>
-              ${openOrder.items.map(item => `
-                <div class="bill-item-row" data-status="${item.item_status}">
-                  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
-                    <div>
-                      <span class="ttl-tag ${item.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">
-                        ${item.item_type === 'FOOD' ? `ครัว: ${item.kitchen_status}` : 'ของชำ'}
-                      </span>
-                      <b style="margin-left:4px;">${item.product_name} × ${item.quantity}</b>
-                      ${item.modifiers && item.modifiers.length > 0 ? `
-                        <div style="font-size:11.5px; color:var(--ttl-gold);">+ ${item.modifiers.join(', ')}</div>
-                      ` : ''}
-                    </div>
-                    <b style="font-variant-numeric:tabular-nums;">
-                      ${item.item_status === 'ACTIVE' ? formatMoney(item.unit_price * item.quantity) : 'ยกเลิกแล้ว'}
-                    </b>
-                  </div>
 
-                  ${item.item_status === 'ACTIVE' ? `
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; padding-top:4px; border-top:1px dashed var(--ttl-rule);">
-                      <span style="font-size:11px; color:var(--ttl-muted);">กรณีลูกค้าขอคืน/ยกเลิก:</span>
-                      <div style="display:flex; gap:4px;">
-                        <button
-                          type="button"
-                          class="ttl-btn ttl-btn-sm ttl-btn-ghost"
-                          style="height:26px; padding:0 9px; font-size:11px;"
-                          title="สินค้ายังไม่แกะ บวกสต็อกกลับเข้าคลังอัตโนมัติ"
-                          onclick="handleReturnTableItem('${item.id}', 'RETURNED_RESTOCK')"
-                        >
-                          ↩ คืนเข้าสต็อก (+${item.quantity})
-                        </button>
-                        <button
-                          type="button"
-                          class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
-                          style="height:26px; padding:0 9px; font-size:11px;"
-                          title="แกะแล้ว/ชำรุด ไม่คืนสต็อก และบันทึกเป็นต้นทุนของเสีย"
-                          onclick="handleReturnTableItem('${item.id}', 'VOID_WASTE')"
-                        >
-                          ✕ ตัดของเสีย
-                        </button>
-                      </div>
-                    </div>
-                  ` : `
-                    <div style="font-size:11.5px; color:var(--ttl-bad); font-weight:500;">
-                      ${item.item_status === 'RETURNED_RESTOCK' ? '↩ คืนสินค้ากลับเข้าสต็อกแล้ว (ไม่คิดเงิน)' : '🗑️ ตัดเป็นของเสียแล้ว (บันทึกต้นทุนเสีย)'}
-                    </div>
-                  `}
-                </div>
-              `).join('')}
-            </div>
-          ` : ''}
-
-          <!-- Section B: New Draft Cart Items -->
-          <div style="display:flex; flex-direction:column; gap:8px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span class="ttl-k">${state.posMode === 'DINE_IN' ? 'รายการใหม่ที่กำลังจะสั่งเพิ่มเข้าโต๊ะ' : 'ตะกร้าสินค้าหน้าร้านปัจจุบัน'}</span>
-              ${state.cart.length > 0 ? `
-                <button type="button" style="font-size:11.5px; color:var(--ttl-bad);" onclick="state.cart=[]; render();">ล้างรายการใหม่</button>
-              ` : ''}
-            </div>
-
-            ${state.cart.length === 0 ? `
-              <div style="padding:24px 12px; text-align:center; color:var(--ttl-muted); border:1px dashed var(--ttl-rule); border-radius:10px; font-size:13px;">
-                กดเลือกสินค้า/เมนูทางซ้าย, ยิงบาร์โค้ด หรือกดปุ่มไมโครโฟนด้านบนเพื่อสั่งด้วยเสียง
+              <div style="font-weight:600; font-size:14.5px; color:var(--ttl-ink); line-height:1.35; margin-top:2px;">
+                ${p.name}
               </div>
-            ` : state.cart.map((c, idx) => `
-              <div class="bill-item-row" style="border-color:var(--ttl-gold);">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <div>
-                    <span class="ttl-tag ${c.send_to_kitchen ? 'ttl-tag-food' : 'ttl-tag-grocery'}">
-                      ${c.send_to_kitchen ? 'ส่งครัว' : 'ตัดของชำ'}
-                    </span>
-                    <b style="margin-left:4px;">${c.name}</b>
-                  </div>
-                  <b style="font-variant-numeric:tabular-nums;">${formatMoney(c.unit_price * c.quantity)}</b>
-                </div>
-                ${c.modifiers && c.modifiers.length > 0 ? `
-                  <div style="font-size:12px; color:var(--ttl-gold);">+ ${c.modifiers.join(', ')}</div>
-                ` : ''}
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
-                  <span style="font-size:11.5px; color:var(--ttl-muted);">${formatMoney(c.unit_price)} / ${c.unit}</span>
-                  <div style="display:flex; align-items:center; gap:6px;">
-                    <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; width:26px; padding:0;" onclick="state.cart[${idx}].quantity > 1 ? state.cart[${idx}].quantity-- : state.cart.splice(${idx},1); render();">−</button>
-                    <b style="min-width:20px; text-align:center;">${c.quantity}</b>
-                    <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; width:26px; padding:0;" onclick="state.cart[${idx}].quantity++; render();">+</button>
-                  </div>
-                </div>
-              </div>
-            `).join('')}
-          </div>
-        </div>
 
-        <div class="pos-bill-foot">
-          ${state.posMode === 'DINE_IN' ? `
-            ${state.cart.length > 0 ? `
-              <button type="button" class="ttl-btn ttl-btn-lg ttl-btn-gold" style="width:100%;" onclick="submitDraftCartToTable()">
-                📤 ยืนยันสั่งเข้า ${activeTable ? activeTable.name : 'โต๊ะ'} (+${formatMoney(draftTotal)})
-              </button>
-            ` : ''}
-            ${openOrder ? `
-              <div style="display:flex; justify-content:space-between; align-items:baseline;">
-                <span style="color:var(--ttl-muted); font-size:13px;">ยอดรวมค้างชำระ (${activeTable.name})</span>
-                <span style="font-size:24px; font-weight:700; color:var(--ttl-ink);">${formatMoney(openOrder.total_amount)}</span>
+              <div style="display:flex; justify-content:space-between; align-items:baseline; width:100%; margin-top:auto; padding-top:8px; border-top:1px solid var(--ttl-rule);">
+                <span style="font-size:16.5px; font-weight:700; color:var(--ttl-ink); font-variant-numeric:tabular-nums;">
+                  ${formatMoney(p.price)}<small style="font-weight:400; font-size:11px; color:var(--ttl-muted);">/${p.unit}</small>
+                </span>
+                <span style="font-size:11.5px; color:var(--ttl-gold); font-weight:700;">+ เพิ่ม</span>
               </div>
-              <button type="button" class="ttl-btn ttl-btn-lg ttl-btn-dark" style="width:100%;" onclick="openCheckoutModalForTable('${activeTable.id}')">
-                💳 เช็คบิล / รับชำระเงิน ${activeTable.name} (${formatMoney(openOrder.total_amount)})
-              </button>
-            ` : ''}
-          ` : `
-            <div style="display:flex; justify-content:space-between; align-items:baseline;">
-              <span style="color:var(--ttl-muted); font-size:13px;">ยอดสุทธิหน้าร้าน</span>
-              <span style="font-size:24px; font-weight:700; color:var(--ttl-ink);">${formatMoney(draftTotal)}</span>
-            </div>
-            <button
-              type="button"
-              class="ttl-btn ttl-btn-lg ttl-btn-dark"
-              style="width:100%;"
-              ${draftTotal <= 0 ? 'disabled' : ''}
-              onclick="openCheckoutModalForCart()"
-            >
-              💰 รับชำระเงินทันที (${formatMoney(draftTotal)})
             </button>
-          `}
-        </div>
+          `;
+        }).join('')}
       </div>
     </div>
   `;
 }
 
+// ============================================================================
+// FLOATING BILL BUTTON (.ttl-fab-bill) & SLIDE-OVER BILL DRAWER (.ttl-bill-drawer)
+// ============================================================================
+function renderFloatingBillAndDrawer() {
+  const { tables, customers = [] } = state.data;
+  const activeTable = tables.find(t => t.id === state.selectedTableId) || tables[0];
+  const activeOrd = getActiveContextOrder();
+
+  const draftCount = state.cart.reduce((s, i) => s + i.quantity, 0);
+  const draftTotal = state.cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
+  const committedItems = activeOrd ? (activeOrd.items || []) : [];
+  const committedActiveCount = committedItems.filter(i => i.item_status === 'ACTIVE').reduce((s, i) => s + i.quantity, 0);
+  const committedTotal = activeOrd ? Number(activeOrd.total_amount || 0) : 0;
+
+  const totalCount = draftCount + committedActiveCount;
+  const grandTotal = draftTotal + committedTotal;
+
+  const billLabel = state.billTitle.trim()
+    || (activeOrd && activeOrd.bill_title)
+    || (state.posMode === 'DINE_IN' && activeTable ? activeTable.name : 'บิลขายหน้าร้าน');
+
+  const subLabel = draftCount > 0
+    ? `รายการใหม่รอส่ง ${draftCount} • สั่งแล้ว ${committedActiveCount}`
+    : (committedActiveCount > 0 ? `สั่งในบิลแล้ว ${committedActiveCount} รายการ` : 'กดเพื่อเปิดดูบิล / ตั้งชื่อบิล');
+
+  return `
+    <!-- Floating Bill Button (Always accessible on POS & Tables views) -->
+    <button type="button" class="ttl-fab-bill" onclick="state.billDrawerOpen = !state.billDrawerOpen; render();">
+      <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+        <span class="ttl-fab-badge">${totalCount}</span>
+        <div class="ttl-fab-info">
+          <span class="ttl-fab-title">🧾 ${billLabel}</span>
+          <span class="ttl-fab-sub">${subLabel}</span>
+        </div>
+      </div>
+      <div class="ttl-fab-total">${formatMoney(grandTotal)} ▴</div>
+    </button>
+
+    <!-- Slide-Over / Bottom-Sheet Bill Drawer -->
+    ${state.billDrawerOpen ? `
+      <div class="ttl-drawer-backdrop" onclick="if(event.target===this){state.billDrawerOpen=false; render();}">
+        <aside class="ttl-bill-drawer">
+          <!-- Drawer Header -->
+          <div class="pos-bill-head">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+              <div>
+                <div class="ttl-k">${state.posMode === 'DINE_IN' ? '🍽️ บิลโต๊ะอาหาร (DINE-IN)' : '🛍️ บิลหน้าร้าน / เปิดบิลพักไว้'}</div>
+                <div style="font-size:17px; font-weight:700;">${billLabel}</div>
+              </div>
+              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.billDrawerOpen=false; render();">
+                ✕ ปิดหน้าต่างบิล
+              </button>
+            </div>
+
+            <!-- Customer Member Selector -->
+            <div style="display:flex; gap:6px; align-items:center;">
+              <select
+                class="ttl-select"
+                style="height:34px; font-size:12.5px; flex:1;"
+                onchange="state.selectedCustomerId=this.value; render();"
+              >
+                <option value="">👤 ลูกค้าทั่วไป (ไม่ได้ระบุสมาชิก)</option>
+                ${customers.map(c => `
+                  <option value="${c.id}" ${c.id === state.selectedCustomerId ? 'selected' : ''}>
+                    ⭐ ${c.name} (${c.phone || 'ไม่มีเบอร์'}) — ${c.points || 0} แต้ม [${c.tier || 'สมาชิก'}]
+                  </option>
+                `).join('')}
+              </select>
+              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-lilac" style="height:34px; padding:0 10px;" onclick="state.showNewCustomerModal=true; render();">
+                + สมาชิกใหม่
+              </button>
+            </div>
+
+            <!-- Bill Name & Note Inputs (ตั้งชื่อบิล / โน้ตบิล) -->
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+              <input
+                type="text"
+                class="ttl-input"
+                style="height:34px; font-size:12.5px;"
+                placeholder="🏷️ ตั้งชื่อบิล เช่น พี่เอกเสื้อฟ้า"
+                value="${(state.billTitle || '').replace(/"/g, '&quot;')}"
+                oninput="state.billTitle=this.value"
+              />
+              <input
+                type="text"
+                class="ttl-input"
+                style="height:34px; font-size:12.5px;"
+                placeholder="📝 โน้ตบิล เช่น ไม่ชูรส / รอรับ"
+                value="${(state.billNote || '').replace(/"/g, '&quot;')}"
+                oninput="state.billNote=this.value"
+              />
+            </div>
+          </div>
+
+          <!-- Drawer Body: 1. New Draft Items (state.cart) + 2. Committed Order Items -->
+          <div class="pos-bill-body">
+            <!-- SECTION 1: NEW DRAFT ITEMS (รายการใหม่ที่กำลังจะสั่งเพิ่ม) -->
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span class="ttl-k" style="color:var(--ttl-gold);">
+                  ✨ รายการใหม่ที่กำลังจะสั่งเพิ่ม (${draftCount} ชิ้น)
+                </span>
+                ${state.cart.length > 0 ? `
+                  <button type="button" style="font-size:11.5px; color:var(--ttl-bad); font-weight:600;" onclick="state.cart=[]; render();">
+                    ล้างรายการใหม่
+                  </button>
+                ` : ''}
+              </div>
+
+              ${state.cart.length === 0 ? `
+                <div style="padding:14px 12px; text-align:center; color:var(--ttl-muted); border:1px dashed var(--ttl-rule); border-radius:10px; font-size:12.5px; background:var(--ttl-paper);">
+                  ยังไม่มีรายการใหม่ — กดเลือกเมนู หรือพูดสั่งด้วยเสียงได้เลย (รายการเสียงจะเข้ามาพักตรงนี้เพื่อให้ตรวจสอบก่อนเสมอ)
+                </div>
+              ` : state.cart.map((c, idx) => `
+                <div class="bill-item-row" style="border-color:var(--ttl-gold); background:#fffdf7;">
+                  <div class="bill-item-top">
+                    <div class="bill-item-title">
+                      <span class="ttl-tag ${c.send_to_kitchen ? 'ttl-tag-food' : 'ttl-tag-grocery'}" style="margin-right:4px;">
+                        ${c.send_to_kitchen ? '🍳 ส่งครัว' : '📦 ของชำ'}
+                      </span>
+                      ${c.input_source === 'VOICE' ? '<span class="ttl-tag" style="background:var(--ttl-lilac); color:var(--ttl-lilac-ink); margin-right:4px;">🎙️ เสียง</span>' : ''}
+                      ${c.name}
+                    </div>
+                    <div class="bill-item-price">${formatMoney(c.unit_price * c.quantity)}</div>
+                  </div>
+
+                  ${c.modifiers && c.modifiers.length > 0 ? `
+                    <div style="font-size:12px; color:var(--ttl-gold); font-weight:600;">
+                      + ${c.modifiers.join(', ')}
+                    </div>
+                  ` : ''}
+
+                  <div class="bill-item-bottom">
+                    <span style="font-size:11.5px; color:var(--ttl-muted);">${formatMoney(c.unit_price)} / ${c.unit}</span>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <div class="qty-stepper">
+                        <button type="button" onclick="state.cart[${idx}].quantity > 1 ? state.cart[${idx}].quantity-- : state.cart.splice(${idx},1); render();">−</button>
+                        <span>${c.quantity}</span>
+                        <button type="button" onclick="state.cart[${idx}].quantity++; render();">+</button>
+                      </div>
+                      <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-danger-outline" style="height:26px; padding:0 8px; font-size:11px;" onclick="state.cart.splice(${idx},1); render();">ลบ</button>
+                    </div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+
+            <!-- SECTION 2: COMMITTED ITEMS IN THIS OPEN BILL / TABLE -->
+            ${activeOrd && committedItems.length > 0 ? `
+              <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px; padding-top:10px; border-top:1px solid var(--ttl-rule);">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span class="ttl-k">📌 รายการที่บันทึก/ส่งเข้าบิลนี้แล้ว (${committedActiveCount} ชิ้น)</span>
+                  <span style="font-size:12px; font-weight:700;">${formatMoney(committedTotal)}</span>
+                </div>
+
+                ${committedItems.map(item => `
+                  <div class="bill-item-row" data-status="${item.item_status}">
+                    <div class="bill-item-top">
+                      <div class="bill-item-title">
+                        <span class="ttl-tag ${item.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}" style="margin-right:4px;">
+                          ${item.item_type === 'FOOD' ? `ครัว: ${item.kitchen_status}` : 'ของชำ'}
+                        </span>
+                        ${item.product_name} × ${item.quantity}
+                      </div>
+                      <div class="bill-item-price">
+                        ${item.item_status === 'ACTIVE' ? formatMoney(item.unit_price * item.quantity) : 'ยกเลิกแล้ว'}
+                      </div>
+                    </div>
+
+                    ${item.modifiers && item.modifiers.length > 0 ? `
+                      <div style="font-size:11.5px; color:var(--ttl-gold);">+ ${item.modifiers.join(', ')}</div>
+                    ` : ''}
+
+                    ${item.item_status === 'ACTIVE' ? `
+                      <div class="bill-item-bottom" style="padding-top:4px; border-top:1px dashed var(--ttl-rule);">
+                        <span style="font-size:11px; color:var(--ttl-muted);">คืน/ยกเลิก:</span>
+                        <div style="display:flex; gap:4px; flex-wrap:wrap;">
+                          <button
+                            type="button"
+                            class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+                            style="height:25px; padding:0 8px; font-size:11px;"
+                            onclick="handleReturnTableItem('${item.id}', 'RETURNED_RESTOCK')"
+                          >
+                            ↩ คืนสต็อก
+                          </button>
+                          <button
+                            type="button"
+                            class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
+                            style="height:25px; padding:0 8px; font-size:11px;"
+                            onclick="handleReturnTableItem('${item.id}', 'VOID_WASTE')"
+                          >
+                            ✕ ของเสีย
+                          </button>
+                        </div>
+                      </div>
+                    ` : `
+                      <div style="font-size:11px; color:var(--ttl-bad); font-weight:600;">
+                        ${item.item_status === 'RETURNED_RESTOCK' ? '↩ คืนเข้าสต็อกแล้ว (ไม่คิดเงิน)' : '🗑️ ตัดเป็นของเสียแล้ว'}
+                      </div>
+                    `}
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+          </div>
+
+          <!-- Drawer Footer Actions -->
+          <div class="pos-bill-foot">
+            <div style="display:flex; justify-content:space-between; align-items:baseline;">
+              <span style="color:var(--ttl-muted); font-size:13px;">
+                ยอดรวมทั้งบิล ${draftTotal > 0 && committedTotal > 0 ? `(เดิม ${formatMoney(committedTotal)} + ใหม่ ${formatMoney(draftTotal)})` : ''}
+              </span>
+              <span style="font-size:22px; font-weight:700; color:var(--ttl-ink); font-variant-numeric:tabular-nums;">
+                ${formatMoney(grandTotal)}
+              </span>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+              ${state.posMode === 'DINE_IN' ? `
+                <button
+                  type="button"
+                  class="ttl-btn ttl-btn-gold"
+                  style="width:100%;"
+                  onclick="saveOrHoldCurrentBill('TABLE_SEND')"
+                >
+                  📤 ${state.cart.length > 0 ? `ส่งเข้าโต๊ะ/ครัว (+${formatMoney(draftTotal)})` : 'บันทึกชื่อบิล/โน้ต'}
+                </button>
+              ` : `
+                <button
+                  type="button"
+                  class="ttl-btn ttl-btn-gold"
+                  style="width:100%;"
+                  onclick="saveOrHoldCurrentBill('HOLD')"
+                >
+                  📌 เปิดบิลทิ้งไว้ / พักบิล
+                </button>
+              `}
+
+              <button
+                type="button"
+                class="ttl-btn ttl-btn-dark"
+                style="width:100%;"
+                ${grandTotal <= 0 ? 'disabled' : ''}
+                onclick="openCheckoutForCurrentBill()"
+              >
+                💰 เช็คบิล (${formatMoney(grandTotal)})
+              </button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    ` : ''}
+  `;
+}
+
+// ============================================================================
+// VIEW 2: BILL MANAGEMENT PAGE (หน้าจัดการบิล - Open/Held Bills & Paid History)
+// ============================================================================
+function renderBillsView() {
+  const { allBills = [] } = state.data;
+  const openBills = allBills.filter(b => b.status === 'OPEN');
+  const paidBills = allBills.filter(b => b.status === 'PAID');
+
+  const visibleBills = state.billsFilter === 'OPEN'
+    ? openBills
+    : state.billsFilter === 'PAID'
+      ? paidBills
+      : allBills;
+
+  return `
+    <div>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+        <div>
+          <h3 style="margin:0; font-size:20px;">🧾 ระบบจัดการบิลทั้งหมด (Bill Management)</h3>
+          <p style="margin:2px 0 0; font-size:13px; color:var(--ttl-muted);">
+            ตรวจสอบบิลที่เปิดทิ้งไว้ บิลโต๊ะอาหาร แก้ไขชื่อบิล/โน้ต ผูกสมาชิกลูกค้า เรียกบิลกลับมาสั่งเพิ่ม หรือรับชำระเงิน
+          </p>
+        </div>
+
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <div class="ttl-seg">
+            <button type="button" aria-selected="${state.billsFilter === 'OPEN'}" onclick="state.billsFilter='OPEN'; render();">
+              📌 บิลที่เปิดค้างไว้ (${openBills.length})
+            </button>
+            <button type="button" aria-selected="${state.billsFilter === 'PAID'}" onclick="state.billsFilter='PAID'; render();">
+              ✅ ชำระเงินแล้ว (${paidBills.length})
+            </button>
+            <button type="button" aria-selected="${state.billsFilter === 'ALL'}" onclick="state.billsFilter='ALL'; render();">
+              ทั้งหมด (${allBills.length})
+            </button>
+          </div>
+
+          <button type="button" class="ttl-btn ttl-btn-dark" onclick="startNewRetailBill(); state.activeView='pos'; state.billDrawerOpen=true; render();">
+            + เปิดบิลใหม่
+          </button>
+        </div>
+      </div>
+
+      ${visibleBills.length === 0 ? `
+        <div style="padding:48px 20px; text-align:center; background:var(--ttl-page); border-radius:14px; border:1px dashed var(--ttl-rule);">
+          <div style="font-size:28px;">🧾</div>
+          <h4 style="margin:8px 0 4px;">ไม่มีรายการบิลในหมวดนี้</h4>
+          <p style="margin:0; color:var(--ttl-muted); font-size:13px;">สามารถกดปุ่ม "เปิดบิลทิ้งไว้ / พักบิล" จากหน้าแคชเชียร์เพื่อพักบิลพร้อมตั้งชื่อและโน้ตได้ทันที</p>
+        </div>
+      ` : `
+        <div class="tables-grid">
+          ${visibleBills.map(b => {
+            const items = b.items || [];
+            const activeItems = items.filter(i => i.item_status === 'ACTIVE');
+            const isOpen = b.status === 'OPEN';
+            return `
+              <div class="table-card" data-status="${isOpen ? 'OCCUPIED' : 'AVAILABLE'}">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+                  <div>
+                    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                      <span class="ttl-tag ${b.table_id ? 'ttl-tag-food' : 'ttl-tag-grocery'}">
+                        ${b.table_name ? `🍽️ ${b.table_name}` : '📌 บิลหน้าร้าน/พักบิล'}
+                      </span>
+                      <span style="font-size:11.5px; color:var(--ttl-muted); font-family:monospace;">${b.id}</span>
+                    </div>
+                    <div style="font-size:18px; font-weight:700; margin-top:4px;">
+                      ${b.bill_title || (b.table_name ? `บิล ${b.table_name}` : `บิลหน้าร้าน ${b.id}`)}
+                    </div>
+                  </div>
+
+                  ${isOpen ? `
+                    <span class="ttl-live"><i></i> เปิดค้างไว้ (${formatTimeAgo(b.created_at)})</span>
+                  ` : `
+                    <span class="ttl-tag" style="background:color-mix(in srgb, var(--ttl-good) 14%, transparent); color:var(--ttl-good);">
+                      ✓ ชำระแล้ว (${b.payment_method === 'QR_PROMPTPAY' ? 'QR' : 'เงินสด'})
+                    </span>
+                  `}
+                </div>
+
+                <!-- Member & Note badges -->
+                <div style="display:flex; flex-direction:column; gap:4px; font-size:12.5px;">
+                  ${b.customer_name ? `
+                    <div style="color:var(--ttl-ink); font-weight:600;">👤 สมาชิก: ${b.customer_name}</div>
+                  ` : ''}
+                  ${b.bill_note ? `
+                    <div style="padding:6px 10px; border-radius:8px; background:color-mix(in srgb, var(--ttl-gold) 12%, var(--ttl-page)); color:var(--ttl-ink);">
+                      📝 <b>โน้ตบิล:</b> ${b.bill_note}
+                    </div>
+                  ` : ''}
+                </div>
+
+                <!-- Items list inside Bill Card -->
+                <div style="padding:10px; border-radius:10px; background:var(--ttl-page); display:flex; flex-direction:column; gap:5px; max-height:190px; overflow-y:auto;">
+                  <div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--ttl-muted);">
+                    <span>รายการสินค้า (${activeItems.length} รายการ)</span>
+                    <button type="button" style="color:var(--ttl-gold); font-weight:600; font-size:11.5px;" onclick="state.editingBillMetaOrder = ${JSON.stringify({ id: b.id, bill_title: b.bill_title || '', bill_note: b.bill_note || '', customer_id: b.customer_id || '' }).replace(/"/g, '&quot;')}; render();">
+                      ✏️ แก้ชื่อบิล/โน้ต/สมาชิก
+                    </button>
+                  </div>
+                  ${items.map(it => `
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; font-size:12.5px; padding-top:4px; border-top:1px solid var(--ttl-rule); ${it.item_status !== 'ACTIVE' ? 'text-decoration:line-through; opacity:0.5;' : ''}">
+                      <div style="flex:1; word-break:break-word;">
+                        <span>${it.item_type === 'FOOD' ? '🍳' : '📦'} ${it.product_name} × ${it.quantity}</span>
+                        ${it.modifiers && it.modifiers.length > 0 ? `<small style="color:var(--ttl-gold); display:block;">+ ${it.modifiers.join(', ')}</small>` : ''}
+                      </div>
+                      <b style="font-variant-numeric:tabular-nums; flex-shrink:0;">${formatMoney(it.unit_price * it.quantity)}</b>
+                    </div>
+                  `).join('')}
+                </div>
+
+                <div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:auto; padding-top:4px;">
+                  <span class="ttl-k">${isOpen ? 'ยอดค้างชำระ' : 'ยอดชำระสุทธิ'}</span>
+                  <span style="font-size:21px; font-weight:700; color:var(--ttl-ink); font-variant-numeric:tabular-nums;">
+                    ${formatMoney(b.total_amount)}
+                  </span>
+                </div>
+
+                ${isOpen ? `
+                  <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                    <button type="button" class="ttl-btn ttl-btn-ghost" onclick="resumeBillInPos('${b.id}')">
+                      ➕ เรียกบิลสั่งเพิ่ม
+                    </button>
+                    <button type="button" class="ttl-btn ttl-btn-dark" onclick="openCheckoutModalByOrderId('${b.id}')">
+                      💰 เช็คบิล (${formatMoney(b.total_amount)})
+                    </button>
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+// ============================================================================
+// VIEW 3: TABLES MAP VIEW
+// ============================================================================
 function renderTablesView() {
   const { tables } = state.data;
   const zones = ['ALL', ...Array.from(new Set(tables.map(t => t.zone_name)))];
   const visibleTables = state.zoneFilter === 'ALL' ? tables : tables.filter(t => t.zone_name === state.zoneFilter);
 
   return `
-    <div style="padding-top:16px;">
+    <div>
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
         <div>
-          <h3 style="margin:0; font-size:20px;">ผังโต๊ะอาหาร & โซนที่นั่ง (Dine-in Table Management)</h3>
+          <h3 style="margin:0; font-size:20px;">🍽️ ผังโต๊ะอาหาร & โซนที่นั่ง</h3>
           <p style="margin:2px 0 0; font-size:13px; color:var(--ttl-muted);">
-            รองรับการสั่งอาหารและหยิบสินค้าของชำรวมในบิลเดียว พร้อมปุ่มคืนสินค้าของชำเข้าสต็อกหรือตัดเป็นของเสีย
+            กดเลือกโต๊ะเพื่อสั่งอาหาร/ของชำเพิ่ม หรือคืนสินค้าเข้าสต็อก
           </p>
         </div>
-        <div style="display:flex; gap:10px; align-items:center;">
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
           <div class="ttl-seg">
             ${zones.map(z => `
               <button type="button" aria-selected="${state.zoneFilter === z}" onclick="state.zoneFilter='${z}'; render();">
@@ -955,7 +1361,7 @@ function renderTablesView() {
             `).join('')}
           </div>
           <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.showNewTableModal=true; render();">
-            + เพิ่มโต๊ะ / โซนใหม่
+            + เพิ่มโต๊ะใหม่
           </button>
         </div>
       </div>
@@ -969,31 +1375,32 @@ function renderTablesView() {
               <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                 <div>
                   <span class="ttl-k">${t.zone_name}</span>
-                  <div style="font-size:20px; font-weight:700;">${t.name}</div>
+                  <div style="font-size:20px; font-weight:700;">${t.name} ${ord?.bill_title && ord.bill_title !== t.name ? `• ${ord.bill_title}` : ''}</div>
                 </div>
                 ${t.status === 'OCCUPIED' ? `
-                  <span class="ttl-live"><i></i> มีลูกค้านั่ง (${formatTimeAgo(ord ? ord.created_at : null)})</span>
+                  <span class="ttl-live"><i></i> มีลูกค้า (${formatTimeAgo(ord ? ord.created_at : null)})</span>
                 ` : `
-                  <span class="ttl-tag ttl-tag-grocery">ว่าง (Available)</span>
+                  <span class="ttl-tag ttl-tag-grocery">โต๊ะว่าง</span>
                 `}
               </div>
 
               ${ord ? `
+                ${ord.bill_note ? `<div style="font-size:12px; color:var(--ttl-gold);">📝 โน้ต: ${ord.bill_note}</div>` : ''}
                 <div style="padding:10px; border-radius:10px; background:var(--ttl-page); display:flex; flex-direction:column; gap:6px;">
                   <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--ttl-muted);">
                     <span>เลขบิล: ${ord.id}</span>
                     <span>${activeItems.length} รายการ</span>
                   </div>
                   ${ord.items.map(it => `
-                    <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; padding-top:4px; border-top:1px solid var(--ttl-rule); ${it.item_status !== 'ACTIVE' ? 'text-decoration:line-through; opacity:0.5;' : ''}">
-                      <div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; font-size:13px; padding-top:4px; border-top:1px solid var(--ttl-rule); ${it.item_status !== 'ACTIVE' ? 'text-decoration:line-through; opacity:0.5;' : ''}">
+                      <div style="flex:1; word-break:break-word;">
                         <span>${it.item_type === 'FOOD' ? '🍳' : '📦'} ${it.product_name} × ${it.quantity}</span>
                         ${it.modifiers && it.modifiers.length > 0 ? `<small style="color:var(--ttl-gold); display:block;">+ ${it.modifiers.join(', ')}</small>` : ''}
                       </div>
-                      <div style="display:flex; align-items:center; gap:6px;">
+                      <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
                         <b>${formatMoney(it.unit_price * it.quantity)}</b>
                         ${it.item_status === 'ACTIVE' ? `
-                          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:24px; padding:0 7px; font-size:10.5px;" onclick="handleReturnTableItem('${it.id}', 'RETURNED_RESTOCK')" title="คืนเข้าสต็อก">↩ คืน</button>
+                          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:24px; padding:0 7px; font-size:10.5px;" onclick="handleReturnTableItem('${it.id}', 'RETURNED_RESTOCK')">↩ คืน</button>
                         ` : ''}
                       </div>
                     </div>
@@ -1002,22 +1409,22 @@ function renderTablesView() {
 
                 <div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:auto; padding-top:6px;">
                   <span class="ttl-k">ยอดรวมปัจจุบัน</span>
-                  <span style="font-size:22px; font-weight:700; color:var(--ttl-ink);">${formatMoney(ord.total_amount)}</span>
+                  <span style="font-size:21px; font-weight:700; color:var(--ttl-ink);">${formatMoney(ord.total_amount)}</span>
                 </div>
 
-                <div style="display:flex; gap:8px;">
-                  <button type="button" class="ttl-btn ttl-btn-ghost" style="flex:1;" onclick="state.posMode='DINE_IN'; state.selectedTableId='${t.id}'; state.activeView='pos'; render();">
-                    + สั่งเพิ่ม / จัดการของคืน
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                  <button type="button" class="ttl-btn ttl-btn-ghost" onclick="selectPosContext('DINE_IN', '${t.id}', null); state.activeView='pos'; render();">
+                    + สั่งเพิ่ม / ดูบิล
                   </button>
-                  <button type="button" class="ttl-btn ttl-btn-dark" style="flex:1;" onclick="openCheckoutModalForTable('${t.id}')">
+                  <button type="button" class="ttl-btn ttl-btn-dark" onclick="openCheckoutModalForTable('${t.id}')">
                     เช็คบิล (${formatMoney(ord.total_amount)})
                   </button>
                 </div>
               ` : `
-                <div style="padding:26px 12px; text-align:center; color:var(--ttl-muted); background:var(--ttl-page); border-radius:10px; font-size:13px;">
+                <div style="padding:24px 12px; text-align:center; color:var(--ttl-muted); background:var(--ttl-page); border-radius:10px; font-size:13px;">
                   โต๊ะว่าง — พร้อมเปิดรับลูกค้า
                 </div>
-                <button type="button" class="ttl-btn ttl-btn-ghost" style="width:100%; margin-top:auto;" onclick="state.posMode='DINE_IN'; state.selectedTableId='${t.id}'; state.activeView='pos'; render();">
+                <button type="button" class="ttl-btn ttl-btn-ghost" style="width:100%; margin-top:auto;" onclick="selectPosContext('DINE_IN', '${t.id}', null); state.activeView='pos'; render();">
                   เปิด ${t.name} / รับออเดอร์ ➔
                 </button>
               `}
@@ -1029,63 +1436,59 @@ function renderTablesView() {
   `;
 }
 
+// ============================================================================
+// VIEW 4: KITCHEN DISPLAY SYSTEM (KDS)
+// ============================================================================
 function renderKdsView() {
   const { kitchenQueue } = state.data;
   const activeKds = kitchenQueue.filter(k => k.kitchen_status !== 'SERVED');
   const servedKds = kitchenQueue.filter(k => k.kitchen_status === 'SERVED');
 
   return `
-    <div style="padding-top:16px;">
+    <div>
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
         <div>
-          <h3 style="margin:0; font-size:20px;">จอแสดงผลฝั่งครัว (Kitchen Display System - KDS)</h3>
+          <h3 style="margin:0; font-size:20px;">👩‍🍳 จอแสดงผลฝั่งครัว (Kitchen Display System - KDS)</h3>
           <p style="margin:2px 0 0; font-size:13px; color:var(--ttl-muted);">
-            แยกเฉพาะเมนูอาหารที่ต้องปรุง (ไม่ปนสินค้าของชำ) พร้อมแสดงรายการวัตถุดิบที่ตัดสต็อกตามสูตรอัตโนมัติ
+            แสดงเฉพาะเมนูอาหารที่ยืนยันส่งเข้าโต๊ะ/ครัวแล้ว
           </p>
         </div>
-        <div style="display:flex; gap:10px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
           <span class="ttl-tag ttl-tag-food" style="font-size:13px; padding:6px 12px;">🔥 รอทำ/กำลังผัด: ${activeKds.length} รายการ</span>
           <span class="ttl-tag ttl-tag-grocery" style="font-size:13px; padding:6px 12px;">✅ เสิร์ฟแล้ววันนี้: ${servedKds.length} รายการ</span>
         </div>
       </div>
 
       ${activeKds.length === 0 ? `
-        <div style="margin-top:24px; padding:48px; text-align:center; background:var(--ttl-page); border-radius:14px; border:1px dashed var(--ttl-rule);">
+        <div style="margin-top:20px; padding:42px 20px; text-align:center; background:var(--ttl-page); border-radius:14px; border:1px dashed var(--ttl-rule);">
           <div style="font-size:28px;">👩‍🍳✨</div>
           <h4 style="margin:8px 0 4px;">ไม่มีคิวอาหารค้างในครัวตอนนี้</h4>
-          <p style="margin:0; color:var(--ttl-muted); font-size:13px;">ลองสั่งอาหารด้วยเสียงจากแถบไมโครโฟนด้านบน เช่น "โต๊ะ 2 กะเพราหมูกรอบไข่ดาว 2"</p>
+          <p style="margin:0; color:var(--ttl-muted); font-size:13px;">เมื่อพนักงานตรวจสอบบิลและกด "ส่งเข้าโต๊ะ/ครัว" รายการอาหารจะเด้งขึ้นมาที่หน้าจอนี้ทันที</p>
         </div>
       ` : `
         <div class="kds-grid">
           ${activeKds.map(item => `
             <div class="kds-card" data-kds="${item.kitchen_status}">
-              <div style="display:flex; justify-content:space-between; align-items:center;">
-                <span style="padding:4px 10px; border-radius:8px; background:var(--ttl-deep); color:var(--ttl-deep-ink); font-weight:700; font-size:14px;">
-                  ${item.table_name ? `${item.table_name} (${item.zone_name || ''})` : '🛍️ สั่งกลับบ้าน / หน้าร้าน'}
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                <span style="padding:4px 10px; border-radius:8px; background:var(--ttl-deep); color:var(--ttl-deep-ink); font-weight:700; font-size:13.5px;">
+                  ${item.table_name ? `${item.table_name}` : '🛍️ สั่งกลับบ้าน / หน้าร้าน'}
                 </span>
-                <span style="font-size:12px; color:var(--ttl-muted);">
+                <span style="font-size:11.5px; color:var(--ttl-muted);">
                   ${item.input_source === 'VOICE' ? '🎙️ สั่งด้วยเสียง' : '👆 กดหน้าจอ'} • ${formatTimeAgo(item.created_at)}
                 </span>
               </div>
 
-              <div style="font-size:20px; font-weight:700; color:var(--ttl-ink); margin-top:4px;">
+              <div style="font-size:19px; font-weight:700; color:var(--ttl-ink); margin-top:2px;">
                 ${item.product_name} <span style="color:var(--ttl-gold);">× ${item.quantity}</span>
               </div>
 
               ${item.modifiers && item.modifiers.length > 0 ? `
-                <div style="padding:8px 12px; border-radius:8px; background:color-mix(in srgb, var(--ttl-gold) 14%, transparent); color:var(--ttl-ink); font-weight:600; font-size:14px;">
+                <div style="padding:7px 10px; border-radius:8px; background:color-mix(in srgb, var(--ttl-gold) 14%, transparent); color:var(--ttl-ink); font-weight:600; font-size:13.5px;">
                   🌶️ คำสั่งพิเศษ: ${item.modifiers.join(' • ')}
                 </div>
               ` : ''}
 
-              ${item.recipe_snapshot && item.recipe_snapshot.length > 0 ? `
-                <div style="font-size:11.5px; color:var(--ttl-muted); background:var(--ttl-page); padding:7px 10px; border-radius:8px;">
-                  <b>🥩 ตัดสต็อกวัตถุดิบครัวแล้ว:</b>
-                  ${item.recipe_snapshot.map(r => `${r.name} ${r.qty} ${r.unit}`).join(', ')}
-                </div>
-              ` : ''}
-
-              <div style="display:flex; gap:8px; margin-top:auto; padding-top:8px;">
+              <div style="display:flex; gap:8px; margin-top:auto; padding-top:6px;">
                 ${item.kitchen_status === 'PENDING' ? `
                   <button type="button" class="ttl-btn ttl-btn-gold" style="width:100%;" onclick="updateKdsStatus('${item.id}', 'COOKING')">
                     🍳 เริ่มผัด / กำลังทำอาหาร
@@ -1104,12 +1507,14 @@ function renderKdsView() {
   `;
 }
 
+// ============================================================================
+// VIEW 5: INVENTORY & RECIPE BOM
+// ============================================================================
 function renderInventoryView() {
   const { products, ingredients, stockInReceipts, inventoryLogs } = state.data;
   const groceryProducts = products.filter(p => p.item_type === 'GROCERY');
   const foodProducts = products.filter(p => p.item_type === 'FOOD');
 
-  // Calculate preview for Stock-In form
   let currentBefore = 0;
   let convRate = 1;
   let baseUnit = 'ชิ้น';
@@ -1143,43 +1548,42 @@ function renderInventoryView() {
   const previewAfter = Math.round((currentBefore + previewAdded) * 100) / 100;
 
   return `
-    <div style="padding-top:16px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+    <div>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
         <div>
-          <h3 style="margin:0; font-size:20px;">ระบบคลังของชำ, นำเข้าสต็อก & สูตรวัตถุดิบอาหาร (Inventory & Recipe BOM)</h3>
+          <h3 style="margin:0; font-size:20px;">📦 คลังของชำ, นำเข้าสต็อก & สูตรวัตถุดิบอาหาร</h3>
           <p style="margin:2px 0 0; font-size:13px; color:var(--ttl-muted);">
-            กรอกเฉพาะจำนวนที่ซื้อมาเติม ระบบบวกเข้าสต็อกให้อัตโนมัติ พร้อมผูกวัตถุดิบอาหารเข้ากับเมนูตามสั่ง
+            กรอกจำนวนซื้อเข้าเพื่อบวกสต็อกอัตโนมัติ และตั้งค่าสูตรวัตถุดิบเมนูอาหาร
           </p>
         </div>
 
         <div class="ttl-seg">
           <button type="button" aria-selected="${state.inventoryTab === 'stock_in'}" onclick="state.inventoryTab='stock_in'; render();">
-            📥 1. นำเข้าสินค้าเติมสต็อก (Stock-In)
+            📥 1. นำเข้าสต็อก
           </button>
           <button type="button" aria-selected="${state.inventoryTab === 'recipes'}" onclick="state.inventoryTab='recipes'; render();">
-            🥩 2. คลังวัตถุดิบอาหาร & ผูกสูตรเมนู
+            🥩 2. วัตถุดิบ & ผูกสูตร
           </button>
           <button type="button" aria-selected="${state.inventoryTab === 'products'}" onclick="state.inventoryTab='products'; render();">
-            📦 3. รายการของชำ & เมนูทั้งหมด
+            📦 3. สินค้า & เมนูทั้งหมด
           </button>
           <button type="button" aria-selected="${state.inventoryTab === 'audit'}" onclick="state.inventoryTab='audit'; render();">
-            📜 4. ประวัติใบรับของ & Log ย้อนหลัง
+            📜 4. ประวัตินำเข้า
           </button>
         </div>
       </div>
 
       ${state.inventoryTab === 'stock_in' ? `
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
-          <!-- Left: Stock-In Form -->
-          <div style="padding:20px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page); display:flex; flex-direction:column; gap:14px;">
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(310px, 1fr)); gap:16px;">
+          <div style="padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page); display:flex; flex-direction:column; gap:12px;">
             <div class="ttl-k">ฟอร์มนำเข้าสินค้าเพื่อเติมสต็อก (ไม่ต้องบวกเลขเอง)</div>
 
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
               <div>
                 <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ประเภทที่จะนำเข้า</label>
                 <select class="ttl-select" onchange="state.stockInTargetType=this.value; state.stockInTargetId = this.value==='GROCERY' ? '${groceryProducts[0]?.id}' : '${ingredients[0]?.id}'; render();">
-                  <option value="GROCERY" ${state.stockInTargetType === 'GROCERY' ? 'selected' : ''}>📦 สินค้าของชำหน้าร้าน</option>
-                  <option value="INGREDIENT" ${state.stockInTargetType === 'INGREDIENT' ? 'selected' : ''}>🥩 วัตถุดิบอาหารเข้าครัว</option>
+                  <option value="GROCERY" ${state.stockInTargetType === 'GROCERY' ? 'selected' : ''}>📦 สินค้าของชำ</option>
+                  <option value="INGREDIENT" ${state.stockInTargetType === 'INGREDIENT' ? 'selected' : ''}>🥩 วัตถุดิบครัว</option>
                 </select>
               </div>
 
@@ -1188,37 +1592,37 @@ function renderInventoryView() {
                 <select class="ttl-select" onchange="state.stockInTargetId=this.value; render();">
                   ${(state.stockInTargetType === 'GROCERY' ? groceryProducts : ingredients).map(item => `
                     <option value="${item.id}" ${item.id === state.stockInTargetId ? 'selected' : ''}>
-                      ${item.name} (คงเหลือ ${state.stockInTargetType === 'GROCERY' ? item.stock_qty + ' ' + item.unit : item.current_qty + ' ' + item.stock_unit})
+                      ${item.name} (เหลือ ${state.stockInTargetType === 'GROCERY' ? item.stock_qty + ' ' + item.unit : item.current_qty + ' ' + item.stock_unit})
                     </option>
                   `).join('')}
                 </select>
               </div>
             </div>
 
-            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px;">
               <div>
-                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">หน่วยที่กรอกนำเข้า</label>
+                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">หน่วยที่นำเข้า</label>
                 <select class="ttl-select" onchange="state.stockInUsePurchaseUnit=(this.value==='PURCHASE'); render();">
-                  <option value="PURCHASE" ${state.stockInUsePurchaseUnit ? 'selected' : ''}>หน่วยซื้อยกแพ็ค: ${purchaseUnitLabel}</option>
-                  <option value="BASE" ${!state.stockInUsePurchaseUnit ? 'selected' : ''}>หน่วยย่อย: ${baseUnit}</option>
+                  <option value="PURCHASE" ${state.stockInUsePurchaseUnit ? 'selected' : ''}>${purchaseUnitLabel}</option>
+                  <option value="BASE" ${!state.stockInUsePurchaseUnit ? 'selected' : ''}>${baseUnit}</option>
                 </select>
               </div>
 
               <div>
-                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">กรอกจำนวนที่ซื้อมาเติม (+)</label>
+                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">จำนวนที่ซื้อมาเติม (+)</label>
                 <input
                   type="number"
                   step="any"
                   min="0.1"
                   class="ttl-input"
-                  style="font-weight:700; font-size:16px;"
+                  style="font-weight:700; font-size:15px;"
                   value="${state.stockInInputQty}"
                   oninput="state.stockInInputQty=this.value; render();"
                 />
               </div>
 
               <div>
-                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ต้นทุนซื้อรวมรอบนี้ (บาท)</label>
+                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ทุนรวมรอบนี้ (บาท)</label>
                 <input
                   type="number"
                   step="any"
@@ -1230,94 +1634,52 @@ function renderInventoryView() {
               </div>
             </div>
 
-            <!-- Live Auto-Addition Preview Box -->
-            <div style="padding:14px 16px; border-radius:12px; background:var(--ttl-deep); color:var(--ttl-deep-ink); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+            <div style="padding:12px 14px; border-radius:12px; background:var(--ttl-deep); color:var(--ttl-deep-ink); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
               <div>
-                <div style="font-size:11px; color:var(--ttl-deep-muted);">คำนวณสต็อกอัตโนมัติสำหรับ: <b style="color:#fff;">${selectedItemName}</b></div>
-                <div style="font-size:16px; margin-top:4px; font-variant-numeric:tabular-nums;">
-                  สต็อกเดิม <b>${currentBefore} ${baseUnit}</b>
-                  <span style="color:var(--ttl-gold); font-weight:700;"> + นำเข้า ${previewAdded} ${baseUnit}</span>
-                  ➔ คงเหลือใหม่ <b style="color:#7ce8b2; font-size:19px;">${previewAfter} ${baseUnit}</b>
+                <div style="font-size:11px; color:var(--ttl-deep-muted);">คำนวณสต็อกอัตโนมัติ: <b style="color:#fff;">${selectedItemName}</b></div>
+                <div style="font-size:15px; margin-top:2px; font-variant-numeric:tabular-nums;">
+                  เดิม <b>${currentBefore}</b> <span style="color:var(--ttl-gold); font-weight:700;">+${previewAdded}</span> ➔ ใหม่ <b style="color:#7ce8b2; font-size:17px;">${previewAfter} ${baseUnit}</b>
                 </div>
               </div>
-              <button type="button" class="ttl-btn ttl-btn-gold" onclick="addLineToStockInDraft()">
-                + เพิ่มลงรายการรับเข้า
+              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-gold" onclick="addLineToStockInDraft()">
+                + พักลงใบรับของ
               </button>
             </div>
 
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; padding-top:8px; border-top:1px solid var(--ttl-rule);">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
               <div>
-                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ซื้อจากร้านค้า / แหล่งที่มา</label>
+                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ร้านค้าส่ง / แหล่งซื้อ</label>
                 <input type="text" class="ttl-input" value="${state.stockInSupplier}" oninput="state.stockInSupplier=this.value" />
               </div>
               <div>
-                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">หมายเหตุใบรับของ</label>
-                <input type="text" class="ttl-input" placeholder="เช่น บิลเงินสดแม็คโครรอบเช้า" value="${state.stockInNote}" oninput="state.stockInNote=this.value" />
+                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">หมายเหตุ</label>
+                <input type="text" class="ttl-input" placeholder="เช่น รอบเช้า" value="${state.stockInNote}" oninput="state.stockInNote=this.value" />
               </div>
             </div>
 
-            <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+            <label style="display:flex; align-items:center; gap:8px; font-size:12.5px; cursor:pointer;">
               <input type="checkbox" ${state.stockInRecordExpense ? 'checked' : ''} onchange="state.stockInRecordExpense=this.checked" />
-              บันทึกยอดซื้อรอบนี้เข้า "รายจ่ายรายวัน" ในหน้า Dashboard กำไร/ขาดทุนด้วย
+              บันทึกยอดซื้อรอบนี้เข้า "รายจ่ายรายวัน" ด้วย
             </label>
 
             <button type="button" class="ttl-btn ttl-btn-lg ttl-btn-dark" onclick="submitStockInReceipt()">
-              📦 ยืนยันนำเข้าสต็อก & บันทึกประวัติใบรับของ (${state.stockInDraftItems.length || 1} รายการ)
+              📦 ยืนยันนำเข้าสต็อก (${state.stockInDraftItems.length || 1} รายการ)
             </button>
           </div>
 
-          <!-- Right: Draft Stock-In List & Recent Stock-In Receipts -->
-          <div style="display:flex; flex-direction:column; gap:16px;">
-            <div style="padding:18px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-paper);">
-              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                <span class="ttl-k">รายการในใบรับของรอบนี้ (${state.stockInDraftItems.length} รายการ)</span>
-                ${state.stockInDraftItems.length > 0 ? `<button type="button" style="font-size:12px; color:var(--ttl-bad);" onclick="state.stockInDraftItems=[]; render();">ล้างรายการ</button>` : ''}
-              </div>
-              ${state.stockInDraftItems.length === 0 ? `
-                <div style="padding:18px; text-align:center; color:var(--ttl-muted); font-size:13px; background:var(--ttl-page); border-radius:10px;">
-                  กดปุ่ม "+ เพิ่มลงรายการรับเข้า" เพื่อรวมหลายสินค้าในบิลเดียว หรือกดปุ่มยืนยันด้านซ้ายเพื่อนำเข้าทันที
-                </div>
-              ` : `
-                <table class="ttl-table">
-                  <thead>
-                    <tr>
-                      <th>สินค้า/วัตถุดิบ</th>
-                      <th>ก่อนนำเข้า</th>
-                      <th>+ ที่เติม</th>
-                      <th>หลังนำเข้า</th>
-                      <th>ทุนรวม</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${state.stockInDraftItems.map(it => `
-                      <tr>
-                        <td><b>${it.name}</b><br/><small style="color:var(--ttl-muted);">${it.input_qty} ${it.unit_label}</small></td>
-                        <td>${it.qty_before} ${it.base_unit}</td>
-                        <td style="color:var(--ttl-good); font-weight:700;">+${it.qty_added} ${it.base_unit}</td>
-                        <td><b>${it.qty_after} ${it.base_unit}</b></td>
-                        <td>${formatMoney(it.total_line_cost)}</td>
-                      </tr>
-                    `).join('')}
-                  </tbody>
-                </table>
-              `}
-            </div>
-
-            <div style="padding:18px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-paper);">
-              <div class="ttl-k" style="margin-bottom:10px;">ประวัติใบรับของเข้าสต็อกล่าสุด (ตรวจสอบย้อนหลังได้)</div>
-              ${stockInReceipts.slice(0, 4).map(r => `
+          <div style="display:flex; flex-direction:column; gap:14px;">
+            <div style="padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-paper);">
+              <div class="ttl-k" style="margin-bottom:8px;">ประวัติใบรับของเข้าสต็อกล่าสุด</div>
+              ${stockInReceipts.slice(0, 5).map(r => `
                 <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); margin-bottom:8px; border:1px solid var(--ttl-rule);">
                   <div style="display:flex; justify-content:space-between; font-weight:600; font-size:13px;">
                     <span>📄 ${r.id} • ${r.supplier_name}</span>
-                    <span style="color:var(--ttl-gold);">รวมทุน ${formatMoney(r.total_cost)}</span>
+                    <span style="color:var(--ttl-gold);">${formatMoney(r.total_cost)}</span>
                   </div>
-                  <div style="font-size:11.5px; color:var(--ttl-muted); margin-bottom:6px;">
-                    บันทึกโดย ${r.created_by} • ${formatTimeAgo(r.created_at)} ${r.note ? `(${r.note})` : ''}
-                  </div>
-                  ${r.items.map(line => `
+                  ${(r.items || []).map(line => `
                     <div style="font-size:12px; display:flex; justify-content:space-between; padding-top:4px; border-top:1px dashed var(--ttl-rule);">
-                      <span>• ${line.item_name} (${line.input_qty} ${line.unit_label})</span>
-                      <span style="font-variant-numeric:tabular-nums;">เดิม ${line.qty_before} <b style="color:var(--ttl-good);">+${line.qty_added}</b> ➔ <b>${line.qty_after}</b></span>
+                      <span>• ${line.item_name}</span>
+                      <span>เดิม ${line.qty_before} <b style="color:var(--ttl-good);">+${line.qty_added}</b> ➔ <b>${line.qty_after}</b></span>
                     </div>
                   `).join('')}
                 </div>
@@ -1326,93 +1688,62 @@ function renderInventoryView() {
           </div>
         </div>
       ` : state.inventoryTab === 'recipes' ? `
-        <div style="display:grid; grid-template-columns:1.1fr 1fr; gap:20px;">
-          <!-- Left: Raw Kitchen Ingredients Inventory -->
-          <div style="padding:18px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-paper);">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-              <div>
-                <div class="ttl-k">คลังวัตถุดิบอาหารสดในครัว (INGREDIENTS STOCK)</div>
-                <div style="font-size:13px; color:var(--ttl-muted);">ตัดสต็อกอัตโนมัติตามสูตรเมื่อมีการสั่งอาหาร</div>
-              </div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(310px, 1fr)); gap:16px;">
+          <div style="padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-paper);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <div class="ttl-k">คลังวัตถุดิบอาหารสดในครัว</div>
               <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-dark" onclick="state.showNewIngredientModal=true; render();">
                 + เพิ่มวัตถุดิบใหม่
               </button>
             </div>
-
-            <table class="ttl-table">
-              <thead>
-                <tr>
-                  <th>วัตถุดิบครัว</th>
-                  <th>คงเหลือปัจจุบัน</th>
-                  <th>หน่วยซื้อเข้า</th>
-                  <th>ทุน/หน่วยย่อย</th>
-                  <th>เติมสต็อก</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${ingredients.map(ing => {
-                  const isLow = ing.current_qty <= ing.low_stock_threshold;
-                  return `
-                    <tr>
-                      <td>
-                        <b>${ing.name}</b>
-                        ${isLow ? `<span class="ttl-tag ttl-tag-low" style="margin-left:4px;">ใกล้หมด!</span>` : ''}
-                      </td>
-                      <td style="font-variant-numeric:tabular-nums; font-weight:700; color:${isLow ? 'var(--ttl-bad)' : 'var(--ttl-ink)'};">
-                        ${ing.current_qty.toLocaleString()} ${ing.stock_unit}
-                      </td>
-                      <td style="font-size:12px; color:var(--ttl-muted);">
-                        1 ${ing.purchase_unit} = ${ing.conversion_rate} ${ing.stock_unit}
-                      </td>
-                      <td style="font-variant-numeric:tabular-nums;">฿${ing.cost_per_unit}/${ing.stock_unit}</td>
-                      <td>
-                        <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.stockInTargetType='INGREDIENT'; state.stockInTargetId='${ing.id}'; state.inventoryTab='stock_in'; render();">
-                          + นำเข้า
-                        </button>
-                      </td>
-                    </tr>
-                  `;
-                }).join('')}
-              </tbody>
-            </table>
+            <div class="table-scroll-wrap">
+              <table class="ttl-table">
+                <thead>
+                  <tr>
+                    <th>วัตถุดิบ</th>
+                    <th>คงเหลือ</th>
+                    <th>ทุน/หน่วย</th>
+                    <th>เติม</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${ingredients.map(ing => {
+                    const isLow = ing.current_qty <= ing.low_stock_threshold;
+                    return `
+                      <tr>
+                        <td><b>${ing.name}</b> ${isLow ? `<span class="ttl-tag ttl-tag-low">ใกล้หมด</span>` : ''}</td>
+                        <td style="font-weight:700; color:${isLow ? 'var(--ttl-bad)' : 'var(--ttl-ink)'};">${ing.current_qty.toLocaleString()} ${ing.stock_unit}</td>
+                        <td>฿${ing.cost_per_unit}/${ing.stock_unit}</td>
+                        <td>
+                          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.stockInTargetType='INGREDIENT'; state.stockInTargetId='${ing.id}'; state.inventoryTab='stock_in'; render();">+ เติม</button>
+                        </td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
           </div>
 
-          <!-- Right: Recipe BOM Editor (ผูกวัตถุดิบกับเมนูอาหาร) -->
-          <div style="padding:18px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page); display:flex; flex-direction:column; gap:12px;">
-            <div class="ttl-k">ผูกสูตรวัตถุดิบเข้ากับเมนูอาหาร (RECIPE BOM BUILDER)</div>
-            <div>
-              <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">เลือกเมนูอาหารที่ต้องการตั้งค่าสูตรวัตถุดิบ</label>
-              <select class="ttl-select" style="font-weight:600;" onchange="syncBomEditorWithProduct(this.value); render();">
-                ${foodProducts.map(fp => `
-                  <option value="${fp.id}" ${fp.id === state.selectedBomFoodId ? 'selected' : ''}>
-                    ${fp.name} (ราคาขาย ${formatMoney(fp.price)} | ทุนวัตถุดิบตามสูตร ${formatMoney(fp.cost)})
-                  </option>
-                `).join('')}
-              </select>
-            </div>
+          <div style="padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page); display:flex; flex-direction:column; gap:10px;">
+            <div class="ttl-k">ผูกสูตรวัตถุดิบเข้ากับเมนูอาหาร (RECIPE BOM)</div>
+            <select class="ttl-select" style="font-weight:600;" onchange="syncBomEditorWithProduct(this.value); render();">
+              ${foodProducts.map(fp => `
+                <option value="${fp.id}" ${fp.id === state.selectedBomFoodId ? 'selected' : ''}>
+                  ${fp.name} (ขาย ${formatMoney(fp.price)} | ทุนสูตร ${formatMoney(fp.cost)})
+                </option>
+              `).join('')}
+            </select>
 
-            <div style="display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; flex-direction:column; gap:6px;">
               ${state.bomDraftRows.map((row, idx) => {
                 const ingObj = ingredients.find(i => i.id === row.ingredient_id) || ingredients[0];
-                const rowCost = ingObj ? Math.round(row.quantity_used * ingObj.cost_per_unit * 100) / 100 : 0;
                 return `
-                  <div style="display:grid; grid-template-columns:1.4fr 1fr auto auto; gap:8px; align-items:center; background:var(--ttl-paper); padding:8px 10px; border-radius:9px; border:1px solid var(--ttl-rule);">
+                  <div style="display:grid; grid-template-columns:1.3fr 1fr auto; gap:6px; align-items:center; background:var(--ttl-paper); padding:8px; border-radius:8px; border:1px solid var(--ttl-rule);">
                     <select class="ttl-select" onchange="state.bomDraftRows[${idx}].ingredient_id=this.value; render();">
-                      ${ingredients.map(i => `
-                        <option value="${i.id}" ${i.id === row.ingredient_id ? 'selected' : ''}>${i.name} (${i.stock_unit})</option>
-                      `).join('')}
+                      ${ingredients.map(i => `<option value="${i.id}" ${i.id === row.ingredient_id ? 'selected' : ''}>${i.name} (${i.stock_unit})</option>`).join('')}
                     </select>
-                    <div style="display:flex; align-items:center; gap:4px;">
-                      <input
-                        type="number"
-                        step="any"
-                        class="ttl-input"
-                        value="${row.quantity_used}"
-                        oninput="state.bomDraftRows[${idx}].quantity_used=Number(this.value)||0; render();"
-                      />
-                      <span style="font-size:12px; color:var(--ttl-muted);">${ingObj ? ingObj.stock_unit : ''}</span>
-                    </div>
-                    <span style="font-size:12px; color:var(--ttl-gold); min-width:55px; text-align:right;">ทุน ฿${rowCost}</span>
+                    <input type="number" step="any" class="ttl-input" value="${row.quantity_used}" oninput="state.bomDraftRows[${idx}].quantity_used=Number(this.value)||0; render();" />
                     <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-danger-outline" onclick="state.bomDraftRows.splice(${idx},1); render();">ลบ</button>
                   </div>
                 `;
@@ -1421,299 +1752,200 @@ function renderInventoryView() {
 
             <div style="display:flex; justify-content:space-between; align-items:center;">
               <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.bomDraftRows.push({ ingredient_id: '${ingredients[0]?.id}', quantity_used: 50 }); render();">
-                + เพิ่มวัตถุดิบในสูตรจานนี้
+                + เพิ่มวัตถุดิบในสูตร
               </button>
-              <span style="font-size:13px; font-weight:600;">
-                รวมทุนวัตถุดิบต่อจาน: <b style="color:var(--ttl-gold);">
-                  ${formatMoney(state.bomDraftRows.reduce((s, r) => {
-                    const ing = ingredients.find(i => i.id === r.ingredient_id);
-                    return s + (ing ? r.quantity_used * ing.cost_per_unit : 0);
-                  }, 0))}
-                </b>
-              </span>
+              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-dark" onclick="saveBomForSelectedFood()">
+                💾 บันทึกสูตรเมนูนี้
+              </button>
             </div>
-
-            <button type="button" class="ttl-btn ttl-btn-dark" style="margin-top:6px;" onclick="saveBomForSelectedFood()">
-              💾 บันทึกการผูกสูตรวัตถุดิบ (อัปเดตต้นทุนจานอัตโนมัติ)
-            </button>
           </div>
         </div>
       ` : state.inventoryTab === 'products' ? `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-          <div class="ttl-k">รายการสินค้าของชำ & เมนูอาหารทั้งหมด (${products.length} รายการ)</div>
-          <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.showNewProductModal=true; render();">
-            + เพิ่มสินค้าของชำ / เมนูอาหารใหม่
-          </button>
-        </div>
-
-        <table class="ttl-table">
-          <thead>
-            <tr>
-              <th>รหัส / บาร์โค้ด</th>
-              <th>ชื่อสินค้า / เมนู</th>
-              <th>ประเภท</th>
-              <th>คำพ้องเสียงพูด (Voice Aliases)</th>
-              <th>ราคาขาย</th>
-              <th>ราคาทุน</th>
-              <th>สต็อกคงเหลือ</th>
-              <th>จัดการ</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${products.map(p => `
-              <tr>
-                <td style="font-family:monospace; font-size:12px;">${p.id}<br/><small style="color:var(--ttl-muted);">${p.barcode || '-'}</small></td>
-                <td><b>${p.name}</b></td>
-                <td>
-                  <span class="ttl-tag ${p.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">
-                    ${p.item_type === 'FOOD' ? 'อาหาร (KDS)' : 'ของชำ'}
-                  </span>
-                </td>
-                <td style="font-size:12px; color:var(--ttl-muted);">${(p.voice_aliases || []).join(', ')}</td>
-                <td style="font-weight:700;">${formatMoney(p.price)}/${p.unit}</td>
-                <td>${formatMoney(p.cost)}</td>
-                <td>
-                  ${p.item_type === 'GROCERY' ? `
-                    <b>${p.stock_qty} ${p.unit}</b>
-                  ` : `<span style="font-size:12px; color:var(--ttl-muted);">ตัดตามสูตรวัตถุดิบ (${p.recipe_items.length} รายการ)</span>`}
-                </td>
-                <td>
-                  ${p.item_type === 'GROCERY' ? `
-                    <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.stockInTargetType='GROCERY'; state.stockInTargetId='${p.id}'; state.inventoryTab='stock_in'; render();">
-                      + เติมสต็อก
-                    </button>
-                  ` : `
-                    <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="syncBomEditorWithProduct('${p.id}'); state.inventoryTab='recipes'; render();">
-                      แก้สูตร BOM
-                    </button>
-                  `}
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      ` : `
-        <!-- Audit History Tab -->
-        <div style="display:grid; grid-template-columns:1fr 1.2fr; gap:20px;">
-          <div>
-            <div class="ttl-k" style="margin-bottom:10px;">ประวัติใบรับของเข้าสต็อกทั้งหมด (STOCK-IN RECEIPTS)</div>
-            ${stockInReceipts.map(r => `
-              <div style="padding:12px 14px; border-radius:12px; border:1px solid var(--ttl-rule); background:var(--ttl-page); margin-bottom:10px;">
-                <div style="display:flex; justify-content:space-between; font-weight:700;">
-                  <span>📄 ${r.id} (${r.supplier_name})</span>
-                  <span style="color:var(--ttl-gold);">${formatMoney(r.total_cost)}</span>
-                </div>
-                <div style="font-size:11.5px; color:var(--ttl-muted); margin-bottom:6px;">
-                  เวลา: ${new Date(r.created_at).toLocaleString('th-TH')} • ผู้บันทึก: ${r.created_by}
-                </div>
-                ${r.items.map(line => `
-                  <div style="font-size:12.5px; display:flex; justify-content:space-between; padding-top:4px; border-top:1px dashed var(--ttl-rule);">
-                    <span>${line.item_name} (+${line.input_qty} ${line.unit_label})</span>
-                    <span>ก่อน: ${line.qty_before} ➔ <b style="color:var(--ttl-good);">+${line.qty_added}</b> ➔ หลัง: <b>${line.qty_after}</b></span>
-                  </div>
-                `).join('')}
-              </div>
-            `).join('')}
+        <div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div class="ttl-k">รายการสินค้าของชำ & เมนูอาหารทั้งหมด (${products.length})</div>
+            <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.showNewProductModal=true; render();">
+              + เพิ่มสินค้า/เมนูใหม่
+            </button>
           </div>
-
-          <div>
-            <div class="ttl-k" style="margin-bottom:10px;">ประวัติความเคลื่อนไหวสต็อก & การคืนของ (INVENTORY AUDIT LOGS)</div>
+          <div class="table-scroll-wrap">
             <table class="ttl-table">
               <thead>
                 <tr>
-                  <th>เวลา</th>
-                  <th>รายการ</th>
+                  <th>รหัส</th>
+                  <th>ชื่อสินค้า / เมนู</th>
                   <th>ประเภท</th>
-                  <th>เปลี่ยนแปลง</th>
+                  <th>ราคาขาย</th>
+                  <th>ต้นทุนหลังร้าน</th>
                   <th>คงเหลือ</th>
-                  <th>สาเหตุ / อ้างอิง</th>
                 </tr>
               </thead>
               <tbody>
-                ${inventoryLogs.map(log => `
+                ${products.map(p => `
                   <tr>
-                    <td style="font-size:11.5px; color:var(--ttl-muted);">${formatTimeAgo(log.created_at)}</td>
-                    <td><b>${log.item_name}</b></td>
-                    <td><span class="ttl-tag ${log.target_type === 'INGREDIENT' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">${log.target_type}</span></td>
-                    <td style="font-weight:700; color:${log.change_qty > 0 ? 'var(--ttl-good)' : log.reason === 'WASTE' ? 'var(--ttl-bad)' : 'var(--ttl-ink)'};">
-                      ${log.change_qty > 0 ? `+${log.change_qty}` : log.change_qty} ${log.unit}
-                    </td>
-                    <td><b>${log.balance_after} ${log.unit}</b></td>
-                    <td style="font-size:11.5px;">
-                      <b>${log.reason}</b> (${log.reference_id})<br/>
-                      <span style="color:var(--ttl-muted);">${log.note}</span>
-                    </td>
+                    <td style="font-family:monospace; font-size:12px;">${p.id}</td>
+                    <td><b>${p.name}</b></td>
+                    <td><span class="ttl-tag ${p.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">${p.item_type}</span></td>
+                    <td style="font-weight:700;">${formatMoney(p.price)}/${p.unit}</td>
+                    <td>${formatMoney(p.cost)}</td>
+                    <td>${p.item_type === 'GROCERY' ? `<b>${p.stock_qty} ${p.unit}</b>` : 'ตัดตามสูตรครัว'}</td>
                   </tr>
                 `).join('')}
               </tbody>
             </table>
           </div>
         </div>
+      ` : `
+        <div class="table-scroll-wrap">
+          <table class="ttl-table">
+            <thead>
+              <tr>
+                <th>เวลา</th>
+                <th>รายการ</th>
+                <th>เปลี่ยนแปลง</th>
+                <th>คงเหลือ</th>
+                <th>สาเหตุ</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${inventoryLogs.map(log => `
+                <tr>
+                  <td style="font-size:11.5px; color:var(--ttl-muted);">${formatTimeAgo(log.created_at)}</td>
+                  <td><b>${log.item_name}</b></td>
+                  <td style="font-weight:700; color:${log.change_qty > 0 ? 'var(--ttl-good)' : 'var(--ttl-ink)'};">${log.change_qty > 0 ? `+${log.change_qty}` : log.change_qty} ${log.unit}</td>
+                  <td><b>${log.balance_after} ${log.unit}</b></td>
+                  <td style="font-size:12px;">${log.reason} (${log.note || '-'})</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
       `}
     </div>
   `;
 }
 
-function renderDashboardView() {
-  const { analytics, expenses } = state.data;
+// ============================================================================
+// VIEW 6: CUSTOMER MEMBERSHIP & TREASURY DASHBOARD
+// ============================================================================
+function renderCustomersAndDashboardView() {
+  const { customers = [], analytics, expenses } = state.data;
+  const q = state.customerSearch.trim().toLowerCase();
+  const filteredCustomers = customers.filter(c => !q || c.name.toLowerCase().includes(q) || (c.phone || '').includes(q));
   const groceryPct = analytics.total_revenue > 0 ? Math.round((analytics.grocery_revenue / analytics.total_revenue) * 100) : 50;
   const foodPct = 100 - groceryPct;
 
   return `
-    <div style="padding-top:16px;">
-      <!-- Teal Treasury Overview Header with Gold Sparkline -->
-      <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:20px; padding-bottom:18px; border-bottom:1px solid var(--ttl-rule);">
-        <div>
-          <div class="ttl-k">TREASURY FINANCIAL OVERVIEW • สรุปผลประกอบการร้านขายของชำ & อาหาร</div>
-          <div style="font-size:clamp(28px, 3.6vw, 42px); font-weight:600; letter-spacing:-0.03em; margin-top:4px; font-variant-numeric:tabular-nums;">
-            กำไรสุทธิ ${formatMoney(analytics.net_profit)}
-            <span style="font-size:15px; font-weight:500; color:${analytics.net_profit >= 0 ? 'var(--ttl-good)' : 'var(--ttl-bad)'};">
-              (Net Margin ${analytics.net_margin_pct}%)
-            </span>
+    <div style="display:flex; flex-direction:column; gap:24px;">
+      <!-- SECTION A: CUSTOMER MEMBERSHIP SYSTEM (ระบบสมาชิกลูกค้า) -->
+      <div style="padding:18px; border-radius:16px; border:1px solid var(--ttl-rule); background:var(--ttl-page);">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+          <div>
+            <div class="ttl-k">CUSTOMER MEMBERSHIP • ระบบสมาชิกลูกค้า & สะสมแต้ม</div>
+            <h3 style="margin:2px 0 0; font-size:20px;">👥 รายชื่อสมาชิกลูกค้าประจำ (${customers.length} ท่าน)</h3>
           </div>
-          <div style="font-size:13px; color:var(--ttl-muted); margin-top:4px;">
-            คำนวณจาก: ยอดขายรวม (${formatMoney(analytics.total_revenue)}) − ต้นทุนของชำและสูตรอาหาร (${formatMoney(analytics.total_cogs)}) − ต้นทุนของเสีย (${formatMoney(analytics.waste_cost)}) − รายจ่ายรายวัน (${formatMoney(analytics.operating_expenses)})
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <input
+              type="text"
+              class="ttl-input"
+              style="width:220px; height:36px;"
+              placeholder="ค้นหาชื่อ หรือ เบอร์โทรสมาชิก..."
+              value="${state.customerSearch.replace(/"/g, '&quot;')}"
+              oninput="state.customerSearch=this.value; render();"
+            />
+            <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.showNewCustomerModal=true; render();">
+              + สมัครสมาชิกลูกค้าใหม่
+            </button>
           </div>
         </div>
 
-        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px;">
+        <div class="tables-grid" style="margin-top:8px;">
+          ${filteredCustomers.map(c => `
+            <div class="table-card" style="gap:8px;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                <div>
+                  <span class="ttl-tag ttl-tag-food">⭐ ${c.tier || 'สมาชิก'}</span>
+                  <div style="font-size:17px; font-weight:700; margin-top:4px;">${c.name}</div>
+                  <div style="font-size:12.5px; color:var(--ttl-muted);">📞 ${c.phone || 'ไม่ระบุเบอร์โทร'}</div>
+                </div>
+                <div style="text-align:right;">
+                  <div style="font-size:20px; font-weight:700; color:var(--ttl-gold);">${c.points || 0} แต้ม</div>
+                  <div style="font-size:11px; color:var(--ttl-muted);">ยอดซื้อสะสม ${formatMoney(c.total_spent || 0)}</div>
+                </div>
+              </div>
+              ${c.note ? `<div style="font-size:12px; color:var(--ttl-muted); background:var(--ttl-page); padding:6px 10px; border-radius:8px;">📝 ${c.note}</div>` : ''}
+              <button
+                type="button"
+                class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+                style="margin-top:auto;"
+                onclick="state.selectedCustomerId='${c.id}'; state.billTitle='บิลคุณ${c.name}'; state.activeView='pos'; state.billDrawerOpen=true; render(); showToast('เลือกสมาชิก ${c.name} เข้าบิลปัจจุบันแล้ว');"
+              >
+                🧾 เลือกสมาชิกท่านนี้เข้าบิลขาย ➔
+              </button>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- SECTION B: TREASURY PROFIT / LOSS DASHBOARD -->
+      <div>
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--ttl-rule);">
+          <div>
+            <div class="ttl-k">TREASURY FINANCIAL OVERVIEW • สรุปยอดขาย กำไร/ขาดทุน</div>
+            <div style="font-size:clamp(24px, 3.2vw, 36px); font-weight:700; letter-spacing:-0.03em; margin-top:2px; font-variant-numeric:tabular-nums;">
+              กำไรสุทธิ ${formatMoney(analytics.net_profit)}
+              <span style="font-size:14px; font-weight:600; color:${analytics.net_profit >= 0 ? 'var(--ttl-good)' : 'var(--ttl-bad)'};">
+                (Net Margin ${analytics.net_margin_pct}%)
+              </span>
+            </div>
+          </div>
+
           <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.showNewExpenseModal=true; render();">
-            + บันทึกรายจ่ายรายวัน (ค่าแก๊ส / น้ำไฟ / ค่าแรง)
+            + บันทึกรายจ่ายรายวัน
           </button>
-          <svg width="260" height="64" viewBox="0 0 260 64" aria-hidden="true">
-            <defs>
-              <linearGradient id="ttlGoldGrad" x1="0" x2="0" y1="0" y2="1">
-                <stop offset="0" stop-color="var(--ttl-gold)" stop-opacity="0.32"></stop>
-                <stop offset="1" stop-color="var(--ttl-gold)" stop-opacity="0"></stop>
-              </linearGradient>
-            </defs>
-            <path d="M0 52 L40 44 L85 47 L130 28 L175 31 L220 14 L260 8 L260 64 L0 64 Z" fill="url(#ttlGoldGrad)"></path>
-            <path d="M0 52 L40 44 L85 47 L130 28 L175 31 L220 14 L260 8" fill="none" stroke="var(--ttl-gold)" stroke-width="2"></path>
-          </svg>
         </div>
-      </div>
 
-      <!-- KPI Cards -->
-      <div class="kpi-grid">
-        <div class="kpi-card">
-          <span class="ttl-k">1. ยอดขายรวมทั้งหมด (REVENUE)</span>
-          <div class="kpi-val">${formatMoney(analytics.total_revenue)}</div>
-          <div style="font-size:12px; color:var(--ttl-muted);">
-            ชำระแล้ว ${formatMoney(analytics.paid_revenue)} • โต๊ะเปิดอยู่ ${formatMoney(analytics.open_table_revenue)}
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="ttl-k">1. ยอดขายรวม (REVENUE)</span>
+            <div class="kpi-val">${formatMoney(analytics.total_revenue)}</div>
+            <div style="font-size:12px; color:var(--ttl-muted);">ชำระแล้ว ${formatMoney(analytics.paid_revenue)} • ค้างบิล ${formatMoney(analytics.open_table_revenue)}</div>
+          </div>
+          <div class="kpi-card">
+            <span class="ttl-k">2. ต้นทุนขายรวม (COGS)</span>
+            <div class="kpi-val" style="color:var(--ttl-gold);">${formatMoney(analytics.total_cogs)}</div>
+            <div style="font-size:12px; color:var(--ttl-muted);">ของชำ ${formatMoney(analytics.grocery_cost)} • ครัว ${formatMoney(analytics.food_cost)}</div>
+          </div>
+          <div class="kpi-card">
+            <span class="ttl-k">3. กำไรขั้นต้น (GROSS)</span>
+            <div class="kpi-val" style="color:var(--ttl-good);">${formatMoney(analytics.gross_profit)}</div>
+            <div style="font-size:12px; color:var(--ttl-muted);">Margin ${analytics.gross_margin_pct}%</div>
+          </div>
+          <div class="kpi-card">
+            <span class="ttl-k">4. ของเสีย & รายจ่าย</span>
+            <div class="kpi-val" style="color:var(--ttl-bad);">${formatMoney(analytics.waste_cost + analytics.operating_expenses)}</div>
+            <div style="font-size:12px; color:var(--ttl-muted);">ของเสีย ${formatMoney(analytics.waste_cost)} • รายจ่าย ${formatMoney(analytics.operating_expenses)}</div>
           </div>
         </div>
 
-        <div class="kpi-card">
-          <span class="ttl-k">2. ต้นทุนขายรวม (COGS ของชำ+สูตรครัว)</span>
-          <div class="kpi-val" style="color:var(--ttl-gold);">${formatMoney(analytics.total_cogs)}</div>
-          <div style="font-size:12px; color:var(--ttl-muted);">
-            ทุนของชำ ${formatMoney(analytics.grocery_cost)} • ทุนวัตถุดิบอาหาร ${formatMoney(analytics.food_cost)}
+        <div style="margin-top:14px; padding:14px 16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page);">
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px;">
+            <b>สัดส่วนรายได้: ของชำ (${groceryPct}%) vs อาหารตามสั่ง (${foodPct}%)</b>
+            <span>เงินสด ${formatMoney(analytics.cash_revenue)} • QR ${formatMoney(analytics.qr_revenue)}</span>
           </div>
-        </div>
-
-        <div class="kpi-card">
-          <span class="ttl-k">3. กำไรขั้นต้น (GROSS PROFIT)</span>
-          <div class="kpi-val" style="color:var(--ttl-good);">${formatMoney(analytics.gross_profit)}</div>
-          <div style="font-size:12px; color:var(--ttl-muted);">
-            คิดเป็นอัตรากำไรขั้นต้น ${analytics.gross_margin_pct}%
+          <div class="ttl-bar">
+            <span style="width:${groceryPct}%; background:var(--ttl-chart-1);"></span>
+            <span style="width:${foodPct}%; background:var(--ttl-chart-2);"></span>
           </div>
-        </div>
-
-        <div class="kpi-card">
-          <span class="ttl-k">4. ต้นทุนของเสีย & คืนของ</span>
-          <div class="kpi-val" style="color:var(--ttl-bad);">${formatMoney(analytics.waste_cost)}</div>
-          <div style="font-size:12px; color:var(--ttl-muted);">
-            คืนเข้าสต็อกปกติ: ${formatMoney(analytics.returned_restock_value)} (ไม่เสียทุน)
-          </div>
-        </div>
-
-        <div class="kpi-card">
-          <span class="ttl-k">5. รายจ่ายดำเนินงานรายวัน</span>
-          <div class="kpi-val">${formatMoney(analytics.operating_expenses)}</div>
-          <div style="font-size:12px; color:var(--ttl-muted);">
-            ยอดซื้อของเติมสต็อกสะสม: ${formatMoney(analytics.stock_in_purchases)}
-          </div>
-        </div>
-      </div>
-
-      <!-- Proportional Breakdown Bar (.ttl-bar from Teal Treasury) -->
-      <div style="margin-top:20px; padding:18px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page);">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <b>สัดส่วนรายได้และกำไรขั้นต้น: ร้านขายของชำ vs ร้านอาหารตามสั่ง</b>
-          <span style="font-size:12px; color:var(--ttl-muted);">ของชำ ${groceryPct}% • อาหารปรุงสด ${foodPct}%</span>
-        </div>
-        <div class="ttl-bar">
-          <span style="width:${groceryPct}%; background:var(--ttl-chart-1);" title="ของชำ ${groceryPct}%"></span>
-          <span style="width:${foodPct}%; background:var(--ttl-chart-2);" title="อาหาร ${foodPct}%"></span>
-        </div>
-        <div style="display:flex; gap:24px; flex-wrap:wrap; margin-top:10px; font-size:12.5px;">
-          <span><i style="display:inline-block; width:10px; height:10px; border-radius:3px; background:var(--ttl-chart-1); margin-right:6px;"></i><b>ฝั่งของชำ:</b> ยอดขาย ${formatMoney(analytics.grocery_revenue)} (กำไรขั้นต้น ${formatMoney(analytics.grocery_profit)})</span>
-          <span><i style="display:inline-block; width:10px; height:10px; border-radius:3px; background:var(--ttl-chart-2); margin-right:6px;"></i><b>ฝั่งอาหารตามสั่ง:</b> ยอดขาย ${formatMoney(analytics.food_revenue)} (กำไรขั้นต้น ${formatMoney(analytics.food_profit)})</span>
-          <span style="margin-left:auto;">💵 เงินสด: <b>${formatMoney(analytics.cash_revenue)}</b> • 📱 สแกน QR PromptPay: <b>${formatMoney(analytics.qr_revenue)}</b></span>
-        </div>
-      </div>
-
-      <!-- Bottom Split: Top Sellers + Daily Expenses -->
-      <div style="display:grid; grid-template-columns:1.2fr 1fr; gap:20px; margin-top:20px;">
-        <div style="padding:18px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-paper);">
-          <div class="ttl-k" style="margin-bottom:10px;">สินค้าของชำและเมนูอาหารทำกำไรสูงสุด (TOP SELLERS BY PROFIT)</div>
-          <table class="ttl-table">
-            <thead>
-              <tr>
-                <th>สินค้า / เมนู</th>
-                <th>ประเภท</th>
-                <th>จำนวนขาย</th>
-                <th>ยอดขาย</th>
-                <th>ต้นทุนรวม</th>
-                <th>กำไรขั้นต้น</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${analytics.top_sellers.map(s => `
-                <tr>
-                  <td><b>${s.name}</b></td>
-                  <td><span class="ttl-tag ${s.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">${s.item_type}</span></td>
-                  <td>${s.qty_sold}</td>
-                  <td>${formatMoney(s.revenue)}</td>
-                  <td>${formatMoney(s.cost)}</td>
-                  <td style="color:var(--ttl-good); font-weight:700;">+${formatMoney(s.profit)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-
-        <div style="padding:18px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-paper);">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <span class="ttl-k">รายการค่าใช้จ่ายดำเนินงานรายวัน (EXPENSES)</span>
-            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showNewExpenseModal=true; render();">+ เพิ่มรายจ่าย</button>
-          </div>
-          <table class="ttl-table">
-            <thead>
-              <tr>
-                <th>วันที่</th>
-                <th>หมวดหมู่</th>
-                <th>รายละเอียด</th>
-                <th>จำนวนเงิน</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${expenses.map(e => `
-                <tr>
-                  <td style="font-size:12px; color:var(--ttl-muted);">${e.expense_date}</td>
-                  <td><span class="ttl-tag ttl-tag-grocery">${e.category}</span></td>
-                  <td><b>${e.title}</b></td>
-                  <td style="color:var(--ttl-bad); font-weight:600;">-${formatMoney(e.amount)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
         </div>
       </div>
     </div>
   `;
 }
 
+// ============================================================================
+// MODALS
+// ============================================================================
 function renderModals() {
   let html = '';
 
@@ -1730,8 +1962,8 @@ function renderModals() {
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.modifierModalProduct=null; render();}">
         <div class="ttl-modal">
-          <div class="ttl-k">เลือกตัวเลือกเสริมส่งเข้าครัว (FOOD MODIFIERS)</div>
-          <h3 style="margin:4px 0 12px; font-size:20px;">${p.name} (ราคาปกติ ${formatMoney(p.price)})</h3>
+          <div class="ttl-k">เลือกตัวเลือกเสริม (FOOD MODIFIERS)</div>
+          <h3 style="margin:4px 0 12px; font-size:19px;">${p.name} (${formatMoney(p.price)})</h3>
 
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:16px;">
             ${mods.map(m => {
@@ -1750,7 +1982,7 @@ function renderModals() {
                     render();
                   "
                 >
-                  <div style="display:flex; justify-content:space-between; width:100%;">
+                  <div style="display:flex; justify-content:space-between; width:100%; font-size:13px;">
                     <b>${isSelected ? '✓ ' : ''}${m.name}</b>
                     <span style="color:var(--ttl-gold);">${m.extra_price > 0 ? `+฿${m.extra_price}` : 'ฟรี'}</span>
                   </div>
@@ -1759,12 +1991,11 @@ function renderModals() {
             }).join('')}
           </div>
 
-          <div style="display:flex; justify-content:space-between; align-items:center; padding-top:12px; border-top:1px solid var(--ttl-rule);">
-            <div style="display:flex; align-items:center; gap:8px;">
-              <span>จำนวน:</span>
-              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.modifierQty=Math.max(1, state.modifierQty-1); render();">−</button>
-              <b style="font-size:16px;">${state.modifierQty}</b>
-              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.modifierQty++; render();">+</button>
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; padding-top:12px; border-top:1px solid var(--ttl-rule);">
+            <div class="qty-stepper">
+              <button type="button" onclick="state.modifierQty=Math.max(1, state.modifierQty-1); render();">−</button>
+              <span>${state.modifierQty}</span>
+              <button type="button" onclick="state.modifierQty++; render();">+</button>
             </div>
             <div style="display:flex; gap:8px;">
               <button type="button" class="ttl-btn ttl-btn-ghost" onclick="state.modifierModalProduct=null; render();">ยกเลิก</button>
@@ -1785,10 +2016,10 @@ function renderModals() {
                   });
                   state.modifierModalProduct = null;
                   render();
-                  showToast('+ เพิ่มเมนูอาหารลงรายการแล้ว');
+                  showToast('+ เพิ่ม ${p.name} เข้าบิล (รายการใหม่) แล้ว');
                 "
               >
-                เพิ่มลงบิล (${formatMoney(unitPrice * state.modifierQty)})
+                เพิ่มเข้าบิล (${formatMoney(unitPrice * state.modifierQty)})
               </button>
             </div>
           </div>
@@ -1809,11 +2040,11 @@ function renderModals() {
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.checkoutModalOrder=null; render();}">
         <div class="ttl-modal">
           <div class="ttl-k">TREASURY CHECKOUT • รับชำระเงิน</div>
-          <h3 style="margin:4px 0 14px; font-size:20px;">${co.label}</h3>
+          <h3 style="margin:4px 0 12px; font-size:20px;">${co.label}</h3>
 
           <div style="padding:14px 16px; border-radius:12px; background:var(--ttl-deep); color:var(--ttl-deep-ink); display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
             <span>ยอดสุทธิที่ต้องชำระ</span>
-            <span style="font-size:28px; font-weight:700; color:var(--ttl-gold); font-variant-numeric:tabular-nums;">${formatMoney(netTotal)}</span>
+            <span style="font-size:26px; font-weight:700; color:var(--ttl-gold); font-variant-numeric:tabular-nums;">${formatMoney(netTotal)}</span>
           </div>
 
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
@@ -1821,7 +2052,7 @@ function renderModals() {
               <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ช่องทางชำระเงิน</label>
               <div class="ttl-seg" style="width:100%;">
                 <button type="button" style="flex:1;" aria-selected="${state.checkoutPaymentMethod === 'CASH'}" onclick="state.checkoutPaymentMethod='CASH'; render();">💵 เงินสด</button>
-                <button type="button" style="flex:1;" aria-selected="${state.checkoutPaymentMethod === 'QR_PROMPTPAY'}" onclick="state.checkoutPaymentMethod='QR_PROMPTPAY'; render();">📱 QR PromptPay</button>
+                <button type="button" style="flex:1;" aria-selected="${state.checkoutPaymentMethod === 'QR_PROMPTPAY'}" onclick="state.checkoutPaymentMethod='QR_PROMPTPAY'; render();">📱 QR</button>
               </div>
             </div>
             <div>
@@ -1835,34 +2066,19 @@ function renderModals() {
               <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">รับเงินสดมา (บาท)</label>
               <input type="number" class="ttl-input" style="font-size:20px; font-weight:700; height:44px;" value="${state.checkoutCashReceived}" oninput="state.checkoutCashReceived=this.value; render();" />
               <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
-                <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.checkoutCashReceived='${netTotal}'; render();">จ่ายพอดี (${formatMoney(netTotal)})</button>
+                <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.checkoutCashReceived='${netTotal}'; render();">พอดี (${formatMoney(netTotal)})</button>
                 <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.checkoutCashReceived='100'; render();">฿100</button>
                 <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.checkoutCashReceived='500'; render();">฿500</button>
                 <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.checkoutCashReceived='1000'; render();">฿1,000</button>
               </div>
-              <div style="margin-top:10px; font-size:16px; font-weight:600; color:var(--ttl-good);">
+              <div style="margin-top:10px; font-size:16px; font-weight:700; color:var(--ttl-good);">
                 เงินทอนลูกค้า: ${formatMoney(change)}
               </div>
             </div>
           ` : `
             <div style="padding:16px; text-align:center; background:var(--ttl-page); border-radius:12px; margin-bottom:14px; border:1px solid var(--ttl-rule);">
               <div style="font-weight:600; margin-bottom:6px;">สแกน QR PromptPay ยอด ${formatMoney(netTotal)}</div>
-              <div style="width:140px; height:140px; margin:0 auto; background:#fff; padding:10px; border-radius:10px; border:1px solid var(--ttl-rule); display:grid; place-items:center;">
-                <svg viewBox="0 0 100 100" width="115" height="115">
-                  <rect x="5" y="5" width="28" height="28" fill="none" stroke="#10292d" stroke-width="6"/>
-                  <rect x="13" y="13" width="12" height="12" fill="#10292d"/>
-                  <rect x="67" y="5" width="28" height="28" fill="none" stroke="#10292d" stroke-width="6"/>
-                  <rect x="75" y="13" width="12" height="12" fill="#10292d"/>
-                  <rect x="5" y="67" width="28" height="28" fill="none" stroke="#10292d" stroke-width="6"/>
-                  <rect x="13" y="75" width="12" height="12" fill="#10292d"/>
-                  <rect x="42" y="12" width="14" height="14" fill="#8c7b33"/>
-                  <rect x="42" y="42" width="16" height="16" fill="#10292d"/>
-                  <rect x="66" y="46" width="22" height="10" fill="#10292d"/>
-                  <rect x="42" y="68" width="12" height="22" fill="#10292d"/>
-                  <rect x="64" y="68" width="26" height="22" fill="#8c7b33"/>
-                </svg>
-              </div>
-              <small style="color:var(--ttl-muted); display:block; margin-top:6px;">ONG CO POS PromptPay Automatic Amount</small>
+              <small style="color:var(--ttl-muted);">ONG CO POS PromptPay</small>
             </div>
           `}
 
@@ -1877,7 +2093,122 @@ function renderModals() {
     `;
   }
 
-  // 3. New Table / Zone Modal
+  // 3. Edit Bill Meta Modal (แก้ชื่อบิล / โน้ตบิล / สมาชิก)
+  if (state.editingBillMetaOrder) {
+    const eb = state.editingBillMetaOrder;
+    const customers = state.data.customers || [];
+    html += `
+      <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.editingBillMetaOrder=null; render();}">
+        <form class="ttl-modal" onsubmit="
+          event.preventDefault();
+          const f = this.elements;
+          const cusId = f.bcus.value || null;
+          const cusObj = (state.data.customers || []).find(c => c.id === cusId);
+          apiCall('/api/orders/update-meta', 'POST', {
+            order_id: '${eb.id}',
+            bill_title: f.btitle.value.trim(),
+            bill_note: f.bnote.value.trim(),
+            customer_id: cusId,
+            customer_name: cusObj ? cusObj.name : ''
+          }).then(out => {
+            if (out && out.data) state.data = out.data;
+            state.editingBillMetaOrder = null;
+            syncCurrentBillMetaFromContext();
+            render();
+            showToast('✏️ บันทึกชื่อบิล/โน้ต/สมาชิกเรียบร้อยแล้ว');
+          });
+        ">
+          <div class="ttl-k">ตั้งชื่อบิล / โน้ตหมายเหตุ / ผูกสมาชิก</div>
+          <h3 style="margin:4px 0 12px;">แก้ไขข้อมูลบิล ${eb.id}</h3>
+          <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:14px;">
+            <div>
+              <label style="font-size:12px; font-weight:600;">🏷️ ชื่อบิล / ชื่อเรียกลูกค้า</label>
+              <input name="btitle" class="ttl-input" value="${(eb.bill_title || '').replace(/"/g, '&quot;')}" placeholder="เช่น พี่เอกเสื้อฟ้า, บิลแปะโป้งป้าสมศรี" />
+            </div>
+            <div>
+              <label style="font-size:12px; font-weight:600;">📝 โน้ตหมายเหตุบิล</label>
+              <input name="bnote" class="ttl-input" value="${(eb.bill_note || '').replace(/"/g, '&quot;')}" placeholder="เช่น ไม่ใส่ผงชูรส, ฝากของไว้ก่อน" />
+            </div>
+            <div>
+              <label style="font-size:12px; font-weight:600;">👤 สมาชิกลูกค้า</label>
+              <select name="bcus" class="ttl-select">
+                <option value="">-- ไม่ระบุสมาชิก --</option>
+                ${customers.map(c => `<option value="${c.id}" ${c.id === eb.customer_id ? 'selected' : ''}>${c.name} (${c.phone || '-'})</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button type="button" class="ttl-btn ttl-btn-ghost" onclick="state.editingBillMetaOrder=null; render();">ยกเลิก</button>
+            <button type="submit" class="ttl-btn ttl-btn-dark">บันทึกข้อมูลบิล</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  // 4. New Customer Member Modal (สมัครสมาชิกลูกค้า)
+  if (state.showNewCustomerModal) {
+    html += `
+      <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showNewCustomerModal=false; render();}">
+        <form class="ttl-modal" onsubmit="
+          event.preventDefault();
+          const f = this.elements;
+          apiCall('/api/customers/save', 'POST', {
+            name: f.cname.value.trim(),
+            phone: f.cphone.value.trim(),
+            tier: f.ctier.value,
+            points: Number(f.cpoints.value) || 10,
+            note: f.cnote.value.trim()
+          }).then(out => {
+            if (out && out.data) state.data = out.data;
+            if (out && out.cusId) state.selectedCustomerId = out.cusId;
+            state.showNewCustomerModal = false;
+            render();
+            showToast('⭐ สมัครสมาชิกลูกค้าใหม่เรียบร้อยแล้ว!');
+          });
+        ">
+          <div class="ttl-k">CUSTOMER MEMBERSHIP</div>
+          <h3 style="margin:4px 0 12px;">👤 สมัครสมาชิกลูกค้าใหม่</h3>
+          <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:14px;">
+            <div>
+              <label style="font-size:12px; font-weight:600;">ชื่อลูกค้า / ชื่อเล่น *</label>
+              <input name="cname" class="ttl-input" placeholder="เช่น พี่ก้อง (บ้านซอย 3)" required />
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+              <div>
+                <label style="font-size:12px; font-weight:600;">เบอร์โทรศัพท์</label>
+                <input name="cphone" class="ttl-input" placeholder="08X-XXX-XXXX" />
+              </div>
+              <div>
+                <label style="font-size:12px; font-weight:600;">ระดับสมาชิก</label>
+                <select name="ctier" class="ttl-select">
+                  <option value="สมาชิกใหม่">สมาชิกใหม่</option>
+                  <option value="ขาประจำ">ขาประจำ</option>
+                  <option value="VIP">VIP</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 2fr; gap:10px;">
+              <div>
+                <label style="font-size:12px; font-weight:600;">แต้มเริ่มต้น</label>
+                <input name="cpoints" type="number" class="ttl-input" value="10" />
+              </div>
+              <div>
+                <label style="font-size:12px; font-weight:600;">โน้ตความชอบลูกค้า</label>
+                <input name="cnote" class="ttl-input" placeholder="เช่น ชอบเผ็ดน้อย ไม่ใส่ผักชี" />
+              </div>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button type="button" class="ttl-btn ttl-btn-ghost" onclick="state.showNewCustomerModal=false; render();">ยกเลิก</button>
+            <button type="submit" class="ttl-btn ttl-btn-dark">บันทึกสมาชิก</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  // 5. New Table Modal
   if (state.showNewTableModal) {
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showNewTableModal=false; render();}">
@@ -1889,19 +2220,19 @@ function renderModals() {
             if(out && out.data) state.data = out.data;
             state.showNewTableModal = false;
             render();
-            showToast('+ เพิ่มโต๊ะ/โซนใหม่เรียบร้อยแล้ว');
+            showToast('+ เพิ่มโต๊ะใหม่เรียบร้อยแล้ว');
           });
         ">
-          <div class="ttl-k">เพิ่มโต๊ะอาหาร / แบ่งโซนใหม่</div>
+          <div class="ttl-k">เพิ่มโต๊ะอาหาร</div>
           <h3 style="margin:4px 0 12px;">ตั้งชื่อโต๊ะและโซน</h3>
           <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:16px;">
             <div>
-              <label style="font-size:12px; font-weight:600;">ชื่อโต๊ะ (ใช้เรียกสั่งด้วยเสียงได้ทันที)</label>
-              <input name="tname" class="ttl-input" placeholder="เช่น โต๊ะ 7 หรือ ซุ้ม 1" required />
+              <label style="font-size:12px; font-weight:600;">ชื่อโต๊ะ</label>
+              <input name="tname" class="ttl-input" placeholder="เช่น โต๊ะ 7" required />
             </div>
             <div>
               <label style="font-size:12px; font-weight:600;">ชื่อโซน</label>
-              <input name="tzone" class="ttl-input" value="โซนหน้าร้าน" placeholder="เช่น โซนในร้าน, โซนหน้าร้าน, ซุ้มริมสวน" required />
+              <input name="tzone" class="ttl-input" value="โซนหน้าร้าน" required />
             </div>
           </div>
           <div style="display:flex; justify-content:flex-end; gap:8px;">
@@ -1913,7 +2244,7 @@ function renderModals() {
     `;
   }
 
-  // 4. New Product / Menu Modal
+  // 6. New Product Modal
   if (state.showNewProductModal) {
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showNewProductModal=false; render();}">
@@ -1944,44 +2275,44 @@ function renderModals() {
             <div>
               <label style="font-size:12px; font-weight:600;">ประเภท</label>
               <select name="ptype" class="ttl-select">
-                <option value="GROCERY">📦 สินค้าของชำ (ตัดสต็อกตามชิ้น)</option>
-                <option value="FOOD">🍳 เมนูอาหาร (ส่งจอครัว KDS + ผูกสูตรได้)</option>
+                <option value="GROCERY">📦 สินค้าของชำ</option>
+                <option value="FOOD">🍳 เมนูอาหารส่งครัว</option>
               </select>
             </div>
             <div>
               <label style="font-size:12px; font-weight:600;">ชื่อสินค้า / เมนู</label>
-              <input name="pname" class="ttl-input" placeholder="เช่น สปอนเซอร์ ขวดแก้ว" required />
+              <input name="pname" class="ttl-input" required />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">รหัสบาร์โค้ด (เฉพาะของชำ)</label>
-              <input name="pbarcode" class="ttl-input" placeholder="เช่น 8850123456789" />
+              <label style="font-size:12px; font-weight:600;">บาร์โค้ด (ถ้ามี)</label>
+              <input name="pbarcode" class="ttl-input" />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">คำพ้องสั่งด้วยเสียง (คั่นด้วยจุลภาค)</label>
-              <input name="paliases" class="ttl-input" placeholder="เช่น สปอนเซอร์, เกลือแร่" />
+              <label style="font-size:12px; font-weight:600;">คำพ้องสั่งด้วยเสียง</label>
+              <input name="paliases" class="ttl-input" placeholder="คั่นด้วยจุลภาค ," />
             </div>
             <div>
               <label style="font-size:12px; font-weight:600;">ราคาขาย (บาท)</label>
               <input name="pprice" type="number" step="any" class="ttl-input" value="20" required />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">ราคาทุนต่อหน่วย (บาท)</label>
+              <label style="font-size:12px; font-weight:600;">ราคาทุนหลังร้าน (บาท)</label>
               <input name="pcost" type="number" step="any" class="ttl-input" value="14" required />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">หน่วยขายย่อย (เช่น ขวด, ซอง, จาน)</label>
+              <label style="font-size:12px; font-weight:600;">หน่วยขายย่อย</label>
               <input name="punit" class="ttl-input" value="ขวด" />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">สต็อกเริ่มต้น (ของชำ)</label>
+              <label style="font-size:12px; font-weight:600;">สต็อกเริ่มต้น</label>
               <input name="pstock" type="number" step="any" class="ttl-input" value="24" />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">หน่วยซื้อเข้ายกแพ็ค/ลัง</label>
+              <label style="font-size:12px; font-weight:600;">หน่วยซื้อยกแพ็ค</label>
               <input name="ppurchase" class="ttl-input" value="ลัง (24 ขวด)" />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">จำนวนชิ้นต่อแพ็ค/ลัง</label>
+              <label style="font-size:12px; font-weight:600;">จำนวนชิ้นต่อแพ็ค</label>
               <input name="pconv" type="number" step="any" class="ttl-input" value="24" />
             </div>
           </div>
@@ -1994,7 +2325,7 @@ function renderModals() {
     `;
   }
 
-  // 5. New Ingredient Modal
+  // 7. New Ingredient Modal
   if (state.showNewIngredientModal) {
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showNewIngredientModal=false; render();}">
@@ -2020,26 +2351,26 @@ function renderModals() {
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
             <div>
               <label style="font-size:12px; font-weight:600;">ชื่อวัตถุดิบ</label>
-              <input name="iname" class="ttl-input" placeholder="เช่น ปลาหมึกกล้วยหั่น" required />
+              <input name="iname" class="ttl-input" required />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">หน่วยตัดสูตรอาหาร (เช่น กรัม, ฟอง, ช้อน)</label>
+              <label style="font-size:12px; font-weight:600;">หน่วยตัดสูตร (กรัม/ฟอง)</label>
               <input name="iunit" class="ttl-input" value="กรัม" required />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">หน่วยตอนซื้อเข้า (เช่น กิโลกรัม, แผง)</label>
+              <label style="font-size:12px; font-weight:600;">หน่วยซื้อเข้า</label>
               <input name="ipurchase" class="ttl-input" value="กิโลกรัม" required />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">อัตราแปลงหน่วย (เช่น 1 กก. = 1000 กรัม)</label>
+              <label style="font-size:12px; font-weight:600;">อัตราแปลงหน่วย</label>
               <input name="iconv" type="number" step="any" class="ttl-input" value="1000" required />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">สต็อกคงเหลือเริ่มต้น (หน่วยตัดสูตร)</label>
+              <label style="font-size:12px; font-weight:600;">สต็อกเริ่มต้น</label>
               <input name="iqty" type="number" step="any" class="ttl-input" value="2000" required />
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600;">ต้นทุนต่อหน่วยย่อย (เช่น 0.22 บาท/กรัม)</label>
+              <label style="font-size:12px; font-weight:600;">ทุนต่อหน่วยย่อย (บาท)</label>
               <input name="icost" type="number" step="any" class="ttl-input" value="0.22" required />
             </div>
           </div>
@@ -2052,7 +2383,7 @@ function renderModals() {
     `;
   }
 
-  // 6. New Daily Expense Modal
+  // 8. New Daily Expense Modal
   if (state.showNewExpenseModal) {
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showNewExpenseModal=false; render();}">
@@ -2067,28 +2398,28 @@ function renderModals() {
             if(out && out.data) state.data = out.data;
             state.showNewExpenseModal = false;
             render();
-            showToast('💸 บันทึกรายจ่ายและคำนวณกำไรสุทธิใหม่เรียบร้อย');
+            showToast('💸 บันทึกรายจ่ายเรียบร้อย');
           });
         ">
-          <div class="ttl-k">บันทึกรายจ่ายรายวัน (หักคำนวณกำไรสุทธิ)</div>
+          <div class="ttl-k">บันทึกรายจ่ายรายวัน</div>
           <h3 style="margin:4px 0 12px;">เพิ่มรายการค่าใช้จ่าย</h3>
           <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:14px;">
             <div>
               <label style="font-size:12px; font-weight:600;">หมวดหมู่รายจ่าย</label>
               <select name="ecat" class="ttl-select">
                 <option value="UTILITY">ค่าน้ำ / ค่าไฟ / แก๊สหุงต้ม</option>
-                <option value="WAGE">ค่าแรงพนักงานรายวัน</option>
-                <option value="RAW_MATERIAL">ซื้อของสดจิปาถะ (นอกใบรับของ)</option>
-                <option value="OTHER">ค่าใช้จ่ายอื่นๆ</option>
+                <option value="WAGE">ค่าแรงพนักงาน</option>
+                <option value="RAW_MATERIAL">ซื้อของสดจิปาถะ</option>
+                <option value="OTHER">อื่นๆ</option>
               </select>
             </div>
             <div>
               <label style="font-size:12px; font-weight:600;">รายละเอียด</label>
-              <input name="etitle" class="ttl-input" placeholder="เช่น เปลี่ยนถังแก๊ส ปตท. 15 กก." required />
+              <input name="etitle" class="ttl-input" required />
             </div>
             <div>
               <label style="font-size:12px; font-weight:600;">จำนวนเงิน (บาท)</label>
-              <input name="eamount" type="number" step="any" min="1" class="ttl-input" placeholder="450" required />
+              <input name="eamount" type="number" step="any" min="1" class="ttl-input" required />
             </div>
           </div>
           <div style="display:flex; justify-content:flex-end; gap:8px;">
@@ -2103,6 +2434,9 @@ function renderModals() {
   return html;
 }
 
+// ============================================================================
+// MAIN SHELL RENDER
+// ============================================================================
 function render() {
   document.documentElement.setAttribute('data-theme', state.theme);
   const appEl = document.getElementById('app');
@@ -2113,7 +2447,8 @@ function render() {
     return;
   }
 
-  const { tables, kitchenQueue, analytics } = state.data;
+  const { tables, kitchenQueue, analytics, allBills = [], customers = [] } = state.data;
+  const openBillsCount = allBills.filter(b => b.status === 'OPEN').length;
   const occupiedCount = tables.filter(t => t.status === 'OCCUPIED').length;
   const pendingKdsCount = kitchenQueue.filter(k => k.kitchen_status !== 'SERVED').length;
   const lowStockCount = (analytics.low_stock_grocery?.length || 0) + (analytics.low_stock_ingredients?.length || 0);
@@ -2129,127 +2464,89 @@ function render() {
           <a href="#" class="ttl-brand" onclick="event.preventDefault(); state.activeView='pos'; render();">
             ${renderLogoSvg(24)}
             <span>ONG CO POS</span>
-            <span class="ttl-brand-sub">Teal Treasury Edition</span>
+            <span class="ttl-brand-sub">Teal Treasury</span>
           </a>
 
           <nav class="ttl-nav-links">
             <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'pos'}" onclick="state.activeView='pos'; render();">
-              🛒 1. หน้าขาย & สั่งด้วยเสียง
+              🛒 แคชเชียร์ & สั่งด้วยเสียง
+            </button>
+            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'bills'}" onclick="state.activeView='bills'; render();">
+              🧾 จัดการบิล
+              ${openBillsCount > 0 ? `<span class="ttl-badge-count">${openBillsCount}</span>` : ''}
             </button>
             <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'tables'}" onclick="state.activeView='tables'; render();">
-              🍽️ 2. ผังโต๊ะอาหาร
+              🍽️ ผังโต๊ะ
               <span class="ttl-badge-count">${occupiedCount}/${tables.length}</span>
             </button>
             <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'kds'}" onclick="state.activeView='kds'; render();">
-              👩‍🍳 3. จอฝั่งครัว (KDS)
+              👩‍🍳 จอครัว
               ${pendingKdsCount > 0 ? `<span class="ttl-badge-count">${pendingKdsCount}</span>` : ''}
             </button>
             <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'inventory'}" onclick="state.activeView='inventory'; render();">
-              📦 4. คลังของชำ, นำเข้า & สูตรวัตถุดิบ
+              📦 สต็อก & สูตร
               ${lowStockCount > 0 ? `<span class="ttl-badge-count" style="background:var(--ttl-bad);">${lowStockCount}</span>` : ''}
             </button>
             <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'dashboard'}" onclick="state.activeView='dashboard'; render();">
-              📈 5. Dashboard กำไร/ขาดทุน
+              👥 สมาชิก & กำไร (${customers.length})
             </button>
           </nav>
 
           <div class="ttl-nav-end">
-            <div class="ttl-seg" title="สลับโทนสี Teal Treasury">
+            <div class="ttl-seg" role="group" aria-label="Theme">
               <button type="button" aria-selected="${state.theme === 'teal'}" onclick="state.theme='teal'; render();">Teal</button>
               <button type="button" aria-selected="${state.theme === 'plum'}" onclick="state.theme='plum'; render();">Plum</button>
-              <button type="button" aria-selected="${state.theme === 'graphite'}" onclick="state.theme='graphite'; render();">Graphite</button>
+              <button type="button" aria-selected="${state.theme === 'graphite'}" onclick="state.theme='graphite'; render();">Dark</button>
             </div>
           </div>
         </div>
       </header>
 
-      <!-- Always-Available Dark Teal AI Voice Ordering Bar -->
+      <!-- Always-Ready Voice Command Bar -->
       ${renderVoiceConsole()}
 
-      <!-- Main Bezel Frame & Sidebar Workspace (.ttl-device-bezel & .ttl-dash) -->
+      <!-- Main Workspace Card -->
       <main class="ttl-workspace-wrap">
-        <div class="ttl-device-bezel">
-          <div class="ttl-dash">
-            <!-- Left Treasury Sidebar (.ttl-side) -->
-            <aside class="ttl-side">
-              <div class="ttl-side-brand">
-                ${renderLogoSvg(18)}
-                <span>ONG CO Treasury</span>
-              </div>
-
-              <div class="ttl-side-label">เมนูระบบหลัก</div>
-              <button type="button" class="ttl-side-item" data-on="${state.activeView === 'pos'}" onclick="state.activeView='pos'; render();">
-                <span>🛒 แคชเชียร์ & สั่งเสียง</span>
-              </button>
-              <button type="button" class="ttl-side-item" data-on="${state.activeView === 'tables'}" onclick="state.activeView='tables'; render();">
-                <span>🍽️ โต๊ะอาหาร (${occupiedCount} โต๊ะ)</span>
-              </button>
-              <button type="button" class="ttl-side-item" data-on="${state.activeView === 'kds'}" onclick="state.activeView='kds'; render();">
-                <span>👩‍🍳 จอครัว KDS (${pendingKdsCount})</span>
-              </button>
-              <button type="button" class="ttl-side-item" data-on="${state.activeView === 'inventory' && state.inventoryTab === 'stock_in'}" onclick="state.activeView='inventory'; state.inventoryTab='stock_in'; render();">
-                <span>📥 นำเข้าสินค้าเติมสต็อก</span>
-              </button>
-              <button type="button" class="ttl-side-item" data-on="${state.activeView === 'inventory' && state.inventoryTab === 'recipes'}" onclick="state.activeView='inventory'; state.inventoryTab='recipes'; render();">
-                <span>🥩 วัตถุดิบ & ผูกสูตรเมนู</span>
-              </button>
-              <button type="button" class="ttl-side-item" data-on="${state.activeView === 'dashboard'}" onclick="state.activeView='dashboard'; render();">
-                <span>📈 กำไร/ขาดทุนสุทธิ</span>
-              </button>
-
-              <div class="ttl-side-label">สถานะโต๊ะด่วน</div>
-              ${tables.map(t => `
-                <button
-                  type="button"
-                  class="ttl-side-item"
-                  data-on="${state.activeView === 'pos' && state.posMode === 'DINE_IN' && state.selectedTableId === t.id}"
-                  onclick="state.posMode='DINE_IN'; state.selectedTableId='${t.id}'; state.activeView='pos'; render();"
-                >
-                  <i class="ttl-side-dot" style="background:${t.status === 'OCCUPIED' ? 'var(--ttl-gold)' : 'var(--ttl-good)'};"></i>
-                  <span>${t.name}</span>
-                  <small>${t.active_order ? formatMoney(t.active_order.total_amount) : 'ว่าง'}</small>
-                </button>
-              `).join('')}
-
-              <div class="ttl-side-label" style="margin-top:auto;">สรุปบัญชีวันนี้</div>
-              <div style="padding:8px 10px; border-radius:8px; background:var(--ttl-paper); border:1px solid var(--ttl-rule); font-size:12px;">
-                <div style="display:flex; justify-content:space-between;">
-                  <span style="color:var(--ttl-muted);">ยอดขายรวม:</span>
-                  <b>${formatMoney(analytics.total_revenue)}</b>
-                </div>
-                <div style="display:flex; justify-content:space-between; margin-top:2px;">
-                  <span style="color:var(--ttl-muted);">กำไรสุทธิ:</span>
-                  <b style="color:var(--ttl-good);">${formatMoney(analytics.net_profit)}</b>
-                </div>
-              </div>
-            </aside>
-
-            <!-- Main Content Area (.ttl-main) -->
-            <div class="ttl-main">
-              <div class="ttl-crumbs">
-                <span>ONG CO POS</span>
-                <span>/</span>
-                <b>${
-                  state.activeView === 'pos' ? 'หน้าขายหน้าร้าน & โต๊ะอาหาร (Hybrid POS Terminal)' :
-                  state.activeView === 'tables' ? 'ผังโต๊ะอาหาร & โซน (Table & Zone Map)' :
-                  state.activeView === 'kds' ? 'จอแสดงผลฝั่งครัว (Kitchen Display System)' :
-                  state.activeView === 'inventory' ? 'ระบบคลังของชำ, นำเข้าเติมสต็อก & สูตรวัตถุดิบอาหาร' :
-                  'รายงานยอดขาย ต้นทุน และกำไร/ขาดทุนสุทธิ (P&L Treasury)'
-                }</b>
-                <span class="ttl-live"><i></i> Real-time Sync Active</span>
-              </div>
-
-              ${
-                state.activeView === 'pos' ? renderPosView() :
-                state.activeView === 'tables' ? renderTablesView() :
-                state.activeView === 'kds' ? renderKdsView() :
-                state.activeView === 'inventory' ? renderInventoryView() :
-                renderDashboardView()
-              }
-            </div>
-          </div>
+        <div class="ttl-main-card">
+          ${state.activeView === 'pos' ? renderPosView() : ''}
+          ${state.activeView === 'bills' ? renderBillsView() : ''}
+          ${state.activeView === 'tables' ? renderTablesView() : ''}
+          ${state.activeView === 'kds' ? renderKdsView() : ''}
+          ${state.activeView === 'inventory' ? renderInventoryView() : ''}
+          ${state.activeView === 'dashboard' ? renderCustomersAndDashboardView() : ''}
         </div>
       </main>
+
+      <!-- Floating Bill Button & Slide-Over Bill Drawer -->
+      ${renderFloatingBillAndDrawer()}
+
+      <!-- Mobile Bottom Navigation Bar -->
+      <nav class="ttl-mobile-nav">
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'pos'}" onclick="state.activeView='pos'; render();">
+          <span class="mob-ico">🛒</span>
+          <span>แคชเชียร์</span>
+        </button>
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'bills'}" onclick="state.activeView='bills'; render();">
+          <span class="mob-ico">🧾</span>
+          <span>จัดการบิล (${openBillsCount})</span>
+        </button>
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'tables'}" onclick="state.activeView='tables'; render();">
+          <span class="mob-ico">🍽️</span>
+          <span>ผังโต๊ะ</span>
+        </button>
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'kds'}" onclick="state.activeView='kds'; render();">
+          <span class="mob-ico">👩‍🍳</span>
+          <span>จอครัว (${pendingKdsCount})</span>
+        </button>
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'inventory'}" onclick="state.activeView='inventory'; render();">
+          <span class="mob-ico">📦</span>
+          <span>สต็อก</span>
+        </button>
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'dashboard'}" onclick="state.activeView='dashboard'; render();">
+          <span class="mob-ico">👥</span>
+          <span>สมาชิก/กำไร</span>
+        </button>
+      </nav>
 
       ${renderModals()}
       ${state.toastMessage ? `<div class="ttl-toast">${state.toastMessage}</div>` : ''}
@@ -2257,45 +2554,20 @@ function render() {
   `;
 }
 
-// Connect SSE for live updates + fallback auto-sync for Vercel Serverless
-function connectSse() {
+// Initialize SSE & Bootstrap on Load
+window.addEventListener('DOMContentLoaded', () => {
+  fetchBootstrap();
   try {
-    const es = new EventSource('/api/events');
-    es.onmessage = (ev) => {
+    const evtSource = new EventSource('/api/events');
+    evtSource.onmessage = (e) => {
       try {
-        const msg = JSON.parse(ev.data);
-        if (msg.type && msg.type !== 'connected') {
-          fetchBootstrap();
-        }
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'refresh') fetchBootstrap();
       } catch {
         // ignore
       }
     };
   } catch {
-    // ignore
+    // ignore if SSE not supported
   }
-
-  // Lightweight background sync for multi-device KDS & Table updates on Vercel + Supabase
-  setInterval(() => {
-    const activeTag = document.activeElement ? document.activeElement.tagName : '';
-    const isTyping = ['INPUT', 'SELECT', 'TEXTAREA'].includes(activeTag);
-    const hasOpenModal = Boolean(
-      state.modifierModalProduct ||
-      state.checkoutModalOrder ||
-      state.showNewTableModal ||
-      state.showNewProductModal ||
-      state.showNewIngredientModal ||
-      state.showNewExpenseModal ||
-      state.voiceListening
-    );
-    if (!isTyping && !hasOpenModal) {
-      fetchBootstrap();
-    }
-  }, 6000);
-}
-
-window.addEventListener('DOMContentLoaded', () => {
-  fetchBootstrap();
-  connectSse();
 });
-
