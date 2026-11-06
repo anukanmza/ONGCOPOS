@@ -71,11 +71,51 @@ function formatTimeAgo(isoStr) {
   return `${hrs} ชม. ${mins} นาทีที่แล้ว`;
 }
 
+async function apiCall(endpoint, method = 'GET', bodyObj = null) {
+  try {
+    const res = await fetch(endpoint, {
+      method,
+      headers: bodyObj ? { 'Content-Type': 'application/json' } : undefined,
+      body: bodyObj ? JSON.stringify(bodyObj) : undefined
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json && !json.error) {
+        state.backendMode = 'CLOUD_API';
+        return json;
+      }
+    }
+  } catch {
+    // Fallback to LocalPosEngine
+  }
+
+  state.backendMode = 'LOCAL_ENGINE';
+  const eng = window.LocalPosEngine;
+  if (!eng) return null;
+
+  if (endpoint === '/api/bootstrap') return eng.getBootstrap();
+  if (endpoint === '/api/voice/parse') return eng.parseVoice(bodyObj?.text, bodyObj?.fallbackTableId);
+  if (endpoint === '/api/orders/submit') return eng.submitOrder(bodyObj || {});
+  if (endpoint === '/api/orders/item-return') return eng.returnItem(bodyObj || {});
+  if (endpoint === '/api/orders/checkout') return eng.checkoutOrder(bodyObj || {});
+  if (endpoint === '/api/kds/status') return eng.updateKds(bodyObj || {});
+  if (endpoint === '/api/stock-in') return eng.stockIn(bodyObj || {});
+  if (endpoint === '/api/products/save') return eng.saveProduct(bodyObj || {});
+  if (endpoint === '/api/ingredients/save') return eng.saveIngredient(bodyObj || {});
+  if (endpoint === '/api/tables/save') return eng.saveTable(bodyObj || {});
+  if (endpoint === '/api/expenses/save') return eng.saveExpense(bodyObj || {});
+  return eng.getBootstrap();
+}
+
 async function fetchBootstrap() {
-  const res = await fetch('/api/bootstrap');
-  const data = await res.json();
-  state.data = data;
-  syncBomEditorWithProduct(state.selectedBomFoodId);
+  const data = await apiCall('/api/bootstrap', 'GET');
+  if (data && Array.isArray(data.products)) {
+    state.data = data;
+    syncBomEditorWithProduct(state.selectedBomFoodId);
+  } else if (window.LocalPosEngine) {
+    state.data = window.LocalPosEngine.getBootstrap();
+    syncBomEditorWithProduct(state.selectedBomFoodId);
+  }
   render();
 }
 
@@ -160,12 +200,7 @@ async function analyzeVoiceCommand(text) {
     return;
   }
   const fallbackTableId = state.posMode === 'DINE_IN' ? state.selectedTableId : null;
-  const res = await fetch('/api/voice/parse', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: query, fallbackTableId })
-  });
-  const parsed = await res.json();
+  const parsed = await apiCall('/api/voice/parse', 'POST', { text: query, fallbackTableId });
   state.voicePreview = parsed;
   render();
 }
@@ -177,15 +212,11 @@ async function confirmVoicePreview() {
   if (pv.intent === 'RETURN') {
     const targetTableId = pv.table ? pv.table.id : state.selectedTableId;
     for (const it of pv.items) {
-      await fetch('/api/orders/item-return', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          table_id: targetTableId,
-          product_id: it.product_id,
-          mode: pv.return_mode || 'RETURNED_RESTOCK',
-          reason_note: `สั่งคืนด้วยเสียง: "${pv.raw_text}"`
-        })
+      await apiCall('/api/orders/item-return', 'POST', {
+        table_id: targetTableId,
+        product_id: it.product_id,
+        mode: pv.return_mode || 'RETURNED_RESTOCK',
+        reason_note: `สั่งคืนด้วยเสียง: "${pv.raw_text}"`
       });
     }
     state.voicePreview = null;
@@ -199,24 +230,19 @@ async function confirmVoicePreview() {
   if (pv.table) {
     state.posMode = 'DINE_IN';
     state.selectedTableId = pv.table.id;
-    const res = await fetch('/api/orders/submit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        order_type: 'DINE_IN',
-        table_id: pv.table.id,
-        items: pv.items.map(i => ({
-          product_id: i.product_id,
-          quantity: i.quantity,
-          modifiers: i.modifiers,
-          unit_price: i.unit_price,
-          input_source: 'VOICE'
-        })),
+    const out = await apiCall('/api/orders/submit', 'POST', {
+      order_type: 'DINE_IN',
+      table_id: pv.table.id,
+      items: pv.items.map(i => ({
+        product_id: i.product_id,
+        quantity: i.quantity,
+        modifiers: i.modifiers,
+        unit_price: i.unit_price,
         input_source: 'VOICE'
-      })
+      })),
+      input_source: 'VOICE'
     });
-    const out = await res.json();
-    if (out.data) state.data = out.data;
+    if (out && out.data) state.data = out.data;
     state.voicePreview = null;
     state.voiceText = '';
     render();
@@ -320,18 +346,13 @@ function handleBarcodeScan(barcodeStr) {
 
 async function submitDraftCartToTable() {
   if (state.cart.length === 0) return;
-  const res = await fetch('/api/orders/submit', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      order_type: 'DINE_IN',
-      table_id: state.selectedTableId,
-      items: state.cart,
-      input_source: 'TOUCH'
-    })
+  const out = await apiCall('/api/orders/submit', 'POST', {
+    order_type: 'DINE_IN',
+    table_id: state.selectedTableId,
+    items: state.cart,
+    input_source: 'TOUCH'
   });
-  const out = await res.json();
-  if (out.data) state.data = out.data;
+  if (out && out.data) state.data = out.data;
   state.cart = [];
   render();
   const tbl = state.data.tables.find(t => t.id === state.selectedTableId);
@@ -344,13 +365,8 @@ async function handleReturnTableItem(orderItemId, mode) {
     : 'ยืนยัน "คืนสินค้าเข้าสต็อก" (หักยอดเงินออกจากบิลโต๊ะ และบวกสต็อกกลับเข้าคลังอัตโนมัติ)?';
   if (!window.confirm(label)) return;
 
-  const res = await fetch('/api/orders/item-return', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ order_item_id: orderItemId, mode })
-  });
-  const out = await res.json();
-  if (out.data) state.data = out.data;
+  const out = await apiCall('/api/orders/item-return', 'POST', { order_item_id: orderItemId, mode });
+  if (out && out.data) state.data = out.data;
   render();
   showToast(mode === 'VOID_WASTE' ? '🗑️ ตัดเป็นของเสียและหักยอดออกจากบิลโต๊ะแล้ว' : '↩️ คืนสินค้ากลับเข้าสต็อกและหักยอดบิลโต๊ะเรียบร้อย');
 }
@@ -401,52 +417,37 @@ async function confirmCheckoutPayment() {
   const cashRec = Number(state.checkoutCashReceived) || netTotal;
 
   if (co.mode === 'CART') {
-    const res = await fetch('/api/orders/submit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        order_type: 'RETAIL',
-        items: state.cart,
-        payment_method: state.checkoutPaymentMethod,
-        discount,
-        cash_received: cashRec,
-        settle_immediately: true
-      })
+    const out = await apiCall('/api/orders/submit', 'POST', {
+      order_type: 'RETAIL',
+      items: state.cart,
+      payment_method: state.checkoutPaymentMethod,
+      discount,
+      cash_received: cashRec,
+      settle_immediately: true
     });
-    const out = await res.json();
-    if (out.data) state.data = out.data;
+    if (out && out.data) state.data = out.data;
     state.cart = [];
     state.checkoutModalOrder = null;
     render();
     showToast(`💰 รับชำระเงินหน้าร้าน ${formatMoney(netTotal)} สำเร็จ!`);
   } else {
-    const res = await fetch('/api/orders/checkout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        order_id: co.orderId,
-        table_id: co.tableId,
-        payment_method: state.checkoutPaymentMethod,
-        discount,
-        cash_received: cashRec
-      })
+    const out = await apiCall('/api/orders/checkout', 'POST', {
+      order_id: co.orderId,
+      table_id: co.tableId,
+      payment_method: state.checkoutPaymentMethod,
+      discount,
+      cash_received: cashRec
     });
-    const out = await res.json();
-    if (out.data) state.data = out.data;
+    if (out && out.data) state.data = out.data;
     state.checkoutModalOrder = null;
     render();
-    showToast(`💰 เช็คบิล ${co.label} ยอด ${formatMoney(netTotal)} เรียบร้อย! (ทอน ${formatMoney(out.change || 0)})`);
+    showToast(`💰 เช็คบิล ${co.label} ยอด ${formatMoney(netTotal)} เรียบร้อย! (ทอน ${formatMoney(out?.change || 0)})`);
   }
 }
 
 async function updateKdsStatus(orderItemId, nextStatus) {
-  const res = await fetch('/api/kds/status', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ order_item_id: orderItemId, kitchen_status: nextStatus })
-  });
-  const out = await res.json();
-  if (out.data) state.data = out.data;
+  const out = await apiCall('/api/kds/status', 'POST', { order_item_id: orderItemId, kitchen_status: nextStatus });
+  if (out && out.data) state.data = out.data;
   render();
   showToast(nextStatus === 'COOKING' ? '🍳 เริ่มผัด/ทำอาหารรายการนี้แล้ว' : '✅ อาหารเสร็จพร้อมเสิร์ฟแล้ว!');
 }
@@ -521,22 +522,17 @@ async function submitStockInReceipt() {
     if (state.stockInDraftItems.length === 0) return;
   }
 
-  const res = await fetch('/api/stock-in', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      supplier_name: state.stockInSupplier,
-      note: state.stockInNote,
-      record_as_expense: state.stockInRecordExpense,
-      items: state.stockInDraftItems
-    })
+  const out = await apiCall('/api/stock-in', 'POST', {
+    supplier_name: state.stockInSupplier,
+    note: state.stockInNote,
+    record_as_expense: state.stockInRecordExpense,
+    items: state.stockInDraftItems
   });
-  const out = await res.json();
-  if (out.data) state.data = out.data;
+  if (out && out.data) state.data = out.data;
   state.stockInDraftItems = [];
   state.stockInNote = '';
   render();
-  showToast(`📦 บันทึกใบรับของเข้าสต็อก ${out.receiptId} สำเร็จ! ระบบบวกสต็อกเพิ่มให้เรียบร้อยแล้ว`);
+  showToast(`📦 บันทึกใบรับของเข้าสต็อก ${out?.receiptId || ''} สำเร็จ! ระบบบวกสต็อกเพิ่มให้เรียบร้อยแล้ว`);
 }
 
 async function saveBomForSelectedFood() {
@@ -544,16 +540,11 @@ async function saveBomForSelectedFood() {
   const prod = state.data.products.find(p => p.id === state.selectedBomFoodId);
   if (!prod) return;
 
-  const res = await fetch('/api/products/save', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...prod,
-      recipe_items: state.bomDraftRows
-    })
+  const out = await apiCall('/api/products/save', 'POST', {
+    ...prod,
+    recipe_items: state.bomDraftRows
   });
-  const out = await res.json();
-  if (out.data) {
+  if (out && out.data) {
     state.data = out.data;
     syncBomEditorWithProduct(state.selectedBomFoodId);
   }
@@ -1894,12 +1885,8 @@ function renderModals() {
           event.preventDefault();
           const name = this.elements.tname.value.trim();
           const zone = this.elements.tzone.value.trim() || 'โซนในร้าน';
-          fetch('/api/tables/save', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ name, zone_name: zone })
-          }).then(r=>r.json()).then(out=>{
-            if(out.data) state.data = out.data;
+          apiCall('/api/tables/save', 'POST', { name, zone_name: zone }).then(out=>{
+            if(out && out.data) state.data = out.data;
             state.showNewTableModal = false;
             render();
             showToast('+ เพิ่มโต๊ะ/โซนใหม่เรียบร้อยแล้ว');
@@ -1933,23 +1920,19 @@ function renderModals() {
         <form class="ttl-modal" onsubmit="
           event.preventDefault();
           const f = this.elements;
-          fetch('/api/products/save', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({
-              name: f.pname.value,
-              item_type: f.ptype.value,
-              barcode: f.pbarcode.value,
-              price: Number(f.pprice.value),
-              cost: Number(f.pcost.value),
-              unit: f.punit.value || 'ชิ้น',
-              purchase_unit: f.ppurchase.value || 'แพ็ค',
-              conversion_rate: Number(f.pconv.value) || 1,
-              stock_qty: Number(f.pstock.value) || 0,
-              voice_aliases: f.paliases.value
-            })
-          }).then(r=>r.json()).then(out=>{
-            if(out.data) state.data = out.data;
+          apiCall('/api/products/save', 'POST', {
+            name: f.pname.value,
+            item_type: f.ptype.value,
+            barcode: f.pbarcode.value,
+            price: Number(f.pprice.value),
+            cost: Number(f.pcost.value),
+            unit: f.punit.value || 'ชิ้น',
+            purchase_unit: f.ppurchase.value || 'แพ็ค',
+            conversion_rate: Number(f.pconv.value) || 1,
+            stock_qty: Number(f.pstock.value) || 0,
+            voice_aliases: f.paliases.value
+          }).then(out=>{
+            if(out && out.data) state.data = out.data;
             state.showNewProductModal = false;
             render();
             showToast('+ บันทึกสินค้า/เมนูใหม่เรียบร้อยแล้ว');
@@ -2018,19 +2001,15 @@ function renderModals() {
         <form class="ttl-modal" onsubmit="
           event.preventDefault();
           const f = this.elements;
-          fetch('/api/ingredients/save', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({
-              name: f.iname.value,
-              stock_unit: f.iunit.value || 'กรัม',
-              purchase_unit: f.ipurchase.value || 'กิโลกรัม',
-              conversion_rate: Number(f.iconv.value) || 1000,
-              current_qty: Number(f.iqty.value) || 0,
-              cost_per_unit: Number(f.icost.value) || 0.15
-            })
-          }).then(r=>r.json()).then(out=>{
-            if(out.data) state.data = out.data;
+          apiCall('/api/ingredients/save', 'POST', {
+            name: f.iname.value,
+            stock_unit: f.iunit.value || 'กรัม',
+            purchase_unit: f.ipurchase.value || 'กิโลกรัม',
+            conversion_rate: Number(f.iconv.value) || 1000,
+            current_qty: Number(f.iqty.value) || 0,
+            cost_per_unit: Number(f.icost.value) || 0.15
+          }).then(out=>{
+            if(out && out.data) state.data = out.data;
             state.showNewIngredientModal = false;
             render();
             showToast('+ เพิ่มวัตถุดิบอาหารใหม่เรียบร้อยแล้ว');
@@ -2080,16 +2059,12 @@ function renderModals() {
         <form class="ttl-modal" onsubmit="
           event.preventDefault();
           const f = this.elements;
-          fetch('/api/expenses/save', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({
-              category: f.ecat.value,
-              title: f.etitle.value,
-              amount: Number(f.eamount.value)
-            })
-          }).then(r=>r.json()).then(out=>{
-            if(out.data) state.data = out.data;
+          apiCall('/api/expenses/save', 'POST', {
+            category: f.ecat.value,
+            title: f.etitle.value,
+            amount: Number(f.eamount.value)
+          }).then(out=>{
+            if(out && out.data) state.data = out.data;
             state.showNewExpenseModal = false;
             render();
             showToast('💸 บันทึกรายจ่ายและคำนวณกำไรสุทธิใหม่เรียบร้อย');

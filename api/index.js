@@ -195,7 +195,10 @@ module.exports = async (req, res) => {
   }
 
   const urlObj = new URL(req.url, `https://${req.headers.host || 'localhost'}`);
-  const pathname = urlObj.pathname;
+  const routeParam = urlObj.searchParams.get('route');
+  const pathname = routeParam
+    ? `/api/${routeParam.replace(/^\/+/, '')}`
+    : urlObj.pathname;
   const body = typeof req.body === 'object' && req.body !== null
     ? req.body
     : (typeof req.body === 'string' && req.body ? JSON.parse(req.body) : {});
