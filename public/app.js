@@ -2,13 +2,21 @@ const state = {
   theme: 'teal',
   activeView: 'pos', // 'pos' | 'bills' | 'tables' | 'kds' | 'inventory' | 'customers' | 'dashboard'
   inventoryTab: 'stock_in', // 'stock_in' | 'products' | 'recipes' | 'audit'
-  billsFilter: 'OPEN', // 'OPEN' | 'PAID' | 'ALL'
+  billsFilter: 'OPEN', // 'OPEN' | 'PAID' | 'CANCELLED' | 'ALL'
+  billsDatePreset: 'ALL', // 'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'CUSTOM'
+  billsDateFrom: '',
+  billsDateTo: '',
+  dashboardDatePreset: 'ALL', // 'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'CUSTOM'
+  dashboardDateFrom: '',
+  dashboardDateTo: '',
+  soldItemsTypeFilter: 'ALL', // 'ALL' | 'FOOD' | 'GROCERY'
   posMode: 'DINE_IN', // 'RETAIL' | 'DINE_IN'
   selectedTableId: 'T1',
   activeHeldOrderId: null, // When resuming an open/held retail bill
   billTitle: '',
   billNote: '',
   selectedCustomerId: '',
+  drawerMemberSearch: '', // Live search query inside Bill Drawer
   billDrawerOpen: false, // Floating Bill Drawer toggle state
   categoryFilter: 'ALL',
   searchQuery: '',
@@ -64,14 +72,25 @@ const state = {
 let recognition = null;
 let toastTimer = null;
 
+// Non-disruptive Toast: Updates ONLY the floating toast element without calling render()!
 function showToast(msg) {
   state.toastMessage = msg;
-  render();
+  let toastEl = document.getElementById('ttl-toast-live');
+  if (!toastEl) {
+    toastEl = document.createElement('div');
+    toastEl.id = 'ttl-toast-live';
+    toastEl.className = 'ttl-toast';
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = msg;
+  toastEl.style.display = 'block';
+
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     state.toastMessage = null;
-    render();
-  }, 3600);
+    const el = document.getElementById('ttl-toast-live');
+    if (el) el.style.display = 'none';
+  }, 3200);
 }
 
 function formatMoney(num) {
@@ -87,6 +106,95 @@ function formatTimeAgo(isoStr) {
   const hrs = Math.floor(diffMin / 60);
   const mins = diffMin % 60;
   return `${hrs} ชม. ${mins} นาทีที่แล้ว`;
+}
+
+function formatDateTimeThai(isoStr) {
+  if (!isoStr) return '-';
+  const d = new Date(isoStr);
+  if (Number.isNaN(d.getTime())) return isoStr;
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const yearBe = d.getFullYear() + 543;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${day}/${month}/${yearBe} ${hh}:${mm} น.`;
+}
+
+function toLocalYmd(isoOrDate) {
+  if (!isoOrDate) return '';
+  if (typeof isoOrDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(isoOrDate)) return isoOrDate;
+  const d = new Date(isoOrDate);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function applyDatePreset(scope, preset) {
+  const now = new Date();
+  const todayStr = toLocalYmd(now);
+  let fromStr = '';
+  let toStr = '';
+
+  if (preset === 'TODAY') {
+    fromStr = todayStr;
+    toStr = todayStr;
+  } else if (preset === 'WEEK') {
+    const start = new Date(now);
+    start.setDate(now.getDate() - 6);
+    fromStr = toLocalYmd(start);
+    toStr = todayStr;
+  } else if (preset === 'MONTH') {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    fromStr = toLocalYmd(start);
+    toStr = todayStr;
+  }
+
+  if (scope === 'BILLS') {
+    state.billsDatePreset = preset;
+    if (preset !== 'CUSTOM') {
+      state.billsDateFrom = fromStr;
+      state.billsDateTo = toStr;
+    }
+  } else {
+    state.dashboardDatePreset = preset;
+    if (preset !== 'CUSTOM') {
+      state.dashboardDateFrom = fromStr;
+      state.dashboardDateTo = toStr;
+    }
+  }
+  render();
+}
+
+function isDateInRange(isoOrDateStr, preset, fromStr, toStr) {
+  if (!preset || preset === 'ALL') return true;
+  const itemYmd = toLocalYmd(isoOrDateStr);
+  if (!itemYmd) return true;
+
+  const now = new Date();
+  const todayStr = toLocalYmd(now);
+
+  if (preset === 'TODAY') {
+    return itemYmd === todayStr;
+  }
+  if (preset === 'WEEK') {
+    const start = new Date(now);
+    start.setDate(now.getDate() - 6);
+    const startStr = toLocalYmd(start);
+    return itemYmd >= startStr && itemYmd <= todayStr;
+  }
+  if (preset === 'MONTH') {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startStr = toLocalYmd(start);
+    return itemYmd >= startStr && itemYmd <= todayStr;
+  }
+  if (preset === 'CUSTOM') {
+    if (fromStr && itemYmd < fromStr) return false;
+    if (toStr && itemYmd > toStr) return false;
+    return true;
+  }
+  return true;
 }
 
 async function apiCall(endpoint, method = 'GET', bodyObj = null) {
@@ -601,7 +709,11 @@ async function submitSplitBill(payImmediately = false) {
   if (!ord) return;
   const splitItems = Object.entries(state.splitQtyMap)
     .filter(([, q]) => Number(q) > 0)
-    .map(([itemId, q]) => ({ order_item_id: itemId, quantity: Number(q) }));
+    .map(([itemId, q]) => ({
+      order_item_id: itemId,
+      split_qty: Number(q),
+      quantity: Number(q)
+    }));
 
   if (splitItems.length === 0) {
     showToast('⚠️ กรุณาเลือกจำนวนรายการที่ต้องการแยกบิลอย่างน้อย 1 รายการ');
@@ -633,14 +745,76 @@ async function submitSplitBill(payImmediately = false) {
       state.checkoutPaymentMethod = 'CASH';
       state.checkoutDiscount = 0;
       state.checkoutCashReceived = String(newOrd.total_amount);
+      syncCurrentBillMetaFromContext();
       render();
-      showToast(`✂️ แยกบิลสำเร็จ! พร้อมชำระเงินสำหรับบิลแยกจ่าย`);
+      showToast(`✂️ แยกบิลสำเร็จ! พร้อมรับชำระเงินสำหรับบิล "${newOrd.bill_title || newOrd.id}"`);
       return;
     }
   }
 
+  syncCurrentBillMetaFromContext();
   render();
-  showToast(`✂️ แยกบิลสำเร็จ! สามารถดูหรือชำระบิลที่แยกได้ทันที`);
+  showToast(`✂️ แยกบิลสำเร็จ! บิลที่แยกออกพร้อมใช้งานในรายการบิลแล้ว`);
+}
+
+function renderDrawerMemberMatchListHtml(queryText) {
+  const customers = state.data?.customers || [];
+  const q = String(queryText || '').trim().toLowerCase();
+  if (!q) return '';
+
+  const matched = customers.filter(c =>
+    (c.name || '').toLowerCase().includes(q) ||
+    (c.phone || '').replace(/-/g, '').includes(q.replace(/-/g, '')) ||
+    (c.phone || '').toLowerCase().includes(q)
+  ).slice(0, 6);
+
+  if (matched.length === 0) {
+    return `
+      <div style="margin-top:4px; padding:8px 10px; border-radius:8px; background:var(--ttl-paper); border:1px dashed var(--ttl-rule); font-size:12px; color:var(--ttl-muted); display:flex; justify-content:space-between; align-items:center;">
+        <span>ไม่พบสมาชิกที่ตรงกับ "${queryText.replace(/</g, '&lt;')}"</span>
+        <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-lilac" style="height:26px; padding:0 8px; font-size:11px;" onclick="state.editingCustomer=null; state.showNewCustomerModal=true; render();">+ สมัครใหม่</button>
+      </div>
+    `;
+  }
+
+  return `
+    <div style="margin-top:4px; border-radius:10px; background:var(--ttl-paper); border:1px solid var(--ttl-gold); box-shadow:0 8px 20px rgba(0,0,0,0.08); max-height:185px; overflow-y:auto; display:flex; flex-direction:column;">
+      ${matched.map(c => `
+        <button
+          type="button"
+          style="display:flex; justify-content:space-between; align-items:center; width:100%; text-align:left; padding:8px 10px; border-bottom:1px solid var(--ttl-rule); background:transparent; cursor:pointer;"
+          onclick="selectMemberInDrawer('${c.id}')"
+        >
+          <div>
+            <div style="font-weight:700; font-size:13px; color:var(--ttl-ink);">⭐ ${c.name} <span class="ttl-tag ttl-tag-food" style="font-size:10px; padding:1px 6px;">${c.tier || 'สมาชิก'}</span></div>
+            <div style="font-size:11.5px; color:var(--ttl-muted);">📞 ${c.phone || 'ไม่ระบุเบอร์'} • สะสม ${c.points || 0} แต้ม</div>
+          </div>
+          <span style="font-size:11.5px; font-weight:700; color:var(--ttl-gold);">เลือก ➔</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function handleDrawerMemberSearchInput(val) {
+  state.drawerMemberSearch = val;
+  const box = document.getElementById('drawer-member-results');
+  if (box) {
+    box.innerHTML = renderDrawerMemberMatchListHtml(val);
+  }
+}
+
+function selectMemberInDrawer(customerId) {
+  state.selectedCustomerId = customerId;
+  state.drawerMemberSearch = '';
+  const cus = getSelectedCustomerObj();
+  if (cus && !state.billTitle.trim() && state.posMode === 'RETAIL') {
+    state.billTitle = `บิลคุณ${cus.name}`;
+  }
+  render();
+  if (cus) {
+    showToast(`👤 เลือกสมาชิก "${cus.name}" (${cus.points || 0} แต้ม) เข้าบิลแล้ว`);
+  }
 }
 
 async function deleteEntity(entityType, id, name) {
@@ -1065,6 +1239,7 @@ function renderPosView() {
         <form class="barcode-box" onsubmit="event.preventDefault(); handleBarcodeScan(state.searchQuery);">
           <span>🔍</span>
           <input
+            id="pos-search-input"
             type="text"
             placeholder="ค้นหาชื่อเมนู / สินค้า หรือยิงบาร์โค้ด..."
             value="${state.searchQuery.replace(/"/g, '&quot;')}"
@@ -1139,10 +1314,11 @@ function renderPosView() {
 // FLOATING BILL BUTTON (.ttl-fab-bill) & SLIDE-OVER BILL DRAWER (.ttl-bill-drawer)
 // ============================================================================
 function renderFloatingBillAndDrawer() {
-  const { tables, customers = [], allBills = [] } = state.data;
+  const { tables, allBills = [] } = state.data;
   const activeTable = tables.find(t => t.id === state.selectedTableId) || tables[0];
   const activeOrd = getActiveContextOrder();
   const openBills = allBills.filter(b => b.status === 'OPEN');
+  const selectedCus = getSelectedCustomerObj();
 
   const draftCount = state.cart.reduce((s, i) => s + i.quantity, 0);
   const draftTotal = state.cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
@@ -1184,6 +1360,7 @@ function renderFloatingBillAndDrawer() {
               <div>
                 <div class="ttl-k">${state.posMode === 'DINE_IN' ? '🍽️ บิลโต๊ะอาหาร (DINE-IN)' : '🛍️ บิลหน้าร้าน / เปิดบิลพักไว้'}</div>
                 <div style="font-size:17px; font-weight:700;">${billLabel}</div>
+                ${activeOrd ? `<div style="font-size:11.5px; color:var(--ttl-muted);">🕒 เปิดบิลเมื่อ: ${formatDateTimeThai(activeOrd.created_at)}</div>` : ''}
               </div>
               <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.billDrawerOpen=false; render();">
                 ✕ ปิดลิ้นชัก
@@ -1229,28 +1406,53 @@ function renderFloatingBillAndDrawer() {
               </div>
             ` : ''}
 
-            <!-- Customer Member Selector -->
-            <div style="display:flex; gap:6px; align-items:center;">
-              <select
-                class="ttl-select"
-                style="height:34px; font-size:12.5px; flex:1;"
-                onchange="state.selectedCustomerId=this.value; render();"
-              >
-                <option value="">👤 ลูกค้าทั่วไป (ไม่ได้ระบุสมาชิก)</option>
-                ${customers.map(c => `
-                  <option value="${c.id}" ${c.id === state.selectedCustomerId ? 'selected' : ''}>
-                    ⭐ ${c.name} (${c.phone || 'ไม่มีเบอร์'}) — ${c.points || 0} แต้ม [${c.tier || 'สมาชิก'}]
-                  </option>
-                `).join('')}
-              </select>
-              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-lilac" style="height:34px; padding:0 10px;" onclick="state.editingCustomer=null; state.showNewCustomerModal=true; render();">
-                + สมาชิกใหม่
-              </button>
+            <!-- Live Customer Member Autocomplete Search (ค้นหาชื่อหรือเบอร์โทร แสดงผลทันทีแม้ยังพิมพ์ไม่ครบ) -->
+            <div>
+              ${selectedCus ? `
+                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border-radius:10px; background:color-mix(in srgb, var(--ttl-gold) 14%, var(--ttl-paper)); border:1px solid var(--ttl-gold);">
+                  <div>
+                    <div style="font-size:13px; font-weight:700; color:var(--ttl-ink);">
+                      ⭐ สมาชิก: ${selectedCus.name}
+                      <span class="ttl-tag ttl-tag-food" style="margin-left:4px;">${selectedCus.tier || 'สมาชิก'}</span>
+                    </div>
+                    <div style="font-size:11.5px; color:var(--ttl-muted);">
+                      📞 ${selectedCus.phone || '-'} • สะสม <b>${selectedCus.points || 0} แต้ม</b>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+                    style="height:28px; padding:0 8px; font-size:11px;"
+                    onclick="state.selectedCustomerId=''; state.drawerMemberSearch=''; render();"
+                  >
+                    ✕ เปลี่ยน
+                  </button>
+                </div>
+              ` : `
+                <div style="display:flex; gap:6px; align-items:center;">
+                  <input
+                    id="drawer-member-search-input"
+                    type="text"
+                    class="ttl-input"
+                    style="height:34px; font-size:12.5px; flex:1;"
+                    placeholder="👤 พิมพ์ชื่อ หรือ เบอร์โทรสมาชิก (ขึ้นรายการทันที)..."
+                    value="${(state.drawerMemberSearch || '').replace(/"/g, '&quot;')}"
+                    oninput="handleDrawerMemberSearchInput(this.value)"
+                  />
+                  <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-lilac" style="height:34px; padding:0 10px; flex-shrink:0;" onclick="state.editingCustomer=null; state.showNewCustomerModal=true; render();">
+                    + สมาชิกใหม่
+                  </button>
+                </div>
+                <div id="drawer-member-results">
+                  ${renderDrawerMemberMatchListHtml(state.drawerMemberSearch)}
+                </div>
+              `}
             </div>
 
             <!-- Bill Name & Note Inputs (ตั้งชื่อบิล / โน้ตบิล) -->
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
               <input
+                id="drawer-bill-title-input"
                 type="text"
                 class="ttl-input"
                 style="height:34px; font-size:12.5px;"
@@ -1259,6 +1461,7 @@ function renderFloatingBillAndDrawer() {
                 oninput="state.billTitle=this.value"
               />
               <input
+                id="drawer-bill-note-input"
                 type="text"
                 class="ttl-input"
                 style="height:34px; font-size:12.5px;"
@@ -1441,13 +1644,19 @@ function renderFloatingBillAndDrawer() {
 }
 
 // ============================================================================
-// VIEW 2: BILL MANAGEMENT PAGE (หน้าจัดการบิล - Open/Held Bills, Paid & Cancelled)
+// VIEW 2: BILL MANAGEMENT PAGE (หน้าจัดการบิล + ฟิลเตอร์ช่วงวัน + วันเวลาในบิล)
 // ============================================================================
 function renderBillsView() {
   const { allBills = [] } = state.data;
-  const openBills = allBills.filter(b => b.status === 'OPEN');
-  const paidBills = allBills.filter(b => b.status === 'PAID');
-  const cancelledBills = allBills.filter(b => b.status === 'CANCELLED' || b.status === 'VOIDED');
+
+  // Filter bills by selected date range first
+  const dateFilteredBills = allBills.filter(b =>
+    isDateInRange(b.created_at, state.billsDatePreset, state.billsDateFrom, state.billsDateTo)
+  );
+
+  const openBills = dateFilteredBills.filter(b => b.status === 'OPEN');
+  const paidBills = dateFilteredBills.filter(b => b.status === 'PAID');
+  const cancelledBills = dateFilteredBills.filter(b => b.status === 'CANCELLED' || b.status === 'VOIDED');
 
   const visibleBills = state.billsFilter === 'OPEN'
     ? openBills
@@ -1455,15 +1664,18 @@ function renderBillsView() {
       ? paidBills
       : state.billsFilter === 'CANCELLED'
         ? cancelledBills
-        : allBills;
+        : dateFilteredBills;
+
+  const totalPaidInPeriod = paidBills.reduce((s, b) => s + Number(b.total_amount || 0), 0);
+  const totalOpenInPeriod = openBills.reduce((s, b) => s + Number(b.total_amount || 0), 0);
 
   return `
     <div>
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
         <div>
           <h3 style="margin:0; font-size:20px;">🧾 ระบบจัดการบิลทั้งหมด (Bill & Invoice Management)</h3>
           <p style="margin:2px 0 0; font-size:13px; color:var(--ttl-muted);">
-            จัดการบิลที่เปิดค้างไว้ ย้ายโต๊ะ/รวมบิล แยกบิลจ่าย ยกเลิกบิล หรือดูใบเสร็จ (Invoice) และยกเลิกบิลหลังจ่ายเงิน (Void)
+            จัดการบิลที่เปิดค้างไว้ ย้ายโต๊ะ/รวมบิล แยกบิลจ่าย ยกเลิกบิล หรือดูใบเสร็จ (Invoice) และกรองดูบิลย้อนหลังตามช่วงวันได้
           </p>
         </div>
 
@@ -1479,7 +1691,7 @@ function renderBillsView() {
               🚫 ยกเลิก/Void (${cancelledBills.length})
             </button>
             <button type="button" aria-selected="${state.billsFilter === 'ALL'}" onclick="state.billsFilter='ALL'; render();">
-              ทั้งหมด (${allBills.length})
+              ทั้งหมด (${dateFilteredBills.length})
             </button>
           </div>
 
@@ -1489,11 +1701,46 @@ function renderBillsView() {
         </div>
       </div>
 
+      <!-- Date Range Filter Bar for Bills -->
+      <div style="padding:10px 14px; border-radius:12px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span style="font-size:12.5px; font-weight:700; color:var(--ttl-ink);">📅 ช่วงวันที่บิล:</span>
+          <div class="ttl-seg">
+            <button type="button" aria-selected="${state.billsDatePreset === 'ALL'}" onclick="applyDatePreset('BILLS', 'ALL')">ทั้งหมด</button>
+            <button type="button" aria-selected="${state.billsDatePreset === 'TODAY'}" onclick="applyDatePreset('BILLS', 'TODAY')">วันนี้ (รายวัน)</button>
+            <button type="button" aria-selected="${state.billsDatePreset === 'WEEK'}" onclick="applyDatePreset('BILLS', 'WEEK')">7 วันล่าสุด (รายสัปดาห์)</button>
+            <button type="button" aria-selected="${state.billsDatePreset === 'MONTH'}" onclick="applyDatePreset('BILLS', 'MONTH')">เดือนนี้</button>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <input
+              type="date"
+              class="ttl-input"
+              style="width:auto; height:32px; font-size:12px;"
+              value="${state.billsDateFrom}"
+              onchange="state.billsDatePreset='CUSTOM'; state.billsDateFrom=this.value; render();"
+            />
+            <span style="font-size:12px; color:var(--ttl-muted);">ถึง</span>
+            <input
+              type="date"
+              class="ttl-input"
+              style="width:auto; height:32px; font-size:12px;"
+              value="${state.billsDateTo}"
+              onchange="state.billsDatePreset='CUSTOM'; state.billsDateTo=this.value; render();"
+            />
+          </div>
+        </div>
+
+        <div style="font-size:12.5px; color:var(--ttl-muted);">
+          ชำระแล้วในช่วงนี้: <b style="color:var(--ttl-good);">${formatMoney(totalPaidInPeriod)}</b> • ค้างชำระ: <b style="color:var(--ttl-gold);">${formatMoney(totalOpenInPeriod)}</b>
+        </div>
+      </div>
+
       ${visibleBills.length === 0 ? `
         <div style="padding:48px 20px; text-align:center; background:var(--ttl-page); border-radius:14px; border:1px dashed var(--ttl-rule);">
           <div style="font-size:28px;">🧾</div>
-          <h4 style="margin:8px 0 4px;">ไม่มีรายการบิลในหมวดนี้</h4>
-          <p style="margin:0; color:var(--ttl-muted); font-size:13px;">สามารถกดปุ่ม "พักบิล + เปิดบิลใหม่" จากหน้าแคชเชียร์เพื่อพักบิลพร้อมตั้งชื่อและโน้ตได้ทันที</p>
+          <h4 style="margin:8px 0 4px;">ไม่มีรายการบิลในหมวดหรือช่วงวันที่เลือก</h4>
+          <p style="margin:0; color:var(--ttl-muted); font-size:13px;">สามารถกดปุ่ม "ทั้งหมด" ที่แถบช่วงวันที่ด้านบนเพื่อดูบิลทั้งหมด หรือกด "+ เปิดบิลใหม่" ได้ทันที</p>
         </div>
       ` : `
         <div class="tables-grid">
@@ -1529,6 +1776,12 @@ function renderBillsView() {
                       🚫 ${b.status === 'VOIDED' ? 'ยกเลิก Invoice (Void)' : 'ยกเลิกบิลแล้ว'}
                     </span>
                   `}
+                </div>
+
+                <!-- Date & Time Info on Bill Card -->
+                <div style="font-size:12px; color:var(--ttl-muted); background:var(--ttl-page); padding:6px 10px; border-radius:8px; display:flex; flex-direction:column; gap:2px;">
+                  <div>🕒 <b>เปิดบิล:</b> ${formatDateTimeThai(b.created_at)}</div>
+                  ${isPaid && b.paid_at ? `<div style="color:var(--ttl-good);">✅ <b>ชำระเงินเมื่อ:</b> ${formatDateTimeThai(b.paid_at)}</div>` : ''}
                 </div>
 
                 <!-- Member & Note badges -->
@@ -1674,6 +1927,7 @@ function renderTablesView() {
               </div>
 
               ${ord ? `
+                <div style="font-size:11.5px; color:var(--ttl-muted);">🕒 เปิดโต๊ะเมื่อ: ${formatDateTimeThai(ord.created_at)}</div>
                 ${ord.bill_note ? `<div style="font-size:12px; color:var(--ttl-gold);">📝 โน้ต: ${ord.bill_note}</div>` : ''}
                 <div style="padding:10px; border-radius:10px; background:var(--ttl-page); display:flex; flex-direction:column; gap:6px;">
                   <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--ttl-muted);">
@@ -1737,7 +1991,7 @@ function renderTablesView() {
 }
 
 // ============================================================================
-// VIEW 4: KITCHEN DISPLAY SYSTEM (KDS - With Return/Cancel Alert & Confirmation)
+// VIEW 4: KITCHEN DISPLAY SYSTEM (KDS - With Date/Time & Return/Cancel Alert)
 // ============================================================================
 function renderKdsView() {
   const { kitchenQueue } = state.data;
@@ -1751,7 +2005,7 @@ function renderKdsView() {
         <div>
           <h3 style="margin:0; font-size:20px;">👩‍🍳 จอแสดงผลฝั่งครัว (Kitchen Display System - KDS)</h3>
           <p style="margin:2px 0 0; font-size:13px; color:var(--ttl-muted);">
-            แสดงเมนูอาหารที่ส่งเข้าครัวแล้ว พร้อมแจ้งเตือนสีแดงทันทีเมื่อมีการกดคืน/ยกเลิกเมนูเพื่อให้ครัวกดยืนยันรับทราบ
+            แสดงเมนูอาหารที่ส่งเข้าครัวพร้อมวันเวลาที่สั่ง และแจ้งเตือนสีแดงทันทีเมื่อมีการกดคืน/ยกเลิกเมนูเพื่อให้ครัวกดยืนยันรับทราบ
           </p>
         </div>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -1777,13 +2031,14 @@ function renderKdsView() {
             const isCancelReq = item.kitchen_status === 'CANCEL_REQUESTED';
             return `
               <div class="kds-card" data-kds="${item.kitchen_status}">
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:6px;">
                   <span style="padding:4px 10px; border-radius:8px; background:${isCancelReq ? 'var(--ttl-bad)' : 'var(--ttl-deep)'}; color:#fff; font-weight:700; font-size:13.5px;">
                     ${item.table_name ? `${item.table_name}` : (item.bill_title || '🛍️ สั่งกลับบ้าน / หน้าร้าน')}
                   </span>
-                  <span style="font-size:11.5px; color:var(--ttl-muted);">
-                    ${item.input_source === 'VOICE' ? '🎙️ เสียง' : '👆 หน้าจอ'} • ${formatTimeAgo(item.created_at)}
-                  </span>
+                  <div style="text-align:right; font-size:11.5px; color:var(--ttl-muted);">
+                    <div>${item.input_source === 'VOICE' ? '🎙️ สั่งด้วยเสียง' : '👆 กดหน้าจอ'} • ${formatTimeAgo(item.created_at)}</div>
+                    <div style="font-weight:600; color:var(--ttl-ink);">🕒 ${formatDateTimeThai(item.created_at)}</div>
+                  </div>
                 </div>
 
                 ${isCancelReq ? `
@@ -2192,90 +2447,177 @@ function renderCustomersView() {
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
           <input
+            id="customer-page-search-input"
             type="text"
             class="ttl-input"
-            style="width:220px; height:36px;"
-            placeholder="ค้นหาชื่อ หรือ เบอร์โทรสมาชิก..."
+            style="width:240px; height:36px;"
+            placeholder="🔍 พิมพ์ค้นหาชื่อ หรือ เบอร์โทร..."
             value="${state.customerSearch.replace(/"/g, '&quot;')}"
             oninput="state.customerSearch=this.value; render();"
           />
+          ${state.customerSearch ? `
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.customerSearch=''; render();">ล้าง</button>
+          ` : ''}
           <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.editingCustomer=null; state.showNewCustomerModal=true; render();">
             + สมัครสมาชิกลูกค้าใหม่
           </button>
         </div>
       </div>
 
-      <div class="tables-grid" style="margin-top:8px;">
-        ${filteredCustomers.map(c => {
-          const safeCusJson = JSON.stringify(c).replace(/"/g, '&quot;');
-          return `
-            <div class="table-card" style="gap:8px;">
-              <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                <div>
-                  <span class="ttl-tag ttl-tag-food">⭐ ${c.tier || 'สมาชิก'}</span>
-                  <div style="font-size:17px; font-weight:700; margin-top:4px;">${c.name}</div>
-                  <div style="font-size:12.5px; color:var(--ttl-muted);">📞 ${c.phone || 'ไม่ระบุเบอร์โทร'}</div>
+      ${filteredCustomers.length === 0 ? `
+        <div style="padding:36px; text-align:center; color:var(--ttl-muted); border:1px dashed var(--ttl-rule); border-radius:14px;">
+          ไม่พบสมาชิกลูกค้าที่ตรงกับคำค้นหา "${state.customerSearch}"
+        </div>
+      ` : `
+        <div class="tables-grid" style="margin-top:8px;">
+          ${filteredCustomers.map(c => {
+            const safeCusJson = JSON.stringify(c).replace(/"/g, '&quot;');
+            return `
+              <div class="table-card" style="gap:8px;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                  <div>
+                    <span class="ttl-tag ttl-tag-food">⭐ ${c.tier || 'สมาชิก'}</span>
+                    <div style="font-size:17px; font-weight:700; margin-top:4px;">${c.name}</div>
+                    <div style="font-size:12.5px; color:var(--ttl-muted);">📞 ${c.phone || 'ไม่ระบุเบอร์โทร'}</div>
+                  </div>
+                  <div style="text-align:right;">
+                    <div style="font-size:20px; font-weight:700; color:var(--ttl-gold);">${c.points || 0} แต้ม</div>
+                    <div style="font-size:11px; color:var(--ttl-muted);">ยอดซื้อสะสม ${formatMoney(c.total_spent || 0)}</div>
+                  </div>
                 </div>
-                <div style="text-align:right;">
-                  <div style="font-size:20px; font-weight:700; color:var(--ttl-gold);">${c.points || 0} แต้ม</div>
-                  <div style="font-size:11px; color:var(--ttl-muted);">ยอดซื้อสะสม ${formatMoney(c.total_spent || 0)}</div>
+                ${c.note ? `<div style="font-size:12px; color:var(--ttl-muted); background:var(--ttl-page); padding:6px 10px; border-radius:8px;">📝 ${c.note}</div>` : ''}
+                <div style="display:flex; gap:6px; margin-top:auto; padding-top:4px;">
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+                    style="flex:1;"
+                    onclick="state.selectedCustomerId='${c.id}'; state.billTitle='บิลคุณ${c.name.replace(/'/g, "\\'")}'; state.activeView='pos'; state.billDrawerOpen=true; render(); showToast('เลือกสมาชิก ${c.name.replace(/'/g, "\\'")} เข้าบิลปัจจุบันแล้ว');"
+                  >
+                    🧾 เลือกเข้าบิล
+                  </button>
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+                    onclick="state.editingCustomer=${safeCusJson}; state.showNewCustomerModal=true; render();"
+                  >
+                    ✏️ แก้ไข
+                  </button>
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
+                    onclick="deleteEntity('CUSTOMER', '${c.id}', '${c.name.replace(/'/g, "\\'")}')"
+                  >
+                    🗑️ ลบ
+                  </button>
                 </div>
               </div>
-              ${c.note ? `<div style="font-size:12px; color:var(--ttl-muted); background:var(--ttl-page); padding:6px 10px; border-radius:8px;">📝 ${c.note}</div>` : ''}
-              <div style="display:flex; gap:6px; margin-top:auto; padding-top:4px;">
-                <button
-                  type="button"
-                  class="ttl-btn ttl-btn-sm ttl-btn-ghost"
-                  style="flex:1;"
-                  onclick="state.selectedCustomerId='${c.id}'; state.billTitle='บิลคุณ${c.name.replace(/'/g, "\\'")}'; state.activeView='pos'; state.billDrawerOpen=true; render(); showToast('เลือกสมาชิก ${c.name.replace(/'/g, "\\'")} เข้าบิลปัจจุบันแล้ว');"
-                >
-                  🧾 เลือกเข้าบิล
-                </button>
-                <button
-                  type="button"
-                  class="ttl-btn ttl-btn-sm ttl-btn-ghost"
-                  onclick="state.editingCustomer=${safeCusJson}; state.showNewCustomerModal=true; render();"
-                >
-                  ✏️ แก้ไข
-                </button>
-                <button
-                  type="button"
-                  class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
-                  onclick="deleteEntity('CUSTOMER', '${c.id}', '${c.name.replace(/'/g, "\\'")}')"
-                >
-                  🗑️ ลบ
-                </button>
-              </div>
-            </div>
-          `;
-        }).join('')}
-      </div>
+            `;
+          }).join('')}
+        </div>
+      `}
     </div>
   `;
 }
 
 // ============================================================================
-// VIEW 7: TREASURY PROFIT / LOSS DASHBOARD (คิดเฉพาะจากบิลที่ชำระเงินแล้วเท่านั้น)
+// VIEW 7: TREASURY PROFIT / LOSS DASHBOARD (คิดเฉพาะจากบิลที่ชำระเงินแล้ว + กรองตามช่วงวัน)
 // ============================================================================
 function renderDashboardView() {
-  const { analytics, expenses = [] } = state.data;
-  const groceryPct = analytics.total_revenue > 0 ? Math.round((analytics.grocery_revenue / analytics.total_revenue) * 100) : 50;
-  const foodPct = 100 - groceryPct;
+  const { allBills = [], expenses = [], wasteLogs = [] } = state.data;
+
+  // กรองข้อมูลตามช่วงวันที่ที่เลือก (Date Range Filter)
+  const paidBills = allBills.filter(b => b.status === 'PAID' && isDateInRange(b.paid_at || b.created_at, state.dashboardDateFrom, state.dashboardDateTo));
+  const openBills = allBills.filter(b => b.status === 'OPEN' && isDateInRange(b.created_at, state.dashboardDateFrom, state.dashboardDateTo));
+  const filteredExpenses = expenses.filter(ex => isDateInRange(ex.expense_date || ex.created_at, state.dashboardDateFrom, state.dashboardDateTo));
+  const filteredWaste = wasteLogs.filter(w => isDateInRange(w.created_at, state.dashboardDateFrom, state.dashboardDateTo));
+
+  let paidRevenue = 0;
+  let groceryRevenue = 0;
+  let foodRevenue = 0;
+  let groceryCost = 0;
+  let foodCost = 0;
+  let cashRevenue = 0;
+  let qrRevenue = 0;
+
+  const soldItemsMap = {};
+
+  for (const b of paidBills) {
+    const billTotal = Number(b.total_amount) || 0;
+    paidRevenue += billTotal;
+    if (b.payment_method === 'QR_PROMPTPAY') {
+      qrRevenue += billTotal;
+    } else {
+      cashRevenue += billTotal;
+    }
+
+    const activeItems = (b.items || []).filter(i => i.item_status === 'ACTIVE');
+    for (const it of activeItems) {
+      const qty = Number(it.quantity) || 0;
+      const rev = (Number(it.unit_price) || 0) * qty;
+      const cost = (Number(it.unit_cost) || 0) * qty;
+      if (it.item_type === 'GROCERY') {
+        groceryRevenue += rev;
+        groceryCost += cost;
+      } else {
+        foodRevenue += rev;
+        foodCost += cost;
+      }
+
+      const key = `${it.item_type}::${it.product_name}`;
+      if (!soldItemsMap[key]) {
+        soldItemsMap[key] = {
+          name: it.product_name,
+          item_type: it.item_type,
+          qty: 0,
+          revenue: 0,
+          cost: 0,
+          profit: 0,
+          orders_count: 0,
+          last_sold_at: b.paid_at || b.created_at
+        };
+      }
+      soldItemsMap[key].qty += qty;
+      soldItemsMap[key].revenue += rev;
+      soldItemsMap[key].cost += cost;
+      soldItemsMap[key].profit += (rev - cost);
+      soldItemsMap[key].orders_count += 1;
+      if ((b.paid_at || b.created_at) > (soldItemsMap[key].last_sold_at || '')) {
+        soldItemsMap[key].last_sold_at = b.paid_at || b.created_at;
+      }
+    }
+  }
+
+  const openTableRevenue = openBills.reduce((s, b) => s + (Number(b.total_amount) || 0), 0);
+  const totalCogs = groceryCost + foodCost;
+  const grossProfit = paidRevenue - totalCogs;
+  const grossMarginPct = paidRevenue > 0 ? ((grossProfit / paidRevenue) * 100).toFixed(1) : '0.0';
+  const wasteCost = filteredWaste.reduce((s, w) => s + (Number(w.cost_lost) || 0), 0);
+  const operatingExpenses = filteredExpenses.reduce((s, ex) => s + (Number(ex.amount) || 0), 0);
+  const netProfit = grossProfit - wasteCost - operatingExpenses;
+  const netMarginPct = paidRevenue > 0 ? ((netProfit / paidRevenue) * 100).toFixed(1) : '0.0';
+
+  const itemTotalRev = groceryRevenue + foodRevenue;
+  const groceryPct = itemTotalRev > 0 ? Math.round((groceryRevenue / itemTotalRev) * 100) : 50;
+  const foodPct = itemTotalRev > 0 ? (100 - groceryPct) : 50;
+
+  const allSoldItems = Object.values(soldItemsMap).sort((a, b) => b.qty - a.qty || b.revenue - a.revenue);
+  const topSellers = allSoldItems.slice(0, 8);
+  const displayedSoldItems = allSoldItems.filter(it => state.soldItemsTypeFilter === 'ALL' || it.item_type === state.soldItemsTypeFilter);
 
   return `
-    <div style="display:flex; flex-direction:column; gap:20px;">
+    <div style="display:flex; flex-direction:column; gap:18px;">
       <div>
         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--ttl-rule);">
           <div>
             <div class="ttl-k">TREASURY FINANCIAL OVERVIEW • สรุปกำไร/ขาดทุน (เฉพาะบิลที่ชำระเงินแล้ว PAID เท่านั้น)</div>
             <div style="font-size:clamp(24px, 3.2vw, 36px); font-weight:700; letter-spacing:-0.03em; margin-top:2px; font-variant-numeric:tabular-nums;">
-              กำไรสุทธิ ${formatMoney(analytics.net_profit)}
-              <span style="font-size:14px; font-weight:600; color:${analytics.net_profit >= 0 ? 'var(--ttl-good)' : 'var(--ttl-bad)'};">
-                (Net Margin ${analytics.net_margin_pct}%)
+              กำไรสุทธิ ${formatMoney(netProfit)}
+              <span style="font-size:14px; font-weight:600; color:${netProfit >= 0 ? 'var(--ttl-good)' : 'var(--ttl-bad)'};">
+                (Net Margin ${netMarginPct}%)
               </span>
             </div>
             <div style="font-size:12.5px; color:var(--ttl-muted); margin-top:4px;">
-              ✅ คำนวณเฉพาะจากบิลที่ชำระเงินแล้ว (${analytics.paid_orders_count || 0} บิล) • ไม่รวมบิลค้างชำระ (${analytics.open_orders_count || 0} บิล ยอดรอเก็บ ${formatMoney(analytics.open_table_revenue)}) และไม่รวมบิลที่ยกเลิก/Void
+              ✅ คำนวณเฉพาะจากบิลที่ชำระเงินแล้วในช่วงวันที่เลือก (${paidBills.length} บิล) • ไม่รวมบิลค้างชำระ (${openBills.length} บิล ยอดรอเก็บ ${formatMoney(openTableRevenue)}) และไม่รวมบิลที่ยกเลิก/Void
             </div>
           </div>
 
@@ -2284,33 +2626,53 @@ function renderDashboardView() {
           </button>
         </div>
 
+        <!-- Date Range Filter Bar สำหรับหน้ากำไร/ขาดทุน -->
+        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:10px 14px; margin-top:12px; background:var(--ttl-page); border:1px solid var(--ttl-rule); border-radius:12px;">
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span style="font-size:12px; font-weight:700; color:var(--ttl-muted);">📅 ช่วงเวลาวิเคราะห์กำไร/ขาดทุน:</span>
+            <button type="button" class="ttl-btn ttl-btn-sm ${state.dashboardDatePreset === 'ALL' ? 'ttl-btn-dark' : 'ttl-btn-ghost'}" onclick="applyDatePreset('dashboard', 'ALL')">ทั้งหมด</button>
+            <button type="button" class="ttl-btn ttl-btn-sm ${state.dashboardDatePreset === 'TODAY' ? 'ttl-btn-dark' : 'ttl-btn-ghost'}" onclick="applyDatePreset('dashboard', 'TODAY')">วันนี้ (รายวัน)</button>
+            <button type="button" class="ttl-btn ttl-btn-sm ${state.dashboardDatePreset === 'WEEK' ? 'ttl-btn-dark' : 'ttl-btn-ghost'}" onclick="applyDatePreset('dashboard', 'WEEK')">7 วันล่าสุด (รายสัปดาห์)</button>
+            <button type="button" class="ttl-btn ttl-btn-sm ${state.dashboardDatePreset === 'MONTH' ? 'ttl-btn-dark' : 'ttl-btn-ghost'}" onclick="applyDatePreset('dashboard', 'MONTH')">เดือนนี้</button>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:12px;">
+            <span>ตั้งแต่:</span>
+            <input type="date" class="ttl-input" style="width:142px; height:32px; padding:2px 8px; font-size:12px;" value="${state.dashboardDateFrom}" onchange="state.dashboardDatePreset='CUSTOM'; state.dashboardDateFrom=this.value; render();" />
+            <span>ถึง:</span>
+            <input type="date" class="ttl-input" style="width:142px; height:32px; padding:2px 8px; font-size:12px;" value="${state.dashboardDateTo}" onchange="state.dashboardDatePreset='CUSTOM'; state.dashboardDateTo=this.value; render();" />
+            ${(state.dashboardDateFrom || state.dashboardDateTo) ? `
+              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="applyDatePreset('dashboard', 'ALL')">ล้างวันที่</button>
+            ` : ''}
+          </div>
+        </div>
+
         <div class="kpi-grid">
           <div class="kpi-card">
             <span class="ttl-k">1. รายได้บิลชำระแล้ว (PAID REVENUE)</span>
-            <div class="kpi-val">${formatMoney(analytics.paid_revenue)}</div>
-            <div style="font-size:12px; color:var(--ttl-muted);">ของชำ ${formatMoney(analytics.grocery_revenue)} • อาหาร ${formatMoney(analytics.food_revenue)}</div>
+            <div class="kpi-val">${formatMoney(paidRevenue)}</div>
+            <div style="font-size:12px; color:var(--ttl-muted);">ของชำ ${formatMoney(groceryRevenue)} • อาหาร ${formatMoney(foodRevenue)}</div>
           </div>
           <div class="kpi-card">
             <span class="ttl-k">2. ต้นทุนขายบิลชำระแล้ว (COGS)</span>
-            <div class="kpi-val" style="color:var(--ttl-gold);">${formatMoney(analytics.total_cogs)}</div>
-            <div style="font-size:12px; color:var(--ttl-muted);">ทุนของชำ ${formatMoney(analytics.grocery_cost)} • ทุนครัว ${formatMoney(analytics.food_cost)}</div>
+            <div class="kpi-val" style="color:var(--ttl-gold);">${formatMoney(totalCogs)}</div>
+            <div style="font-size:12px; color:var(--ttl-muted);">ทุนของชำ ${formatMoney(groceryCost)} • ทุนครัว ${formatMoney(foodCost)}</div>
           </div>
           <div class="kpi-card">
             <span class="ttl-k">3. กำไรขั้นต้น (GROSS PROFIT)</span>
-            <div class="kpi-val" style="color:var(--ttl-good);">${formatMoney(analytics.gross_profit)}</div>
-            <div style="font-size:12px; color:var(--ttl-muted);">Margin ${analytics.gross_margin_pct}% (จากบิลชำระแล้ว)</div>
+            <div class="kpi-val" style="color:var(--ttl-good);">${formatMoney(grossProfit)}</div>
+            <div style="font-size:12px; color:var(--ttl-muted);">Margin ${grossMarginPct}% (จากบิลชำระแล้ว)</div>
           </div>
           <div class="kpi-card">
             <span class="ttl-k">4. ของเสีย & รายจ่ายร้าน</span>
-            <div class="kpi-val" style="color:var(--ttl-bad);">${formatMoney(analytics.waste_cost + analytics.operating_expenses)}</div>
-            <div style="font-size:12px; color:var(--ttl-muted);">ของเสีย ${formatMoney(analytics.waste_cost)} • รายจ่าย ${formatMoney(analytics.operating_expenses)}</div>
+            <div class="kpi-val" style="color:var(--ttl-bad);">${formatMoney(wasteCost + operatingExpenses)}</div>
+            <div style="font-size:12px; color:var(--ttl-muted);">ของเสีย ${formatMoney(wasteCost)} • รายจ่าย ${formatMoney(operatingExpenses)}</div>
           </div>
         </div>
 
         <div style="margin-top:14px; padding:14px 16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page);">
           <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; flex-wrap:wrap; gap:8px;">
-            <b>สัดส่วนรายได้จริง (เฉพาะบิลชำระแล้ว): ของชำ (${groceryPct}%) vs อาหารตามสั่ง (${foodPct}%)</b>
-            <span>💵 เงินสด ${formatMoney(analytics.cash_revenue)} • 📱 QR ${formatMoney(analytics.qr_revenue)}</span>
+            <b>สัดส่วนรายได้จริงตามช่วงวันที่เลือก: ของชำ (${groceryPct}%) vs อาหารตามสั่ง (${foodPct}%)</b>
+            <span>💵 เงินสด ${formatMoney(cashRevenue)} • 📱 QR ${formatMoney(qrRevenue)}</span>
           </div>
           <div class="ttl-bar">
             <span style="width:${groceryPct}%; background:var(--ttl-chart-1);"></span>
@@ -2318,26 +2680,90 @@ function renderDashboardView() {
           </div>
         </div>
 
+        <!-- กล่องสินค้าเมนูขายดี และ รายการค่าใช้จ่ายรายวัน ตามช่วงวันที่เลือก -->
         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(290px, 1fr)); gap:14px; margin-top:14px;">
           <div style="padding:14px 16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page);">
-            <div class="ttl-k" style="margin-bottom:8px;">🏆 สินค้า & เมนูขายดี (จากบิลที่ชำระเงินแล้ว)</div>
-            ${(analytics.top_sellers || []).length === 0 ? `<div style="font-size:12.5px; color:var(--ttl-muted);">ยังไม่มีข้อมูล</div>` : (analytics.top_sellers || []).map((ts, idx) => `
+            <div class="ttl-k" style="margin-bottom:8px;">🏆 สินค้า & เมนูขายดี (ตามช่วงวันที่เลือก • ${topSellers.length} อันดับ)</div>
+            ${topSellers.length === 0 ? `<div style="font-size:12.5px; color:var(--ttl-muted); padding:12px 0;">ไม่มีรายการขายในช่วงวันที่เลือก</div>` : topSellers.map((ts, idx) => `
               <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:6px 0; border-bottom:1px dashed var(--ttl-rule);">
-                <span><b>#${idx + 1} ${ts.name}</b> (${ts.qty} ชิ้น/จาน)</span>
+                <span><b>#${idx + 1} ${ts.name}</b> <small style="color:var(--ttl-muted);">(${ts.qty} ชิ้น/จาน • ยอดขาย ${formatMoney(ts.revenue)})</small></span>
                 <span style="font-weight:700; color:var(--ttl-good);">กำไร ${formatMoney(ts.profit)}</span>
               </div>
             `).join('')}
           </div>
 
           <div style="padding:14px 16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page);">
-            <div class="ttl-k" style="margin-bottom:8px;">💸 รายการค่าใช้จ่ายรายวัน (${expenses.length} รายการ)</div>
-            ${expenses.map(ex => `
+            <div class="ttl-k" style="margin-bottom:8px;">💸 รายการค่าใช้จ่ายรายวันตามช่วงวันที่เลือก (${filteredExpenses.length} รายการ • รวม ${formatMoney(operatingExpenses)})</div>
+            ${filteredExpenses.length === 0 ? `<div style="font-size:12.5px; color:var(--ttl-muted); padding:12px 0;">ไม่มีรายการค่าใช้จ่ายในช่วงวันที่เลือก</div>` : filteredExpenses.map(ex => `
               <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:6px 0; border-bottom:1px dashed var(--ttl-rule);">
-                <span>${ex.title} <small style="color:var(--ttl-muted);">(${ex.category})</small></span>
+                <div>
+                  <div><b>${ex.title}</b> <small style="color:var(--ttl-muted);">(${ex.category})</small></div>
+                  <div style="font-size:11px; color:var(--ttl-muted);">🕒 ${formatDateTimeThai(ex.expense_date || ex.created_at)}</div>
+                </div>
                 <b style="color:var(--ttl-bad);">-${formatMoney(ex.amount)}</b>
               </div>
             `).join('')}
           </div>
+        </div>
+
+        <!-- กล่องรายการเมนูอาหารและสินค้าที่ขายไปแล้วทั้งหมดตามช่วงวันที่เลือก -->
+        <div style="margin-top:14px; padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page);">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+            <div>
+              <div class="ttl-k">SOLD ITEMS SUMMARY BY DATE RANGE</div>
+              <h4 style="margin:2px 0 0; font-size:16px;">📦🍳 รายการเมนูและสินค้าที่ขายไปแล้วตามช่วงวันที่เลือก (${displayedSoldItems.length} รายการ)</h4>
+            </div>
+            <div class="ttl-seg">
+              <button type="button" aria-selected="${state.soldItemsTypeFilter === 'ALL'}" onclick="state.soldItemsTypeFilter='ALL'; render();">
+                ทั้งหมด (${allSoldItems.length})
+              </button>
+              <button type="button" aria-selected="${state.soldItemsTypeFilter === 'FOOD'}" onclick="state.soldItemsTypeFilter='FOOD'; render();">
+                🍳 เมนูอาหาร (${allSoldItems.filter(x => x.item_type === 'FOOD').length})
+              </button>
+              <button type="button" aria-selected="${state.soldItemsTypeFilter === 'GROCERY'}" onclick="state.soldItemsTypeFilter='GROCERY'; render();">
+                📦 สินค้าของชำ (${allSoldItems.filter(x => x.item_type === 'GROCERY').length})
+              </button>
+            </div>
+          </div>
+
+          ${displayedSoldItems.length === 0 ? `
+            <div style="padding:24px; text-align:center; color:var(--ttl-muted); border:1px dashed var(--ttl-rule); border-radius:10px;">
+              ยังไม่มีรายการเมนูหรือสินค้าที่ขายในช่วงวันที่เลือก
+            </div>
+          ` : `
+            <div class="inv-table-wrap">
+              <table class="inv-table">
+                <thead>
+                  <tr>
+                    <th>ชื่อเมนู / สินค้า</th>
+                    <th>ประเภท</th>
+                    <th>จำนวนที่ขายได้</th>
+                    <th>ยอดขายรวม</th>
+                    <th>ต้นทุนรวม</th>
+                    <th>กำไรขั้นต้น</th>
+                    <th>ขายล่าสุดเมื่อ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${displayedSoldItems.map(item => `
+                    <tr>
+                      <td><b>${item.name}</b></td>
+                      <td>
+                        <span class="ttl-tag ${item.item_type === 'GROCERY' ? 'ttl-tag-grocery' : 'ttl-tag-food'}">
+                          ${item.item_type === 'GROCERY' ? '📦 ของชำ' : '🍳 อาหารครัว'}
+                        </span>
+                      </td>
+                      <td><b>${item.qty}</b> ชิ้น/จาน <small style="color:var(--ttl-muted);">(${item.orders_count} บิล)</small></td>
+                      <td style="font-weight:700;">${formatMoney(item.revenue)}</td>
+                      <td style="color:var(--ttl-muted);">${formatMoney(item.cost)}</td>
+                      <td style="font-weight:700; color:var(--ttl-good);">${formatMoney(item.profit)}</td>
+                      <td style="font-size:12px; color:var(--ttl-muted);">${formatDateTimeThai(item.last_sold_at)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `}
         </div>
       </div>
     </div>
@@ -2458,14 +2884,14 @@ function renderModals() {
             </div>
             <div>
               <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ส่วนลดท้ายบิล (บาท)</label>
-              <input type="number" min="0" class="ttl-input" value="${state.checkoutDiscount}" oninput="state.checkoutDiscount=this.value; render();" />
+              <input id="checkout-discount-input" type="number" min="0" class="ttl-input" value="${state.checkoutDiscount}" oninput="state.checkoutDiscount=this.value; render();" />
             </div>
           </div>
 
           ${state.checkoutPaymentMethod === 'CASH' ? `
             <div style="margin-bottom:14px;">
               <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">รับเงินสดมา (บาท)</label>
-              <input type="number" class="ttl-input" style="font-size:20px; font-weight:700; height:44px;" value="${state.checkoutCashReceived}" oninput="state.checkoutCashReceived=this.value; render();" />
+              <input id="checkout-cash-input" type="number" class="ttl-input" style="font-size:20px; font-weight:700; height:44px;" value="${state.checkoutCashReceived}" oninput="state.checkoutCashReceived=this.value; render();" />
               <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
                 <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.checkoutCashReceived='${netTotal}'; render();">พอดี (${formatMoney(netTotal)})</button>
                 <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.checkoutCashReceived='100'; render();">฿100</button>
@@ -2866,6 +3292,10 @@ function renderModals() {
             <div class="ttl-k">ONG CO POS • ใบเสร็จรับเงิน / INVOICE</div>
             <h3 style="margin:4px 0 2px; font-size:20px;">${inv.bill_title || inv.id}</h3>
             <div style="font-size:12px; color:var(--ttl-muted);">เลขที่ใบเสร็จ: ${inv.id} • สถานะ: <b>${inv.status}</b></div>
+            <div style="font-size:11.5px; color:var(--ttl-muted); margin-top:2px;">
+              🕒 เปิดบิล: ${formatDateTimeThai(inv.created_at)}
+              ${inv.paid_at ? ` • ✅ ชำระเมื่อ: ${formatDateTimeThai(inv.paid_at)}` : ''}
+            </div>
             ${inv.customer_name ? `<div style="font-size:12.5px; margin-top:4px; font-weight:600;">👤 ลูกค้าสมาชิก: ${inv.customer_name}</div>` : ''}
           </div>
 
@@ -3024,24 +3454,31 @@ function renderModals() {
           <div class="ttl-k">SPLIT BILL • แยกบิล / แยกจ่าย</div>
           <h3 style="margin:4px 0 8px;">✂️ แยกรายการจาก "${sord.bill_title || sord.id}"</h3>
           <p style="margin:0 0 12px; font-size:12.5px; color:var(--ttl-muted);">
-            กดปุ่ม + เลือกจำนวนสินค้าที่ลูกค้าต้องการแยกไปจ่ายอีกบิล ระบบจะหักออกจากบิลหลักให้อัตโนมัติ
+            กดปุ่ม + หรือกด "เลือกทั้งรายการ" เพื่อเลือกจำนวนสินค้าที่ต้องการแยกไปจ่ายอีกบิล ระบบจะหักออกจากบิลหลักให้อัตโนมัติทันที
           </p>
 
           <div style="margin-bottom:10px;">
             <label style="font-size:12px; font-weight:600;">🏷️ ตั้งชื่อบิลใบที่แยกออกมา</label>
-            <input type="text" class="ttl-input" value="${(state.splitNewTitle || '').replace(/"/g, '&quot;')}" oninput="state.splitNewTitle=this.value" />
+            <input id="split-bill-title-input" type="text" class="ttl-input" value="${(state.splitNewTitle || '').replace(/"/g, '&quot;')}" oninput="state.splitNewTitle=this.value" />
           </div>
 
-          <div style="display:flex; flex-direction:column; gap:8px; max-height:240px; overflow-y:auto; margin-bottom:14px;">
+          <div style="display:flex; flex-direction:column; gap:8px; max-height:250px; overflow-y:auto; margin-bottom:14px;">
             ${activeItems.map(it => {
               const selQty = Number(state.splitQtyMap[it.id]) || 0;
               return `
-                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border-radius:10px; border:1px solid ${selQty > 0 ? 'var(--ttl-gold)' : 'var(--ttl-rule)'}; background:var(--ttl-page);">
+                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border-radius:10px; border:1px solid ${selQty > 0 ? 'var(--ttl-gold)' : 'var(--ttl-rule)'}; background:${selQty > 0 ? 'color-mix(in srgb, var(--ttl-gold) 8%, var(--ttl-page))' : 'var(--ttl-page)'};">
                   <div>
-                    <div style="font-weight:600; font-size:13.5px;">${it.product_name}</div>
+                    <div style="font-weight:600; font-size:13.5px;">${it.product_name} ${it.modifiers?.length ? `<small>(${it.modifiers.join(',')})</small>` : ''}</div>
                     <div style="font-size:11.5px; color:var(--ttl-muted);">${formatMoney(it.unit_price)} • มีในบิล ${it.quantity} ชิ้น</div>
                   </div>
-                  <div style="display:flex; align-items:center; gap:8px;">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    <button
+                      type="button"
+                      class="ttl-btn ttl-btn-sm ${selQty === it.quantity ? 'ttl-btn-gold' : 'ttl-btn-ghost'}"
+                      onclick="state.splitQtyMap['${it.id}'] = ${selQty === it.quantity ? 0 : it.quantity}; render();"
+                    >
+                      ${selQty === it.quantity ? '✓ เลือกครบ' : 'เลือกทั้งรายการ'}
+                    </button>
                     <div class="qty-stepper">
                       <button type="button" onclick="state.splitQtyMap['${it.id}'] = Math.max(0, (Number(state.splitQtyMap['${it.id}'])||0) - 1); render();">−</button>
                       <span>${selQty} / ${it.quantity}</span>
@@ -3083,6 +3520,22 @@ function render() {
     appEl.innerHTML = `<div style="padding:80px; text-align:center;">กำลังโหลดระบบ ONG CO POS...</div>`;
     return;
   }
+
+  // บันทึก Focus และตำแหน่ง Cursor ของช่องค้นหา/Input ก่อน Re-render เพื่อไม่ให้พิมพ์สะดุด
+  const activeEl = document.activeElement;
+  const activeId = activeEl && activeEl.id ? activeEl.id : null;
+  let selStart = null;
+  let selEnd = null;
+  if (activeId && typeof activeEl.selectionStart === 'number') {
+    try {
+      selStart = activeEl.selectionStart;
+      selEnd = activeEl.selectionEnd;
+    } catch {
+      // ignore for input types that do not support selectionStart
+    }
+  }
+  const prevBillBody = document.querySelector('.pos-bill-body');
+  const prevBillScrollTop = prevBillBody ? prevBillBody.scrollTop : 0;
 
   const { tables, kitchenQueue, analytics, allBills = [], customers = [] } = state.data;
   const openBillsCount = allBills.filter(b => b.status === 'OPEN').length;
@@ -3194,9 +3647,27 @@ function render() {
       </nav>
 
       ${renderModals()}
-      ${state.toastMessage ? `<div class="ttl-toast">${state.toastMessage}</div>` : ''}
     </div>
   `;
+
+  // คืนค่า Scroll ของลิ้นชักบิล และคืนค่า Focus + Cursor ให้กับ Input ที่กำลังพิมพ์อยู่
+  const nextBillBody = document.querySelector('.pos-bill-body');
+  if (nextBillBody && prevBillScrollTop > 0) {
+    nextBillBody.scrollTop = prevBillScrollTop;
+  }
+  if (activeId) {
+    const nextEl = document.getElementById(activeId);
+    if (nextEl) {
+      nextEl.focus();
+      if (selStart !== null && typeof nextEl.setSelectionRange === 'function') {
+        try {
+          nextEl.setSelectionRange(selStart, selEnd);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
 }
 
 // Initialize SSE & Bootstrap on Load

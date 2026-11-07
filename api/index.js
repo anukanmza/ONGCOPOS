@@ -901,27 +901,50 @@ module.exports = async (req, res) => {
 
       const now = new Date().toISOString();
       const newOrderId = `ORD-${Date.now().toString().slice(-6)}`;
-      await sbRest('orders', {
-        method: 'POST',
-        body: {
-          id: newOrderId,
-          order_type: 'RETAIL',
-          table_id: null,
-          bill_title: new_bill_title || `แยกจ่ายจาก ${srcOrd.bill_title || srcOrd.id}`,
-          status: 'OPEN',
-          subtotal: 0,
-          discount: 0,
-          total_amount: 0,
-          total_cost: 0,
-          payment_method: 'CASH',
-          created_at: now
-        }
-      });
+      try {
+        await sbRest('orders', {
+          method: 'POST',
+          body: {
+            id: newOrderId,
+            order_type: 'RETAIL',
+            table_id: null,
+            bill_title: new_bill_title || `แยกจ่ายจาก ${srcOrd.bill_title || srcOrd.id}`,
+            bill_note: `แยกบิลจาก ${srcOrd.id}`,
+            customer_id: srcOrd.customer_id || null,
+            customer_name: srcOrd.customer_name || '',
+            status: 'OPEN',
+            subtotal: 0,
+            discount: 0,
+            total_amount: 0,
+            total_cost: 0,
+            payment_method: 'CASH',
+            created_at: now
+          }
+        });
+      } catch {
+        // Fallback if bill_title / customer columns were not yet migrated on remote Supabase
+        await sbRest('orders', {
+          method: 'POST',
+          body: {
+            id: newOrderId,
+            order_type: 'RETAIL',
+            table_id: null,
+            status: 'OPEN',
+            subtotal: 0,
+            discount: 0,
+            total_amount: 0,
+            total_cost: 0,
+            payment_method: 'CASH',
+            created_at: now
+          }
+        });
+      }
 
       const items = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(source_order_id)}&item_status=eq.ACTIVE`);
       for (const sp of split_items) {
         const it = items.find(x => x.id === sp.order_item_id);
-        const moveQty = Math.min(Number(it?.quantity || 0), Math.max(0, Number(sp.split_qty || 0)));
+        const requestedQty = Number(sp.split_qty !== undefined ? sp.split_qty : sp.quantity) || 0;
+        const moveQty = Math.min(Number(it?.quantity || 0), Math.max(0, requestedQty));
         if (!it || moveQty <= 0) continue;
 
         if (moveQty >= Number(it.quantity)) {
@@ -960,6 +983,18 @@ module.exports = async (req, res) => {
 
       await recalculateSupabaseOrderTotals(srcOrd.id);
       await recalculateSupabaseOrderTotals(newOrderId);
+
+      const remItems = await sbRest(`order_items?select=id&order_id=eq.${encodeURIComponent(srcOrd.id)}&item_status=eq.ACTIVE`);
+      if (!remItems || remItems.length === 0) {
+        if (srcOrd.table_id) {
+          await sbRest(`dining_tables?id=eq.${encodeURIComponent(srcOrd.table_id)}`, {
+            method: 'PATCH',
+            body: { status: 'AVAILABLE', current_order_id: null }
+          });
+        }
+        await sbRest(`orders?id=eq.${encodeURIComponent(srcOrd.id)}`, { method: 'DELETE' });
+      }
+
       return send(200, { success: true, newOrderId, data: await getSupabaseBootstrapData() });
     }
 

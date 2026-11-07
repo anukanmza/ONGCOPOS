@@ -815,7 +815,8 @@ window.LocalPosEngine = {
 
     for (const sp of split_items) {
       const it = db.orderItems.find(x => x.id === sp.order_item_id && x.order_id === srcOrd.id && x.item_status === 'ACTIVE');
-      const moveQty = Math.min(Number(it?.quantity || 0), Math.max(0, Number(sp.split_qty || 0)));
+      const reqQty = Number(sp.split_qty !== undefined ? sp.split_qty : sp.quantity) || 0;
+      const moveQty = Math.min(Number(it?.quantity || 0), Math.max(0, reqQty));
       if (!it || moveQty <= 0) continue;
 
       if (moveQty >= it.quantity) {
@@ -834,6 +835,19 @@ window.LocalPosEngine = {
 
     recalcLocalOrder(db, srcOrd.id);
     recalcLocalOrder(db, newOrderId);
+
+    const remainingActive = db.orderItems.filter(x => x.order_id === srcOrd.id && x.item_status === 'ACTIVE');
+    if (remainingActive.length === 0) {
+      if (srcOrd.table_id) {
+        const tbl = db.tables.find(t => t.id === srcOrd.table_id);
+        if (tbl && tbl.current_order_id === srcOrd.id) {
+          tbl.status = 'AVAILABLE';
+          tbl.current_order_id = null;
+        }
+      }
+      db.orders = db.orders.filter(o => o.id !== srcOrd.id);
+    }
+
     saveLocalDb(db);
     return { success: true, newOrderId, data: buildLocalBootstrap() };
   },

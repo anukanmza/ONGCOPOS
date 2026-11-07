@@ -939,7 +939,13 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: 'ไม่พบบิลต้นทางที่ต้องการแยก' });
       }
 
-      const validSplits = (split_items || []).filter(s => s.order_item_id && Number(s.split_qty) > 0);
+      const validSplits = (split_items || [])
+        .map(s => ({
+          order_item_id: s.order_item_id,
+          qty: Number(s.split_qty !== undefined ? s.split_qty : s.quantity) || 0
+        }))
+        .filter(s => s.order_item_id && s.qty > 0);
+
       if (validSplits.length === 0) {
         return sendJson(res, 400, { error: 'กรุณาเลือกรายการและจำนวนที่ต้องการแยกบิลอย่างน้อย 1 รายการ' });
       }
@@ -951,12 +957,12 @@ const server = http.createServer(async (req, res) => {
       db.prepare(`
         INSERT INTO orders (id, order_type, table_id, bill_title, bill_note, customer_id, customer_name, status, subtotal, discount, total_amount, total_cost, payment_method, created_at)
         VALUES (?, 'RETAIL', NULL, ?, ?, ?, ?, 'OPEN', 0, 0, 0, 0, 'CASH', ?)
-      `).run(newOrderId, title, `แยกบิลจาก ${srcOrd.id}`, srcOrd.customer_id, srcOrd.customer_name, now);
+      `).run(newOrderId, title, `แยกบิลจาก ${srcOrd.bill_title || srcOrd.id}`, srcOrd.customer_id, srcOrd.customer_name, now);
 
       for (const sp of validSplits) {
         const item = db.prepare("SELECT * FROM order_items WHERE id = ? AND order_id = ? AND item_status = 'ACTIVE'").get(sp.order_item_id, srcOrd.id);
         if (!item) continue;
-        const moveQty = Math.min(item.quantity, Math.max(1, Number(sp.split_qty)));
+        const moveQty = Math.min(item.quantity, Math.max(1, sp.qty));
 
         if (moveQty >= item.quantity) {
           db.prepare('UPDATE order_items SET order_id = ? WHERE id = ?').run(newOrderId, item.id);
@@ -988,6 +994,16 @@ const server = http.createServer(async (req, res) => {
 
       recalculateOrderTotals(srcOrd.id);
       recalculateOrderTotals(newOrderId);
+
+      // If all active items were moved out of source order, cancel/clean up empty source order
+      const remainingActive = db.prepare("SELECT COUNT(*) as c FROM order_items WHERE order_id = ? AND item_status = 'ACTIVE'").get(srcOrd.id);
+      if (!remainingActive || remainingActive.c === 0) {
+        if (srcOrd.table_id) {
+          db.prepare("UPDATE dining_tables SET status = 'AVAILABLE', current_order_id = NULL WHERE id = ? AND current_order_id = ?")
+            .run(srcOrd.table_id, srcOrd.id);
+        }
+        db.prepare('DELETE FROM orders WHERE id = ?').run(srcOrd.id);
+      }
 
       broadcastUpdate('order_split', { source_order_id: srcOrd.id, new_order_id: newOrderId });
       return sendJson(res, 200, { success: true, newOrderId, data: getFullBootstrapData() });
