@@ -3,7 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { db, recalculateAllFoodCosts } = require('./db');
 const { parseVoiceCommand, getRecipePreviewForProduct } = require('./voiceParser');
-const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate } = require('./supabaseAdapter');
+const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, getSupabaseConfig } = require('./supabaseAdapter');
+const supabaseApiHandler = require('./api/index');
 
 function getLoyaltySettingsFromDb() {
   try {
@@ -393,9 +394,18 @@ function deductStockAndRecipeForItem(product, modifierNames, quantity, orderId, 
 
 const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = urlObj.pathname;
+  const routeParam = urlObj.searchParams.get('route');
+  const pathname = routeParam
+    ? `/api/${routeParam.replace(/^\/+/, '')}`
+    : urlObj.pathname;
 
   try {
+    if (pathname.startsWith('/api/') && pathname !== '/api/events') {
+      const hasHeaderCfg = Boolean(req.headers && req.headers['x-supabase-url'] && req.headers['x-supabase-key']);
+      if (getSupabaseConfig().enabled || hasHeaderCfg || process.env.VERCEL) {
+        return await supabaseApiHandler(req, res);
+      }
+    }
     // SSE Endpoint
     if (req.method === 'GET' && pathname === '/api/events') {
       res.writeHead(200, {

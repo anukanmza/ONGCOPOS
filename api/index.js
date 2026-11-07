@@ -1,4 +1,4 @@
-const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, getSupabaseConfig, sbRest, getSupabaseBootstrapData } = require('../supabaseAdapter');
+const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, setRuntimeSupabaseConfig, getSupabaseConfig, sbRest, getSupabaseBootstrapData } = require('../supabaseAdapter');
 
 async function recalculateSupabaseOrderTotals(orderId) {
   const items = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(orderId)}`);
@@ -185,6 +185,11 @@ async function parseVoiceWithData(rawText, fallbackTableId, data) {
 }
 
 module.exports = async (req, res) => {
+  const hdrUrl = req.headers && req.headers['x-supabase-url'];
+  const hdrKey = req.headers && req.headers['x-supabase-key'];
+  if (hdrUrl && hdrKey) {
+    setRuntimeSupabaseConfig(hdrUrl, hdrKey);
+  }
   const cfg = getSupabaseConfig();
   if (!cfg.enabled) {
     res.statusCode = 500;
@@ -199,9 +204,23 @@ module.exports = async (req, res) => {
   const pathname = routeParam
     ? `/api/${routeParam.replace(/^\/+/, '')}`
     : urlObj.pathname;
-  const body = typeof req.body === 'object' && req.body !== null
-    ? req.body
-    : (typeof req.body === 'string' && req.body ? JSON.parse(req.body) : {});
+
+  let body = {};
+  if (typeof req.body === 'object' && req.body !== null) {
+    body = req.body;
+  } else if (typeof req.body === 'string' && req.body) {
+    try { body = JSON.parse(req.body); } catch { body = {}; }
+  } else if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+    body = await new Promise((resolve) => {
+      let raw = '';
+      req.on('data', chunk => { raw += chunk.toString('utf8'); });
+      req.on('end', () => {
+        if (!raw) return resolve({});
+        try { resolve(JSON.parse(raw)); } catch { resolve({}); }
+      });
+      req.on('error', () => resolve({}));
+    });
+  }
 
   const send = (code, payload) => {
     res.statusCode = code;

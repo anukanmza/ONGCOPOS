@@ -48,9 +48,29 @@ function computeCustomerLoyaltyUpdate(customer, netTotal, redeemPoints, loyaltyS
   };
 }
 
+let runtimeSupabaseUrl = '';
+let runtimeSupabaseKey = '';
+
+function setRuntimeSupabaseConfig(url, key) {
+  if (url && key) {
+    runtimeSupabaseUrl = String(url).trim().replace(/\/$/, '');
+    runtimeSupabaseKey = String(key).trim();
+  }
+}
+
 function getSupabaseConfig() {
-  const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  const url = (
+    process.env.SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    runtimeSupabaseUrl ||
+    ''
+  ).replace(/\/$/, '');
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    runtimeSupabaseKey ||
+    '';
   return { url, key, enabled: Boolean(url && key) };
 }
 
@@ -395,6 +415,7 @@ async function getSupabaseBootstrapData() {
 module.exports = {
   DEFAULT_LOYALTY_SETTINGS,
   computeCustomerLoyaltyUpdate,
+  setRuntimeSupabaseConfig,
   getSupabaseConfig,
   sbRest,
   getSupabaseBootstrapData
