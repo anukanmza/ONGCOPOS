@@ -51,26 +51,38 @@ function computeCustomerLoyaltyUpdate(customer, netTotal, redeemPoints, loyaltyS
 let runtimeSupabaseUrl = '';
 let runtimeSupabaseKey = '';
 
+function normalizeSupabaseBaseUrl(rawUrl) {
+  const trimmed = String(rawUrl || '').trim();
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+    return parsed.origin;
+  } catch {
+    return trimmed.replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/, '');
+  }
+}
+
 function setRuntimeSupabaseConfig(url, key) {
   if (url && key) {
-    runtimeSupabaseUrl = String(url).trim().replace(/\/$/, '');
+    runtimeSupabaseUrl = normalizeSupabaseBaseUrl(url);
     runtimeSupabaseKey = String(key).trim();
   }
 }
 
 function getSupabaseConfig() {
-  const url = (
+  const url = normalizeSupabaseBaseUrl(
     process.env.SUPABASE_URL ||
     process.env.NEXT_PUBLIC_SUPABASE_URL ||
     runtimeSupabaseUrl ||
     ''
-  ).replace(/\/$/, '');
-  const key =
+  );
+  const key = (
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_ANON_KEY ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
     runtimeSupabaseKey ||
-    '';
+    ''
+  ).trim();
   return { url, key, enabled: Boolean(url && key) };
 }
 
