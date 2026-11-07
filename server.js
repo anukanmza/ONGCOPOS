@@ -190,7 +190,16 @@ function getFullBootstrapData() {
   const receiptItems = db.prepare('SELECT * FROM stock_in_items').all();
   const stockInReceipts = receipts.map(r => ({
     ...r,
-    items: receiptItems.filter(it => it.receipt_id === r.id)
+    items: receiptItems
+      .filter(it => it.receipt_id === r.id)
+      .map(it => ({
+        ...it,
+        target_type: it.item_target_type || it.target_type || 'GROCERY',
+        target_id: it.product_id || it.ingredient_id || it.target_id,
+        input_unit: it.unit_label || it.input_unit || '',
+        line_cost: Number(it.total_line_cost ?? it.line_cost ?? 0),
+        total_line_cost: Number(it.total_line_cost ?? it.line_cost ?? 0)
+      }))
   }));
 
   const inventoryLogs = db.prepare('SELECT * FROM inventory_logs ORDER BY created_at DESC LIMIT 60').all();
@@ -1164,11 +1173,13 @@ const server = http.createServer(async (req, res) => {
         if (!inputQty || inputQty <= 0) continue;
 
         const usePurchaseUnit = Boolean(line.use_purchase_unit);
-        const lineTotalCost = Math.max(0, Number(line.total_line_cost) || 0);
+        const lineTotalCost = Math.max(0, Number(line.total_line_cost ?? line.line_cost) || 0);
+        const lineType = line.item_target_type || line.target_type || 'GROCERY';
+        const lineTargetId = line.target_id || line.product_id || line.ingredient_id;
         totalReceiptCost += lineTotalCost;
 
-        if (line.item_target_type === 'GROCERY') {
-          const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(line.target_id);
+        if (lineType === 'GROCERY') {
+          const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(lineTargetId);
           if (!prod) continue;
           typesSet.add('GROCERY');
 
@@ -1198,8 +1209,8 @@ const server = http.createServer(async (req, res) => {
             purchase_cost_per_base_unit: baseUnitCost,
             total_line_cost: lineTotalCost
           });
-        } else if (line.item_target_type === 'INGREDIENT') {
-          const ing = db.prepare('SELECT * FROM ingredients WHERE id = ?').get(line.target_id);
+        } else if (lineType === 'INGREDIENT') {
+          const ing = db.prepare('SELECT * FROM ingredients WHERE id = ?').get(lineTargetId);
           if (!ing) continue;
           typesSet.add('INGREDIENT');
 
@@ -1347,11 +1358,14 @@ const server = http.createServer(async (req, res) => {
         const inputQty = Math.max(0, Number(line.input_qty) || 0);
         if (inputQty <= 0) continue;
         const conv = Math.max(1, Number(line.conversion_rate) || 1);
-        const lineCost = Math.max(0, Number(line.total_line_cost) || 0);
+        const lineCost = Math.max(0, Number(line.total_line_cost ?? line.line_cost) || 0);
+        const lineType = line.item_target_type || line.target_type || 'GROCERY';
+        const lineProdId = line.product_id || (lineType === 'GROCERY' ? line.target_id : null);
+        const lineIngId = line.ingredient_id || (lineType === 'INGREDIENT' ? line.target_id : null);
         newTotalCost += lineCost;
 
-        if (line.item_target_type === 'GROCERY' && line.product_id) {
-          const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(line.product_id);
+        if (lineType === 'GROCERY' && lineProdId) {
+          const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(lineProdId);
           if (!prod) continue;
           const qtyBefore = prod.stock_qty;
           const qtyAdded = Math.round(inputQty * conv * 100) / 100;
@@ -1363,8 +1377,8 @@ const server = http.createServer(async (req, res) => {
             receipt_id, 'GROCERY', prod.id, null, prod.name, line.unit_label || prod.purchase_unit,
             inputQty, conv, qtyBefore, qtyAdded, qtyAfter, baseUnitCost, lineCost
           );
-        } else if (line.item_target_type === 'INGREDIENT' && line.ingredient_id) {
-          const ing = db.prepare('SELECT * FROM ingredients WHERE id = ?').get(line.ingredient_id);
+        } else if (lineType === 'INGREDIENT' && lineIngId) {
+          const ing = db.prepare('SELECT * FROM ingredients WHERE id = ?').get(lineIngId);
           if (!ing) continue;
           const qtyBefore = ing.current_qty;
           const qtyAdded = Math.round(inputQty * conv * 100) / 100;

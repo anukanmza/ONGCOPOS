@@ -1269,25 +1269,29 @@ async function updateKdsStatus(orderItemId, nextStatus) {
 // ============================================================================
 // STOCK-IN DRAFT, VOICE STOCK-IN & RECEIPT DETAIL/EDIT/DELETE HELPERS
 // ============================================================================
+function recalculateStockInFormCost() {
+  if (!state.data) return;
+  const qty = Math.max(0, Number(state.stockInInputQty) || 0);
+  if (state.stockInTargetType === 'GROCERY') {
+    const prod = (state.data.products || []).find(p => p.id === state.stockInTargetId);
+    if (prod) {
+      const conv = state.stockInUsePurchaseUnit ? (Number(prod.conversion_rate) || 1) : 1;
+      state.stockInLineCost = Math.round(qty * conv * (Number(prod.cost) || 0) * 100) / 100;
+    }
+  } else {
+    const ing = (state.data.ingredients || []).find(i => i.id === state.stockInTargetId);
+    if (ing) {
+      const conv = state.stockInUsePurchaseUnit ? (Number(ing.conversion_rate) || 1) : 1;
+      state.stockInLineCost = Math.round(qty * conv * (Number(ing.cost_per_unit) || 0) * 100) / 100;
+    }
+  }
+}
+
 function selectStockInItemQuick(targetType, targetId) {
   state.stockInTargetType = targetType;
   state.stockInTargetId = targetId;
   state.stockInUsePurchaseUnit = true;
-  if (state.data) {
-    if (targetType === 'GROCERY') {
-      const prod = state.data.products.find(p => p.id === targetId);
-      if (prod) {
-        const conv = prod.conversion_rate || 1;
-        state.stockInLineCost = Math.round((Number(state.stockInInputQty) || 1) * conv * (prod.cost || 0));
-      }
-    } else {
-      const ing = state.data.ingredients.find(i => i.id === targetId);
-      if (ing) {
-        const conv = ing.conversion_rate || 1;
-        state.stockInLineCost = Math.round((Number(state.stockInInputQty) || 1) * conv * (ing.cost_per_unit || 0));
-      }
-    }
-  }
+  recalculateStockInFormCost();
   render();
 }
 
@@ -1437,58 +1441,91 @@ function addLineToStockInDraft() {
     return;
   }
 
+  // กรองรายการที่อาจค้างหรือข้อมูลไม่ครบออกจาก Draft ก่อน
+  state.stockInDraftItems = (state.stockInDraftItems || []).filter(x => (x.item_name || x.name) && Number(x.input_qty) > 0);
+
   if (state.stockInTargetType === 'GROCERY') {
     const prod = state.data.products.find(p => p.id === state.stockInTargetId);
     if (!prod) return;
-    const conv = state.stockInUsePurchaseUnit ? (prod.conversion_rate || 1) : 1;
-    const unitLabel = state.stockInUsePurchaseUnit ? prod.purchase_unit : prod.unit;
-    const qtyBefore = prod.stock_qty;
+    const conv = state.stockInUsePurchaseUnit ? (Number(prod.conversion_rate) || 1) : 1;
+    const unitLabel = state.stockInUsePurchaseUnit ? (prod.purchase_unit || prod.unit) : prod.unit;
+    const alreadyAddedForThisProd = state.stockInDraftItems
+      .filter(x => (x.target_id || x.product_id) === prod.id && (x.item_target_type || x.target_type) === 'GROCERY')
+      .reduce((s, x) => s + (Number(x.qty_added ?? x.preview_added) || 0), 0);
+    const qtyBefore = Math.round(((Number(prod.stock_qty) || 0) + alreadyAddedForThisProd) * 100) / 100;
     const qtyAdded = Math.round(inputQty * conv * 100) / 100;
     const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
+    const explicitCost = Number(state.stockInLineCost);
+    const finalLineCost = !Number.isNaN(explicitCost) && explicitCost >= 0
+      ? explicitCost
+      : Math.round(qtyAdded * (Number(prod.cost) || 0) * 100) / 100;
 
     state.stockInDraftItems.push({
       id: 'SID-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
       item_target_type: 'GROCERY',
+      target_type: 'GROCERY',
       target_id: prod.id,
+      product_id: prod.id,
+      ingredient_id: null,
       name: prod.name,
+      item_name: prod.name,
       use_purchase_unit: state.stockInUsePurchaseUnit,
       unit_label: unitLabel,
+      input_unit_label: unitLabel,
+      input_unit: unitLabel,
       base_unit: prod.unit,
       input_qty: inputQty,
       conversion_rate: conv,
       qty_before: qtyBefore,
       qty_added: qtyAdded,
+      preview_added: qtyAdded,
       qty_after: qtyAfter,
-      total_line_cost: Number(state.stockInLineCost) || Math.round(qtyAdded * prod.cost)
+      total_line_cost: finalLineCost,
+      line_cost: finalLineCost
     });
   } else {
     const ing = state.data.ingredients.find(i => i.id === state.stockInTargetId);
     if (!ing) return;
-    const conv = state.stockInUsePurchaseUnit ? (ing.conversion_rate || 1) : 1;
-    const unitLabel = state.stockInUsePurchaseUnit ? ing.purchase_unit : ing.stock_unit;
-    const qtyBefore = ing.current_qty;
+    const conv = state.stockInUsePurchaseUnit ? (Number(ing.conversion_rate) || 1) : 1;
+    const unitLabel = state.stockInUsePurchaseUnit ? (ing.purchase_unit || ing.stock_unit) : ing.stock_unit;
+    const alreadyAddedForThisIng = state.stockInDraftItems
+      .filter(x => (x.target_id || x.ingredient_id) === ing.id && (x.item_target_type || x.target_type) === 'INGREDIENT')
+      .reduce((s, x) => s + (Number(x.qty_added ?? x.preview_added) || 0), 0);
+    const qtyBefore = Math.round(((Number(ing.current_qty) || 0) + alreadyAddedForThisIng) * 100) / 100;
     const qtyAdded = Math.round(inputQty * conv * 100) / 100;
     const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
+    const explicitCost = Number(state.stockInLineCost);
+    const finalLineCost = !Number.isNaN(explicitCost) && explicitCost >= 0
+      ? explicitCost
+      : Math.round(qtyAdded * (Number(ing.cost_per_unit) || 0) * 100) / 100;
 
     state.stockInDraftItems.push({
       id: 'SID-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
       item_target_type: 'INGREDIENT',
+      target_type: 'INGREDIENT',
       target_id: ing.id,
+      product_id: null,
+      ingredient_id: ing.id,
       name: ing.name,
+      item_name: ing.name,
       use_purchase_unit: state.stockInUsePurchaseUnit,
       unit_label: unitLabel,
+      input_unit_label: unitLabel,
+      input_unit: unitLabel,
       base_unit: ing.stock_unit,
       input_qty: inputQty,
       conversion_rate: conv,
       qty_before: qtyBefore,
       qty_added: qtyAdded,
+      preview_added: qtyAdded,
       qty_after: qtyAfter,
-      total_line_cost: Number(state.stockInLineCost) || Math.round(qtyAdded * ing.cost_per_unit)
+      total_line_cost: finalLineCost,
+      line_cost: finalLineCost
     });
   }
 
   render();
-  showToast('➕ เพิ่มลงใบรับของเข้าสต็อกแล้ว');
+  showToast('➕ เพิ่มรายการลงใบรับของเข้าสต็อกแล้ว');
 }
 
 async function submitStockInReceipt() {
@@ -2633,7 +2670,7 @@ function renderInventoryView() {
   const inputQtyNum = Math.max(0, Number(state.stockInInputQty) || 0);
   const previewAdded = Math.round(inputQtyNum * convRate * 100) / 100;
   const previewAfter = Math.round((currentBefore + previewAdded) * 100) / 100;
-  const draftTotalCost = state.stockInDraftItems.reduce((s, d) => s + (Number(d.line_cost) || 0), 0);
+  const draftTotalCost = state.stockInDraftItems.reduce((s, d) => s + (Number(d.total_line_cost ?? d.line_cost) || 0), 0);
 
   // กรองประวัติใบรับของเข้าสต็อกตามช่วงวัน (Default = วันนี้ TODAY)
   const filteredStockReceipts = stockInReceipts.filter(r =>
@@ -2728,9 +2765,9 @@ function renderInventoryView() {
           </div>
           <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11.5px;">
             <span style="color:var(--ttl-deep-muted);">ตัวอย่างเสียงพูด:</span>
-            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; padding:0 8px; color:#fff; border-color:rgba(255,255,255,0.2);" onclick="parseAndApplyStockInVoice('โค้ก 2 ลัง ทุน 560')">"โค้ก 2 ลัง ทุน 560"</button>
-            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; padding:0 8px; color:#fff; border-color:rgba(255,255,255,0.2);" onclick="parseAndApplyStockInVoice('หมูสับ 3 กิโล ทุน 660')">"หมูสับ 3 กิโล ทุน 660"</button>
-            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; padding:0 8px; color:#fff; border-color:rgba(255,255,255,0.2);" onclick="parseAndApplyStockInVoice('ไข่ไก่ 2 แผง ทุน 228')">"ไข่ไก่ 2 แผง ทุน 228"</button>
+            <button type="button" class="ttl-preset-chip" onclick="parseAndApplyStockInVoice('โค้ก 2 ลัง ทุน 560')">"โค้ก 2 ลัง ทุน 560"</button>
+            <button type="button" class="ttl-preset-chip" onclick="parseAndApplyStockInVoice('หมูสับ 3 กิโล ทุน 660')">"หมูสับ 3 กิโล ทุน 660"</button>
+            <button type="button" class="ttl-preset-chip" onclick="parseAndApplyStockInVoice('ไข่ไก่ 2 แผง ทุน 228')">"ไข่ไก่ 2 แผง ทุน 228"</button>
           </div>
         </div>
 
@@ -2778,7 +2815,7 @@ function renderInventoryView() {
             <div style="display:grid; grid-template-columns:1fr 1.3fr; gap:10px;">
               <div>
                 <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ประเภทที่จะนำเข้า</label>
-                <select class="ttl-select" onchange="state.stockInTargetType=this.value; state.stockInTargetId = this.value==='GROCERY' ? '${groceryProducts[0]?.id}' : '${ingredients[0]?.id}'; render();">
+                <select class="ttl-select" onchange="state.stockInTargetType=this.value; state.stockInTargetId = this.value==='GROCERY' ? '${groceryProducts[0]?.id}' : '${ingredients[0]?.id}'; recalculateStockInFormCost(); render();">
                   <option value="GROCERY" ${state.stockInTargetType === 'GROCERY' ? 'selected' : ''}>📦 สินค้าของชำ (${groceryProducts.length})</option>
                   <option value="INGREDIENT" ${state.stockInTargetType === 'INGREDIENT' ? 'selected' : ''}>🥩 วัตถุดิบครัว (${ingredients.length})</option>
                 </select>
@@ -2786,7 +2823,7 @@ function renderInventoryView() {
 
               <div>
                 <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">เลือกสินค้า / วัตถุดิบ</label>
-                <select class="ttl-select" onchange="state.stockInTargetId=this.value; render();">
+                <select class="ttl-select" onchange="state.stockInTargetId=this.value; recalculateStockInFormCost(); render();">
                   ${(filteredStockTargetPool.length > 0 ? filteredStockTargetPool : targetPool).map(item => `
                     <option value="${item.id}" ${item.id === state.stockInTargetId ? 'selected' : ''}>
                       ${item.name} (เหลือ ${state.stockInTargetType === 'GROCERY' ? item.stock_qty + ' ' + item.unit : item.current_qty + ' ' + item.stock_unit})
@@ -2799,7 +2836,7 @@ function renderInventoryView() {
             <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:10px;">
               <div>
                 <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">หน่วยที่นำเข้า</label>
-                <select class="ttl-select" onchange="state.stockInUsePurchaseUnit=(this.value==='PURCHASE'); render();">
+                <select class="ttl-select" onchange="state.stockInUsePurchaseUnit=(this.value==='PURCHASE'); recalculateStockInFormCost(); render();">
                   <option value="PURCHASE" ${state.stockInUsePurchaseUnit ? 'selected' : ''}>${purchaseUnitLabel}</option>
                   <option value="BASE" ${!state.stockInUsePurchaseUnit ? 'selected' : ''}>${baseUnit}</option>
                 </select>
@@ -2815,7 +2852,7 @@ function renderInventoryView() {
                   class="ttl-input"
                   style="font-weight:700; font-size:15px;"
                   value="${state.stockInInputQty}"
-                  oninput="state.stockInInputQty=this.value; render();"
+                  oninput="state.stockInInputQty=this.value; recalculateStockInFormCost(); render();"
                 />
               </div>
 
@@ -2896,29 +2933,37 @@ function renderInventoryView() {
                 </div>
               ` : `
                 <div style="display:flex; flex-direction:column; gap:8px; max-height:240px; overflow-y:auto; margin-bottom:10px;">
-                  ${state.stockInDraftItems.map((d, idx) => `
-                    <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                      <div>
-                        <div style="font-weight:700; font-size:13.5px;">
-                          #${idx + 1} ${d.target_type === 'GROCERY' ? '📦' : '🥩'} ${d.item_name}
+                  ${state.stockInDraftItems.map((d, idx) => {
+                    const lineType = d.target_type || d.item_target_type || 'GROCERY';
+                    const lineName = d.item_name || d.name || 'สินค้า/วัตถุดิบ';
+                    const lineUnit = d.input_unit_label || d.unit_label || d.input_unit || d.base_unit || 'หน่วย';
+                    const lineAdded = d.preview_added ?? d.qty_added ?? d.input_qty ?? 0;
+                    const lineBaseUnit = d.base_unit || lineUnit;
+                    const lineCostVal = Number(d.total_line_cost ?? d.line_cost) || 0;
+                    return `
+                      <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                        <div>
+                          <div style="font-weight:700; font-size:13.5px;">
+                            #${idx + 1} ${lineType === 'GROCERY' ? '📦' : '🥩'} ${lineName}
+                          </div>
+                          <div style="font-size:12px; color:var(--ttl-muted);">
+                            นำเข้า <b>${d.input_qty} ${lineUnit}</b> (บวกสต็อก <b style="color:var(--ttl-good);">+${lineAdded} ${lineBaseUnit}</b> • เดิม ${d.qty_before ?? '-'} ➔ ใหม่ <b>${d.qty_after ?? '-'} ${lineBaseUnit}</b>)
+                          </div>
                         </div>
-                        <div style="font-size:12px; color:var(--ttl-muted);">
-                          นำเข้า <b>${d.input_qty} ${d.input_unit_label}</b> (บวกสต็อก <b style="color:var(--ttl-good);">+${d.preview_added} ${d.base_unit}</b>)
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          <span style="font-weight:700; color:var(--ttl-gold); font-size:14.5px;">${formatMoney(lineCostVal)}</span>
+                          <button
+                            type="button"
+                            class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
+                            style="height:26px; padding:0 8px; font-size:11px;"
+                            onclick="state.stockInDraftItems.splice(${idx}, 1); render();"
+                          >
+                            🗑️ ลบ
+                          </button>
                         </div>
                       </div>
-                      <div style="display:flex; align-items:center; gap:8px;">
-                        <span style="font-weight:700; color:var(--ttl-gold);">${formatMoney(d.line_cost)}</span>
-                        <button
-                          type="button"
-                          class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
-                          style="height:26px; padding:0 8px; font-size:11px;"
-                          onclick="state.stockInDraftItems.splice(${idx}, 1); render();"
-                        >
-                          🗑️ ลบ
-                        </button>
-                      </div>
-                    </div>
-                  `).join('')}
+                    `;
+                  }).join('')}
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; padding-top:10px; border-top:1px solid var(--ttl-rule); font-size:14px;">
                   <span>รวมต้นทุนใบรับของรอบนี้ (${state.stockInDraftItems.length} รายการ)</span>
@@ -4662,22 +4707,28 @@ function renderModals() {
           </div>
 
           <div style="display:flex; flex-direction:column; gap:8px; max-height:260px; overflow-y:auto; margin-bottom:14px;">
-            ${(r.items || []).map((line, idx) => `
-              <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                <div>
-                  <div style="font-weight:700; font-size:13.5px;">
-                    ${idx + 1}. ${line.target_type === 'GROCERY' ? '📦' : '🥩'} ${line.item_name}
+            ${(r.items || []).map((line, idx) => {
+              const lType = line.target_type || line.item_target_type || 'GROCERY';
+              const lName = line.item_name || line.name || 'สินค้า/วัตถุดิบ';
+              const lUnit = line.input_unit || line.unit_label || '';
+              const lCost = Number(line.total_line_cost ?? line.line_cost) || 0;
+              return `
+                <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                  <div>
+                    <div style="font-weight:700; font-size:13.5px;">
+                      ${idx + 1}. ${lType === 'GROCERY' ? '📦' : '🥩'} ${lName}
+                    </div>
+                    <div style="font-size:12px; color:var(--ttl-muted); margin-top:2px;">
+                      จำนวนซื้อเข้า: <b>${line.input_qty} ${lUnit}</b>
+                      • สต็อก: เดิม ${line.qty_before} <b style="color:var(--ttl-good);">+${line.qty_added}</b> ➔ <b>${line.qty_after}</b>
+                    </div>
                   </div>
-                  <div style="font-size:12px; color:var(--ttl-muted); margin-top:2px;">
-                    จำนวนซื้อเข้า: <b>${line.input_qty} ${line.input_unit}</b>
-                    • สต็อก: เดิม ${line.qty_before} <b style="color:var(--ttl-good);">+${line.qty_added}</b> ➔ <b>${line.qty_after}</b>
+                  <div style="font-weight:700; color:var(--ttl-gold); font-size:14px;">
+                    ${formatMoney(lCost)}
                   </div>
                 </div>
-                <div style="font-weight:700; color:var(--ttl-gold); font-size:14px;">
-                  ${formatMoney(line.line_cost)}
-                </div>
-              </div>
-            `).join('')}
+              `;
+            }).join('')}
           </div>
 
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding-top:10px; border-top:1px solid var(--ttl-rule);">
@@ -4709,7 +4760,7 @@ function renderModals() {
   // 14. Edit Stock-In Receipt Modal (แก้ไขใบรับของเข้าสต็อก + ปรับสต็อกตามส่วนต่างอัตโนมัติ)
   if (state.editingStockReceipt) {
     const er = state.editingStockReceipt;
-    const editTotalCost = (er.items || []).reduce((s, it) => s + (Number(it.line_cost) || 0), 0);
+    const editTotalCost = (er.items || []).reduce((s, it) => s + (Number(it.total_line_cost ?? it.line_cost) || 0), 0);
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.editingStockReceipt=null; render();}">
         <div class="ttl-modal" style="max-width:560px; max-height:92vh; overflow-y:auto;">
@@ -4743,48 +4794,53 @@ function renderModals() {
           </div>
 
           <div style="display:flex; flex-direction:column; gap:8px; max-height:260px; overflow-y:auto; margin-bottom:12px;">
-            ${(er.items || []).map((line, idx) => `
-              <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); display:grid; grid-template-columns:1.4fr 1fr 1fr auto; gap:8px; align-items:end;">
-                <div>
-                  <div style="font-weight:700; font-size:13px;">${line.item_name}</div>
-                  <div style="font-size:11px; color:var(--ttl-muted);">หน่วย: ${line.input_unit} (แปลง ×${line.conversion_rate || 1})</div>
+            ${(er.items || []).map((line, idx) => {
+              const lName = line.item_name || line.name || 'สินค้า/วัตถุดิบ';
+              const lUnit = line.input_unit || line.unit_label || '';
+              const lCost = Number(line.total_line_cost ?? line.line_cost) || 0;
+              return `
+                <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); display:grid; grid-template-columns:1.4fr 1fr 1fr auto; gap:8px; align-items:end;">
+                  <div>
+                    <div style="font-weight:700; font-size:13px;">${lName}</div>
+                    <div style="font-size:11px; color:var(--ttl-muted);">หน่วย: ${lUnit} (แปลง ×${line.conversion_rate || 1})</div>
+                  </div>
+                  <div>
+                    <label style="font-size:11px; color:var(--ttl-muted); display:block;">จำนวน (${lUnit})</label>
+                    <input
+                      id="edit-rcp-qty-${idx}"
+                      type="number"
+                      step="any"
+                      min="0"
+                      class="ttl-input"
+                      style="height:32px; font-size:13px; font-weight:700;"
+                      value="${line.input_qty}"
+                      oninput="state.editingStockReceipt.items[${idx}].input_qty = Math.max(0, Number(this.value)||0); render();"
+                    />
+                  </div>
+                  <div>
+                    <label style="font-size:11px; color:var(--ttl-muted); display:block;">ทุนรวม (บาท)</label>
+                    <input
+                      id="edit-rcp-cost-${idx}"
+                      type="number"
+                      step="any"
+                      min="0"
+                      class="ttl-input"
+                      style="height:32px; font-size:13px;"
+                      value="${lCost}"
+                      oninput="state.editingStockReceipt.items[${idx}].line_cost = Math.max(0, Number(this.value)||0); state.editingStockReceipt.items[${idx}].total_line_cost = Math.max(0, Number(this.value)||0); render();"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
+                    style="height:32px; padding:0 8px;"
+                    onclick="if(state.editingStockReceipt.items.length > 1){ state.editingStockReceipt.items.splice(${idx}, 1); render(); }"
+                  >
+                    🗑️
+                  </button>
                 </div>
-                <div>
-                  <label style="font-size:11px; color:var(--ttl-muted); display:block;">จำนวน (${line.input_unit})</label>
-                  <input
-                    id="edit-rcp-qty-${idx}"
-                    type="number"
-                    step="any"
-                    min="0"
-                    class="ttl-input"
-                    style="height:32px; font-size:13px; font-weight:700;"
-                    value="${line.input_qty}"
-                    oninput="state.editingStockReceipt.items[${idx}].input_qty = Math.max(0, Number(this.value)||0); render();"
-                  />
-                </div>
-                <div>
-                  <label style="font-size:11px; color:var(--ttl-muted); display:block;">ทุนรวม (บาท)</label>
-                  <input
-                    id="edit-rcp-cost-${idx}"
-                    type="number"
-                    step="any"
-                    min="0"
-                    class="ttl-input"
-                    style="height:32px; font-size:13px;"
-                    value="${line.line_cost}"
-                    oninput="state.editingStockReceipt.items[${idx}].line_cost = Math.max(0, Number(this.value)||0); render();"
-                  />
-                </div>
-                <button
-                  type="button"
-                  class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
-                  style="height:32px; padding:0 8px;"
-                  onclick="if(state.editingStockReceipt.items.length > 1){ state.editingStockReceipt.items.splice(${idx}, 1); render(); }"
-                >
-                  🗑️
-                </button>
-              </div>
-            `).join('')}
+              `;
+            }).join('')}
           </div>
 
           <div style="padding:10px 14px; border-radius:10px; background:var(--ttl-deep); color:#fff; display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">

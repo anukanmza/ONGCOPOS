@@ -622,11 +622,13 @@ module.exports = async (req, res) => {
         const inputQty = Number(line.input_qty);
         if (!inputQty || inputQty <= 0) continue;
         const usePurchaseUnit = Boolean(line.use_purchase_unit);
-        const lineCost = Math.max(0, Number(line.total_line_cost) || 0);
+        const lineCost = Math.max(0, Number(line.total_line_cost ?? line.line_cost) || 0);
+        const lineType = line.item_target_type || line.target_type || 'GROCERY';
+        const lineTargetId = line.target_id || line.product_id || line.ingredient_id;
         totalReceiptCost += lineCost;
 
-        if (line.item_target_type === 'GROCERY') {
-          const prod = data.products.find(p => p.id === line.target_id);
+        if (lineType === 'GROCERY') {
+          const prod = data.products.find(p => p.id === lineTargetId);
           if (!prod) continue;
           const conv = usePurchaseUnit ? (prod.conversion_rate || 1) : 1;
           const qtyBefore = prod.stock_qty;
@@ -655,7 +657,7 @@ module.exports = async (req, res) => {
             total_line_cost: lineCost
           });
         } else {
-          const ing = data.ingredients.find(i => i.id === line.target_id);
+          const ing = data.ingredients.find(i => i.id === lineTargetId);
           if (!ing) continue;
           const conv = usePurchaseUnit ? (ing.conversion_rate || 1) : 1;
           const qtyBefore = ing.current_qty;
@@ -1204,11 +1206,14 @@ module.exports = async (req, res) => {
         const inputQty = Math.max(0, Number(line.input_qty) || 0);
         if (inputQty <= 0) continue;
         const conv = Math.max(1, Number(line.conversion_rate) || 1);
-        const lineCost = Math.max(0, Number(line.total_line_cost) || 0);
+        const lineCost = Math.max(0, Number(line.total_line_cost ?? line.line_cost) || 0);
+        const lineType = line.item_target_type || line.target_type || 'GROCERY';
+        const lineProdId = line.product_id || (lineType === 'GROCERY' ? line.target_id : null);
+        const lineIngId = line.ingredient_id || (lineType === 'INGREDIENT' ? line.target_id : null);
         newTotalCost += lineCost;
 
-        if (line.item_target_type === 'GROCERY' && line.product_id) {
-          const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(line.product_id)}`);
+        if (lineType === 'GROCERY' && lineProdId) {
+          const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(lineProdId)}`);
           const prod = prods[0];
           if (!prod) continue;
           const qtyBefore = Number(prod.stock_qty) || 0;
@@ -1235,8 +1240,8 @@ module.exports = async (req, res) => {
               total_line_cost: lineCost
             }
           });
-        } else if (line.item_target_type === 'INGREDIENT' && line.ingredient_id) {
-          const ings = await sbRest(`ingredients?select=*&id=eq.${encodeURIComponent(line.ingredient_id)}`);
+        } else if (lineType === 'INGREDIENT' && lineIngId) {
+          const ings = await sbRest(`ingredients?select=*&id=eq.${encodeURIComponent(lineIngId)}`);
           const ing = ings[0];
           if (!ing) continue;
           const qtyBefore = Number(ing.current_qty) || 0;
