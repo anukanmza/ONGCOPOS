@@ -222,7 +222,16 @@ function buildLocalBootstrap() {
   const orderMap = new Map(db.orders.map(o => [o.id, o]));
 
   const kitchenQueue = db.orderItems
-    .filter(it => it.item_type === 'FOOD' && it.item_status === 'ACTIVE' && ['PENDING', 'COOKING', 'SERVED'].includes(it.kitchen_status))
+    .filter(it => {
+      const ord = orderMap.get(it.order_id);
+      if (!ord || it.item_type !== 'FOOD') return false;
+      if (it.kitchen_status === 'CANCEL_REQUESTED') return true;
+      return it.item_status === 'ACTIVE' && ['PENDING', 'COOKING', 'SERVED'].includes(it.kitchen_status) && ['OPEN', 'PAID'].includes(ord.status);
+    })
+    .sort((a, b) => {
+      const rank = { CANCEL_REQUESTED: 0, PENDING: 1, COOKING: 2, SERVED: 3 };
+      return (rank[a.kitchen_status] ?? 9) - (rank[b.kitchen_status] ?? 9);
+    })
     .map(it => {
       const ord = orderMap.get(it.order_id);
       const tbl = ord && ord.table_id ? tableMap.get(ord.table_id) : null;
@@ -230,6 +239,7 @@ function buildLocalBootstrap() {
         ...it,
         order_type: ord ? ord.order_type : 'RETAIL',
         table_id: ord ? ord.table_id : null,
+        bill_title: ord ? ord.bill_title : null,
         table_name: tbl ? tbl.name : null,
         zone_name: tbl ? tbl.zone_name : null
       };
@@ -258,12 +268,18 @@ function buildLocalBootstrap() {
   }
 
   for (const it of db.orderItems) {
+    const parentOrd = orderMap.get(it.order_id);
+    if (!parentOrd) continue;
     if (it.item_status === 'VOID_WASTE') {
       wasteCost += it.quantity * it.unit_cost;
       continue;
     }
     if (it.item_status === 'RETURNED_RESTOCK') {
       returnedRestockValue += it.quantity * it.unit_price;
+      continue;
+    }
+    // Calculate revenue, COGS, and top sellers strictly from PAID orders!
+    if (parentOrd.status !== 'PAID' || it.item_status !== 'ACTIVE') {
       continue;
     }
     const activeQty = Math.max(0, it.quantity - (it.returned_qty || 0));
@@ -284,7 +300,7 @@ function buildLocalBootstrap() {
     salesMap.set(it.product_id, prev);
   }
 
-  const totalRevenue = groceryRevenue + foodRevenue;
+  const totalRevenue = paidRevenue;
   const totalCogs = groceryCost + foodCost;
   const grossProfit = totalRevenue - totalCogs;
   const operatingExpenses = db.expenses.reduce((s, e) => s + e.amount, 0);
@@ -639,7 +655,7 @@ window.LocalPosEngine = {
     if (target) {
       const validMode = mode === 'VOID_WASTE' ? 'VOID_WASTE' : 'RETURNED_RESTOCK';
       target.item_status = validMode;
-      target.kitchen_status = target.item_type === 'FOOD' ? 'CANCELLED' : 'NONE';
+      target.kitchen_status = target.item_type === 'FOOD' ? 'CANCEL_REQUESTED' : 'NONE';
       const prod = db.products.find(p => p.id === target.product_id);
       if (validMode === 'RETURNED_RESTOCK' && prod && prod.item_type === 'GROCERY') {
         prod.stock_qty = Math.round((prod.stock_qty + target.quantity) * 100) / 100;
@@ -649,6 +665,177 @@ window.LocalPosEngine = {
       saveLocalDb(db);
     }
     return { success: true, data: buildLocalBootstrap() };
+  },
+
+  cancelOrder(body) {
+    const db = loadLocalDb();
+    const now = new Date().toISOString();
+    const { order_id, mode = 'RETURNED_RESTOCK', reason_note = '' } = body;
+    const ord = db.orders.find(o => o.id === order_id);
+    if (!ord) return { error: 'ไม่พบบิลที่ต้องการยกเลิก' };
+    const wasPaid = ord.status === 'PAID';
+    const nextStatus = wasPaid ? 'VOIDED' : 'CANCELLED';
+    const validMode = mode === 'VOID_WASTE' ? 'VOID_WASTE' : 'RETURNED_RESTOCK';
+
+    const items = db.orderItems.filter(i => i.order_id === order_id && i.item_status === 'ACTIVE');
+    for (const it of items) {
+      it.item_status = validMode;
+      it.kitchen_status = it.item_type === 'FOOD' ? (wasPaid ? 'CANCELLED_ACK' : 'CANCEL_REQUESTED') : 'NONE';
+      if (validMode === 'RETURNED_RESTOCK' && it.item_type === 'GROCERY') {
+        const prod = db.products.find(p => p.id === it.product_id);
+        if (prod) {
+          prod.stock_qty = Math.round((prod.stock_qty + it.quantity) * 100) / 100;
+          db.inventoryLogs.unshift({ id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, target_type: 'GROCERY', product_id: prod.id, item_name: prod.name, change_qty: it.quantity, balance_after: prod.stock_qty, unit: prod.unit, reason: wasPaid ? 'VOID_INVOICE_RESTOCK' : 'CANCEL_BILL_RESTOCK', reference_id: order_id, note: reason_note || 'ยกเลิกบิลคืนสต็อก', created_at: now });
+        }
+      }
+    }
+
+    ord.status = nextStatus;
+    const suffix = reason_note ? ` [ยกเลิก: ${reason_note}]` : (wasPaid ? ' [ยกเลิก Invoice]' : ' [ยกเลิกบิล]');
+    ord.bill_note = ((ord.bill_note || '') + suffix).trim();
+
+    if (ord.table_id) {
+      const tbl = db.tables.find(t => t.id === ord.table_id);
+      if (tbl && tbl.current_order_id === ord.id) {
+        tbl.status = 'AVAILABLE';
+        tbl.current_order_id = null;
+      }
+    }
+
+    if (wasPaid && ord.customer_id && Array.isArray(db.customers)) {
+      const cus = db.customers.find(c => c.id === ord.customer_id);
+      if (cus) {
+        const pts = Math.floor((ord.total_amount || 0) / 25);
+        cus.points = Math.max(0, (cus.points || 0) - pts);
+        cus.total_spent = Math.max(0, Math.round(((cus.total_spent || 0) - (ord.total_amount || 0)) * 100) / 100);
+      }
+    }
+
+    saveLocalDb(db);
+    return { success: true, status: nextStatus, data: buildLocalBootstrap() };
+  },
+
+  transferOrder(body) {
+    const db = loadLocalDb();
+    const { source_order_id, action, target_table_id = null, target_order_id = null } = body;
+    const srcOrd = db.orders.find(o => o.id === source_order_id && o.status === 'OPEN');
+    if (!srcOrd) return { error: 'ไม่พบบิลต้นทางที่เปิดอยู่' };
+
+    if (action === 'MOVE_TO_TABLE') {
+      const targetTbl = db.tables.find(t => t.id === target_table_id);
+      if (!targetTbl) return { error: 'ไม่พบโต๊ะปลายทาง' };
+      if (srcOrd.table_id && srcOrd.table_id !== targetTbl.id) {
+        const oldTbl = db.tables.find(t => t.id === srcOrd.table_id);
+        if (oldTbl) {
+          oldTbl.status = 'AVAILABLE';
+          oldTbl.current_order_id = null;
+        }
+      }
+      srcOrd.order_type = 'DINE_IN';
+      srcOrd.table_id = targetTbl.id;
+      if (!srcOrd.bill_title || srcOrd.bill_title.startsWith('โต๊ะ ') || srcOrd.bill_title.startsWith('พักบิล')) {
+        srcOrd.bill_title = targetTbl.name;
+      }
+      targetTbl.status = 'OCCUPIED';
+      targetTbl.current_order_id = srcOrd.id;
+      saveLocalDb(db);
+      return { success: true, orderId: srcOrd.id, data: buildLocalBootstrap() };
+    }
+
+    if (action === 'MOVE_TO_HELD') {
+      if (srcOrd.table_id) {
+        const oldTbl = db.tables.find(t => t.id === srcOrd.table_id);
+        if (oldTbl) {
+          oldTbl.status = 'AVAILABLE';
+          oldTbl.current_order_id = null;
+        }
+      }
+      srcOrd.order_type = 'RETAIL';
+      srcOrd.table_id = null;
+      srcOrd.bill_title = srcOrd.bill_title || `พักบิล (${srcOrd.id})`;
+      saveLocalDb(db);
+      return { success: true, orderId: srcOrd.id, data: buildLocalBootstrap() };
+    }
+
+    if (action === 'MERGE_BILL') {
+      let destOrd = target_order_id ? db.orders.find(o => o.id === target_order_id && o.status === 'OPEN') : null;
+      if (!destOrd && target_table_id) {
+        const tTbl = db.tables.find(t => t.id === target_table_id);
+        if (tTbl && tTbl.current_order_id) {
+          destOrd = db.orders.find(o => o.id === tTbl.current_order_id && o.status === 'OPEN');
+        }
+      }
+      if (!destOrd || destOrd.id === srcOrd.id) return { error: 'ไม่พบบิลปลายทางที่จะรวม' };
+
+      for (const it of db.orderItems) {
+        if (it.order_id === srcOrd.id) it.order_id = destOrd.id;
+      }
+      if (srcOrd.table_id) {
+        const oldTbl = db.tables.find(t => t.id === srcOrd.table_id);
+        if (oldTbl) {
+          oldTbl.status = 'AVAILABLE';
+          oldTbl.current_order_id = null;
+        }
+      }
+      db.orders = db.orders.filter(o => o.id !== srcOrd.id);
+      recalcLocalOrder(db, destOrd.id);
+      saveLocalDb(db);
+      return { success: true, orderId: destOrd.id, data: buildLocalBootstrap() };
+    }
+    return { error: 'คำสั่งไม่ถูกต้อง' };
+  },
+
+  splitOrder(body) {
+    const db = loadLocalDb();
+    const now = new Date().toISOString();
+    const { source_order_id, split_items = [], new_bill_title = '' } = body;
+    const srcOrd = db.orders.find(o => o.id === source_order_id && o.status === 'OPEN');
+    if (!srcOrd) return { error: 'ไม่พบบิลต้นทาง' };
+
+    const newOrderId = `ORD-${Date.now().toString().slice(-6)}`;
+    db.orders.unshift({
+      id: newOrderId,
+      order_type: 'RETAIL',
+      table_id: null,
+      bill_title: new_bill_title.trim() || `แยกจ่ายจาก ${srcOrd.bill_title || srcOrd.id}`,
+      bill_note: `แยกบิลจาก ${srcOrd.id}`,
+      customer_id: srcOrd.customer_id || null,
+      customer_name: srcOrd.customer_name || '',
+      status: 'OPEN',
+      subtotal: 0,
+      discount: 0,
+      total_amount: 0,
+      total_cost: 0,
+      payment_method: 'CASH',
+      cash_received: 0,
+      change_amount: 0,
+      created_at: now,
+      paid_at: null
+    });
+
+    for (const sp of split_items) {
+      const it = db.orderItems.find(x => x.id === sp.order_item_id && x.order_id === srcOrd.id && x.item_status === 'ACTIVE');
+      const moveQty = Math.min(Number(it?.quantity || 0), Math.max(0, Number(sp.split_qty || 0)));
+      if (!it || moveQty <= 0) continue;
+
+      if (moveQty >= it.quantity) {
+        it.order_id = newOrderId;
+      } else {
+        it.quantity -= moveQty;
+        db.orderItems.push({
+          ...it,
+          id: `OI-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+          order_id: newOrderId,
+          quantity: moveQty,
+          created_at: now
+        });
+      }
+    }
+
+    recalcLocalOrder(db, srcOrd.id);
+    recalcLocalOrder(db, newOrderId);
+    saveLocalDb(db);
+    return { success: true, newOrderId, data: buildLocalBootstrap() };
   },
 
   checkoutOrder(body) {
@@ -791,7 +978,17 @@ window.LocalPosEngine = {
     const aliases = Array.isArray(body.voice_aliases) ? body.voice_aliases : String(body.voice_aliases || '').split(',').map(s => s.trim()).filter(Boolean);
     const existing = db.products.find(p => p.id === prodId);
     if (existing) {
-      Object.assign(existing, { name: body.name, price: Number(body.price), cost: Number(body.cost), voice_aliases: aliases });
+      Object.assign(existing, {
+        name: body.name,
+        barcode: body.barcode !== undefined ? (body.barcode || null) : existing.barcode,
+        price: Number(body.price),
+        cost: Number(body.cost),
+        unit: body.unit || existing.unit || 'ชิ้น',
+        purchase_unit: body.purchase_unit || existing.purchase_unit || 'แพ็ค',
+        conversion_rate: Number(body.conversion_rate) || existing.conversion_rate || 1,
+        stock_qty: body.stock_qty !== undefined ? Number(body.stock_qty) : existing.stock_qty,
+        voice_aliases: aliases
+      });
     } else {
       db.products.push({
         id: prodId,
@@ -826,23 +1023,45 @@ window.LocalPosEngine = {
   saveIngredient(body) {
     const db = loadLocalDb();
     const ingId = body.id || `ING-${Date.now().toString().slice(-4)}`;
-    db.ingredients.push({
-      id: ingId,
-      name: body.name,
-      stock_unit: body.stock_unit || 'กรัม',
-      purchase_unit: body.purchase_unit || 'กิโลกรัม',
-      conversion_rate: Number(body.conversion_rate) || 1000,
-      current_qty: Number(body.current_qty) || 0,
-      cost_per_unit: Number(body.cost_per_unit) || 0.15,
-      low_stock_threshold: 500
-    });
+    const existing = db.ingredients.find(i => i.id === ingId);
+    if (existing) {
+      Object.assign(existing, {
+        name: body.name,
+        stock_unit: body.stock_unit || existing.stock_unit || 'กรัม',
+        purchase_unit: body.purchase_unit || existing.purchase_unit || 'กิโลกรัม',
+        conversion_rate: Number(body.conversion_rate) || existing.conversion_rate || 1000,
+        current_qty: body.current_qty !== undefined ? Number(body.current_qty) : existing.current_qty,
+        cost_per_unit: body.cost_per_unit !== undefined ? Number(body.cost_per_unit) : existing.cost_per_unit
+      });
+    } else {
+      db.ingredients.push({
+        id: ingId,
+        name: body.name,
+        stock_unit: body.stock_unit || 'กรัม',
+        purchase_unit: body.purchase_unit || 'กิโลกรัม',
+        conversion_rate: Number(body.conversion_rate) || 1000,
+        current_qty: Number(body.current_qty) || 0,
+        cost_per_unit: Number(body.cost_per_unit) || 0.15,
+        low_stock_threshold: 500
+      });
+    }
     saveLocalDb(db);
     return { success: true, ingId, data: buildLocalBootstrap() };
   },
 
   saveTable(body) {
     const db = loadLocalDb();
-    const tblId = `T${db.tables.length + 1}`;
+    if (body.id) {
+      const existing = db.tables.find(t => t.id === body.id);
+      if (existing) {
+        existing.name = body.name;
+        existing.zone_name = body.zone_name || existing.zone_name || 'โซนในร้าน';
+        existing.voice_aliases = [body.name, body.name.replace(/\s+/g, '')];
+        saveLocalDb(db);
+        return { success: true, tblId: existing.id, data: buildLocalBootstrap() };
+      }
+    }
+    const tblId = `T${Date.now().toString().slice(-4)}`;
     db.tables.push({
       id: tblId,
       name: body.name,
@@ -853,6 +1072,40 @@ window.LocalPosEngine = {
     });
     saveLocalDb(db);
     return { success: true, tblId, data: buildLocalBootstrap() };
+  },
+
+  deleteTable(body) {
+    const db = loadLocalDb();
+    const tbl = db.tables.find(t => t.id === body.id);
+    if (tbl && tbl.status === 'OCCUPIED') {
+      return { error: 'ไม่สามารถลบโต๊ะที่มีบิลเปิดอยู่ได้' };
+    }
+    db.tables = db.tables.filter(t => t.id !== body.id);
+    saveLocalDb(db);
+    return { success: true, data: buildLocalBootstrap() };
+  },
+
+  deleteCustomer(body) {
+    const db = loadLocalDb();
+    db.customers = (db.customers || []).filter(c => c.id !== body.id);
+    saveLocalDb(db);
+    return { success: true, data: buildLocalBootstrap() };
+  },
+
+  deleteIngredient(body) {
+    const db = loadLocalDb();
+    db.recipeItems = db.recipeItems.filter(r => r.ingredient_id !== body.id);
+    db.ingredients = db.ingredients.filter(i => i.id !== body.id);
+    saveLocalDb(db);
+    return { success: true, data: buildLocalBootstrap() };
+  },
+
+  deleteProduct(body) {
+    const db = loadLocalDb();
+    db.recipeItems = db.recipeItems.filter(r => r.product_id !== body.id);
+    db.products = db.products.filter(p => p.id !== body.id);
+    saveLocalDb(db);
+    return { success: true, data: buildLocalBootstrap() };
   },
 
   saveExpense(body) {

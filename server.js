@@ -106,7 +106,7 @@ function getFullBootstrapData() {
   const rawTables = db.prepare('SELECT * FROM dining_tables ORDER BY id').all();
   const customers = db.prepare('SELECT * FROM customers ORDER BY total_spent DESC, created_at DESC').all();
   const openOrders = db.prepare("SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at DESC").all();
-  const allRecentOrders = db.prepare("SELECT * FROM orders WHERE status IN ('OPEN', 'PAID', 'CANCELLED') ORDER BY created_at DESC LIMIT 60").all();
+  const allRecentOrders = db.prepare("SELECT * FROM orders WHERE status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED') ORDER BY created_at DESC LIMIT 80").all();
   const allOrderIds = allRecentOrders.map(o => o.id);
 
   let allOrderItemsWithMeta = [];
@@ -145,24 +145,26 @@ function getFullBootstrapData() {
     };
   });
 
-  // Kitchen Queue (KDS): all active FOOD items that are PENDING or COOKING (plus recently SERVED in last 30 mins)
+  // Kitchen Queue (KDS): active FOOD items (PENDING, COOKING, SERVED) + CANCEL_REQUESTED items awaiting kitchen confirmation
   const kdsRows = db.prepare(`
-    SELECT oi.*, o.order_type, o.table_id, dt.name as table_name, dt.zone_name
+    SELECT oi.*, o.order_type, o.table_id, o.bill_title, dt.name as table_name, dt.zone_name
     FROM order_items oi
     JOIN orders o ON oi.order_id = o.id
     LEFT JOIN dining_tables dt ON o.table_id = dt.id
     WHERE oi.item_type = 'FOOD'
-      AND oi.item_status = 'ACTIVE'
-      AND oi.kitchen_status IN ('PENDING', 'COOKING', 'SERVED')
-      AND o.status IN ('OPEN', 'PAID')
+      AND (
+        (oi.item_status = 'ACTIVE' AND oi.kitchen_status IN ('PENDING', 'COOKING', 'SERVED') AND o.status IN ('OPEN', 'PAID'))
+        OR oi.kitchen_status = 'CANCEL_REQUESTED'
+      )
     ORDER BY
       CASE oi.kitchen_status
+        WHEN 'CANCEL_REQUESTED' THEN 0
         WHEN 'PENDING' THEN 1
         WHEN 'COOKING' THEN 2
         WHEN 'SERVED' THEN 3
       END,
       oi.created_at ASC
-    LIMIT 40
+    LIMIT 50
   `).all().map(row => ({
     ...row,
     modifiers: JSON.parse(row.modifiers_json || '[]'),
@@ -180,14 +182,13 @@ function getFullBootstrapData() {
   const inventoryLogs = db.prepare('SELECT * FROM inventory_logs ORDER BY created_at DESC LIMIT 60').all();
   const expenses = db.prepare('SELECT * FROM expenses ORDER BY created_at DESC LIMIT 40').all();
 
-  // Dashboard Analytics (Sales, COGS, Waste, Profit/Loss)
-  const allValidOrders = db.prepare("SELECT * FROM orders WHERE status IN ('PAID', 'OPEN') ORDER BY created_at DESC").all();
+  // Dashboard Analytics (Sales, COGS, Profit/Loss strictly from PAID bills!)
+  const allValidOrders = db.prepare("SELECT * FROM orders WHERE status IN ('PAID', 'OPEN', 'CANCELLED', 'VOIDED') ORDER BY created_at DESC").all();
   const allOrderItems = db.prepare(`
     SELECT oi.*, o.status as order_status, o.payment_method, o.order_type, dt.name as table_name
     FROM order_items oi
     JOIN orders o ON oi.order_id = o.id
     LEFT JOIN dining_tables dt ON o.table_id = dt.id
-    WHERE o.status IN ('PAID', 'OPEN')
     ORDER BY oi.created_at DESC
   `).all();
 
@@ -226,6 +227,10 @@ function getFullBootstrapData() {
       returnedRestockValue += item.quantity * item.unit_price;
       continue;
     }
+    // Only count Revenue, COGS, and Top Sellers for PAID bills!
+    if (item.order_status !== 'PAID' || item.item_status !== 'ACTIVE') {
+      continue;
+    }
     const activeQty = Math.max(0, item.quantity - (item.returned_qty || 0));
     const lineRev = activeQty * item.unit_price;
     const lineCost = activeQty * item.unit_cost;
@@ -254,7 +259,7 @@ function getFullBootstrapData() {
     productSalesMap.set(item.product_id, prev);
   }
 
-  const totalRevenue = groceryRevenue + foodRevenue;
+  const totalRevenue = paidRevenue;
   const totalCogs = groceryCost + foodCost;
   const grossProfit = totalRevenue - totalCogs;
   const totalOperatingExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
@@ -616,7 +621,8 @@ const server = http.createServer(async (req, res) => {
       }
 
       const validMode = mode === 'VOID_WASTE' ? 'VOID_WASTE' : 'RETURNED_RESTOCK';
-      const newKitchenStatus = targetItem.item_type === 'FOOD' ? 'CANCELLED' : 'NONE';
+      // If food was sent to kitchen, mark as CANCEL_REQUESTED so kitchen screen alerts and confirms!
+      const newKitchenStatus = targetItem.item_type === 'FOOD' ? 'CANCEL_REQUESTED' : 'NONE';
 
       db.prepare(`
         UPDATE order_items
@@ -754,16 +760,237 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { success: true, orderId: targetOrder.id, change, data: getFullBootstrapData() });
     }
 
-    // Update Kitchen Display (KDS) Status
+    // Update Kitchen Display (KDS) Status (including CANCEL_REQUESTED -> CANCELLED_ACK)
     if (req.method === 'POST' && pathname === '/api/kds/status') {
       const body = await parseJsonBody(req);
       const { order_item_id, kitchen_status } = body;
-      if (!order_item_id || !['PENDING', 'COOKING', 'SERVED', 'CANCELLED'].includes(kitchen_status)) {
+      if (!order_item_id || !['PENDING', 'COOKING', 'SERVED', 'CANCEL_REQUESTED', 'CANCELLED', 'CANCELLED_ACK'].includes(kitchen_status)) {
         return sendJson(res, 400, { error: 'ข้อมูลสถานะครัวไม่ถูกต้อง' });
       }
       db.prepare('UPDATE order_items SET kitchen_status = ? WHERE id = ?').run(kitchen_status, order_item_id);
       broadcastUpdate('kds_updated', { order_item_id, kitchen_status });
       return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    // Cancel Open Bill OR Void Paid Invoice (ยกเลิกบิล / ยกเลิก Invoice หลังจ่ายเงิน)
+    if (req.method === 'POST' && pathname === '/api/orders/cancel') {
+      const body = await parseJsonBody(req);
+      const { order_id, mode = 'RETURNED_RESTOCK', reason_note = '' } = body;
+      if (!order_id) return sendJson(res, 400, { error: 'กรุณาระบุเลขที่บิล' });
+
+      const ord = db.prepare('SELECT * FROM orders WHERE id = ?').get(order_id);
+      if (!ord) return sendJson(res, 404, { error: 'ไม่พบบิลที่ต้องการยกเลิก' });
+      if (ord.status === 'CANCELLED' || ord.status === 'VOIDED') {
+        return sendJson(res, 400, { error: 'บิลนี้ถูกยกเลิกไปแล้ว' });
+      }
+
+      const wasPaid = ord.status === 'PAID';
+      const nextOrderStatus = wasPaid ? 'VOIDED' : 'CANCELLED';
+      const validMode = mode === 'VOID_WASTE' ? 'VOID_WASTE' : 'RETURNED_RESTOCK';
+      const now = new Date().toISOString();
+
+      const activeItems = db.prepare("SELECT * FROM order_items WHERE order_id = ? AND item_status = 'ACTIVE'").all(order_id);
+      const insertLog = db.prepare(`
+        INSERT INTO inventory_logs (id, target_type, product_id, ingredient_id, item_name, change_qty, balance_after, unit, reason, reference_id, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const item of activeItems) {
+        const nextKds = item.item_type === 'FOOD'
+          ? (wasPaid ? 'CANCELLED_ACK' : 'CANCEL_REQUESTED')
+          : 'NONE';
+
+        db.prepare('UPDATE order_items SET item_status = ?, kitchen_status = ? WHERE id = ?')
+          .run(validMode, nextKds, item.id);
+
+        const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id);
+        if (validMode === 'RETURNED_RESTOCK') {
+          if (prod && prod.item_type === 'GROCERY' && prod.track_stock) {
+            const nextStock = Math.round((prod.stock_qty + item.quantity) * 100) / 100;
+            db.prepare('UPDATE products SET stock_qty = ? WHERE id = ?').run(nextStock, prod.id);
+            insertLog.run(
+              `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              'GROCERY',
+              prod.id,
+              null,
+              prod.name,
+              item.quantity,
+              nextStock,
+              prod.unit,
+              wasPaid ? 'VOID_INVOICE_RESTOCK' : 'CANCEL_BILL_RESTOCK',
+              order_id,
+              reason_note || (wasPaid ? 'ยกเลิกใบเสร็จหลังชำระเงิน (คืนสต็อก)' : 'ยกเลิกบิล (คืนสต็อก)'),
+              now
+            );
+          } else if (prod && prod.item_type === 'FOOD' && item.kitchen_status === 'PENDING') {
+            let snapshot = [];
+            try { snapshot = JSON.parse(item.recipe_snapshot_json || '[]'); } catch { snapshot = []; }
+            for (const s of snapshot) {
+              if (!s.ingredient_id) continue;
+              const ing = db.prepare('SELECT * FROM ingredients WHERE id = ?').get(s.ingredient_id);
+              if (ing) {
+                const nextIng = Math.round((ing.current_qty + s.qty) * 100) / 100;
+                db.prepare('UPDATE ingredients SET current_qty = ? WHERE id = ?').run(nextIng, ing.id);
+              }
+            }
+          }
+        }
+      }
+
+      const noteAppend = reason_note ? ` [ยกเลิก: ${reason_note}]` : (wasPaid ? ' [ยกเลิก Invoice หลังจ่ายเงิน]' : ' [ยกเลิกบิล]');
+      db.prepare('UPDATE orders SET status = ?, bill_note = ? WHERE id = ?')
+        .run(nextOrderStatus, ((ord.bill_note || '') + noteAppend).trim(), order_id);
+
+      if (ord.table_id) {
+        db.prepare("UPDATE dining_tables SET status = 'AVAILABLE', current_order_id = NULL WHERE id = ? AND current_order_id = ?")
+          .run(ord.table_id, order_id);
+      }
+
+      if (wasPaid && ord.customer_id && ord.total_amount > 0) {
+        const pts = Math.floor(ord.total_amount / 25);
+        db.prepare('UPDATE customers SET points = MAX(0, points - ?), total_spent = MAX(0, total_spent - ?) WHERE id = ?')
+          .run(pts, ord.total_amount, ord.customer_id);
+      }
+
+      broadcastUpdate('order_cancelled', { order_id, status: nextOrderStatus });
+      return sendJson(res, 200, { success: true, status: nextOrderStatus, data: getFullBootstrapData() });
+    }
+
+    // Move Table / Merge Table or Bill / Move Held Bill to Table
+    if (req.method === 'POST' && pathname === '/api/orders/transfer') {
+      const body = await parseJsonBody(req);
+      const { source_order_id, action, target_table_id = null, target_order_id = null } = body;
+      const srcOrd = db.prepare('SELECT * FROM orders WHERE id = ?').get(source_order_id);
+      if (!srcOrd || srcOrd.status !== 'OPEN') {
+        return sendJson(res, 400, { error: 'ไม่พบบิลต้นทางที่เปิดอยู่' });
+      }
+
+      if (action === 'MOVE_TO_TABLE') {
+        const targetTbl = db.prepare('SELECT * FROM dining_tables WHERE id = ?').get(target_table_id);
+        if (!targetTbl) return sendJson(res, 404, { error: 'ไม่พบโต๊ะปลายทาง' });
+        if (targetTbl.status === 'OCCUPIED' && targetTbl.current_order_id && targetTbl.current_order_id !== srcOrd.id) {
+          return sendJson(res, 400, { error: 'โต๊ะปลายทางมีลูกค้าอยู่แล้ว กรุณาใช้ฟีเจอร์ "รวมโต๊ะ/รวมบิล" แทน' });
+        }
+
+        if (srcOrd.table_id && srcOrd.table_id !== targetTbl.id) {
+          db.prepare("UPDATE dining_tables SET status = 'AVAILABLE', current_order_id = NULL WHERE id = ?").run(srcOrd.table_id);
+        }
+
+        const nextTitle = (!srcOrd.bill_title || srcOrd.bill_title.startsWith('โต๊ะ ') || srcOrd.bill_title.startsWith('บิลพัก'))
+          ? targetTbl.name
+          : srcOrd.bill_title;
+
+        db.prepare("UPDATE orders SET order_type = 'DINE_IN', table_id = ?, bill_title = ? WHERE id = ?")
+          .run(targetTbl.id, nextTitle, srcOrd.id);
+        db.prepare("UPDATE dining_tables SET status = 'OCCUPIED', current_order_id = ? WHERE id = ?")
+          .run(srcOrd.id, targetTbl.id);
+
+        broadcastUpdate('order_transferred', { source_order_id, target_table_id });
+        return sendJson(res, 200, { success: true, orderId: srcOrd.id, data: getFullBootstrapData() });
+      }
+
+      if (action === 'MOVE_TO_HELD') {
+        if (srcOrd.table_id) {
+          db.prepare("UPDATE dining_tables SET status = 'AVAILABLE', current_order_id = NULL WHERE id = ?").run(srcOrd.table_id);
+        }
+        const nextTitle = srcOrd.bill_title || `พักบิลจากโต๊ะ (${srcOrd.id})`;
+        db.prepare("UPDATE orders SET order_type = 'RETAIL', table_id = NULL, bill_title = ? WHERE id = ?")
+          .run(nextTitle, srcOrd.id);
+        broadcastUpdate('order_transferred', { source_order_id });
+        return sendJson(res, 200, { success: true, orderId: srcOrd.id, data: getFullBootstrapData() });
+      }
+
+      if (action === 'MERGE_BILL') {
+        let destOrd = target_order_id ? db.prepare('SELECT * FROM orders WHERE id = ?').get(target_order_id) : null;
+        if (!destOrd && target_table_id) {
+          const tTbl = db.prepare('SELECT * FROM dining_tables WHERE id = ?').get(target_table_id);
+          if (tTbl && tTbl.current_order_id) {
+            destOrd = db.prepare('SELECT * FROM orders WHERE id = ?').get(tTbl.current_order_id);
+          }
+        }
+        if (!destOrd || destOrd.status !== 'OPEN' || destOrd.id === srcOrd.id) {
+          return sendJson(res, 400, { error: 'ไม่พบบิลปลายทางที่จะรวมเข้าด้วยกัน' });
+        }
+
+        db.prepare('UPDATE order_items SET order_id = ? WHERE order_id = ?').run(destOrd.id, srcOrd.id);
+
+        if (srcOrd.table_id) {
+          db.prepare("UPDATE dining_tables SET status = 'AVAILABLE', current_order_id = NULL WHERE id = ?").run(srcOrd.table_id);
+        }
+
+        const mergedNote = [destOrd.bill_note, srcOrd.bill_note].filter(Boolean).join(' | ');
+        db.prepare('UPDATE orders SET bill_note = ? WHERE id = ?').run(mergedNote, destOrd.id);
+        db.prepare("DELETE FROM orders WHERE id = ?").run(srcOrd.id);
+
+        recalculateOrderTotals(destOrd.id);
+        broadcastUpdate('order_merged', { source_order_id: srcOrd.id, target_order_id: destOrd.id });
+        return sendJson(res, 200, { success: true, orderId: destOrd.id, data: getFullBootstrapData() });
+      }
+
+      return sendJson(res, 400, { error: 'รูปแบบคำสั่งย้าย/รวมบิลไม่ถูกต้อง' });
+    }
+
+    // Split Bill (แยกบิลเพื่อแยกจ่าย)
+    if (req.method === 'POST' && pathname === '/api/orders/split') {
+      const body = await parseJsonBody(req);
+      const { source_order_id, split_items = [], new_bill_title = '' } = body;
+      const srcOrd = db.prepare('SELECT * FROM orders WHERE id = ?').get(source_order_id);
+      if (!srcOrd || srcOrd.status !== 'OPEN') {
+        return sendJson(res, 400, { error: 'ไม่พบบิลต้นทางที่ต้องการแยก' });
+      }
+
+      const validSplits = (split_items || []).filter(s => s.order_item_id && Number(s.split_qty) > 0);
+      if (validSplits.length === 0) {
+        return sendJson(res, 400, { error: 'กรุณาเลือกรายการและจำนวนที่ต้องการแยกบิลอย่างน้อย 1 รายการ' });
+      }
+
+      const now = new Date().toISOString();
+      const newOrderId = `ORD-${Date.now().toString().slice(-6)}`;
+      const title = new_bill_title.trim() || `แยกจ่ายจาก ${srcOrd.bill_title || srcOrd.id}`;
+
+      db.prepare(`
+        INSERT INTO orders (id, order_type, table_id, bill_title, bill_note, customer_id, customer_name, status, subtotal, discount, total_amount, total_cost, payment_method, created_at)
+        VALUES (?, 'RETAIL', NULL, ?, ?, ?, ?, 'OPEN', 0, 0, 0, 0, 'CASH', ?)
+      `).run(newOrderId, title, `แยกบิลจาก ${srcOrd.id}`, srcOrd.customer_id, srcOrd.customer_name, now);
+
+      for (const sp of validSplits) {
+        const item = db.prepare("SELECT * FROM order_items WHERE id = ? AND order_id = ? AND item_status = 'ACTIVE'").get(sp.order_item_id, srcOrd.id);
+        if (!item) continue;
+        const moveQty = Math.min(item.quantity, Math.max(1, Number(sp.split_qty)));
+
+        if (moveQty >= item.quantity) {
+          db.prepare('UPDATE order_items SET order_id = ? WHERE id = ?').run(newOrderId, item.id);
+        } else {
+          db.prepare('UPDATE order_items SET quantity = ? WHERE id = ?').run(item.quantity - moveQty, item.id);
+          db.prepare(`
+            INSERT INTO order_items (
+              id, order_id, product_id, product_name, item_type, order_round, quantity, returned_qty,
+              unit_price, unit_cost, modifiers_json, recipe_snapshot_json, item_status, kitchen_status, input_source, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)
+          `).run(
+            `OI-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            newOrderId,
+            item.product_id,
+            item.product_name,
+            item.item_type,
+            item.order_round,
+            moveQty,
+            item.unit_price,
+            item.unit_cost,
+            item.modifiers_json,
+            item.recipe_snapshot_json,
+            item.kitchen_status,
+            item.input_source,
+            now
+          );
+        }
+      }
+
+      recalculateOrderTotals(srcOrd.id);
+      recalculateOrderTotals(newOrderId);
+
+      broadcastUpdate('order_split', { source_order_id: srcOrd.id, new_order_id: newOrderId });
+      return sendJson(res, 200, { success: true, newOrderId, data: getFullBootstrapData() });
     }
 
     // Stock-In / Purchase Receiving (นำเข้าสินค้าของชำ หรือ วัตถุดิบอาหาร พร้อมบวกสต็อกอัตโนมัติ & ประวัติย้อนหลัง)
@@ -1044,18 +1271,27 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { success: true, ingId, data: getFullBootstrapData() });
     }
 
-    // Create New Dining Table / Zone
+    // Create / Update Dining Table / Zone
     if (req.method === 'POST' && pathname === '/api/tables/save') {
       const body = await parseJsonBody(req);
-      const { name, zone_name = 'โซนในร้าน', voice_aliases = [] } = body;
+      const { id, name, zone_name = 'โซนในร้าน', voice_aliases = [] } = body;
       if (!name) return sendJson(res, 400, { error: 'กรุณาระบุชื่อโต๊ะ' });
 
-      const countRow = db.prepare('SELECT COUNT(*) as c FROM dining_tables').get();
-      const tblId = `T${(countRow ? countRow.c : 0) + 1}`;
       const aliases = Array.isArray(voice_aliases) && voice_aliases.length > 0
         ? voice_aliases
         : [name, name.replace(/\s+/g, '')];
 
+      if (id) {
+        const existing = db.prepare('SELECT id FROM dining_tables WHERE id = ?').get(id);
+        if (existing) {
+          db.prepare('UPDATE dining_tables SET name = ?, zone_name = ?, voice_aliases = ? WHERE id = ?')
+            .run(name, zone_name, JSON.stringify(aliases), id);
+          broadcastUpdate('table_saved', { tblId: id });
+          return sendJson(res, 200, { success: true, tblId: id, data: getFullBootstrapData() });
+        }
+      }
+
+      const tblId = `T${Date.now().toString().slice(-4)}`;
       db.prepare(`
         INSERT INTO dining_tables (id, name, zone_name, voice_aliases, status, current_order_id)
         VALUES (?, ?, ?, ?, 'AVAILABLE', NULL)
@@ -1063,6 +1299,38 @@ const server = http.createServer(async (req, res) => {
 
       broadcastUpdate('table_saved', { tblId });
       return sendJson(res, 200, { success: true, tblId, data: getFullBootstrapData() });
+    }
+
+    // Delete Endpoints for Tables, Customers, Ingredients, Products/Menus
+    if (req.method === 'POST' && pathname === '/api/tables/delete') {
+      const { id } = await parseJsonBody(req);
+      const tbl = db.prepare('SELECT * FROM dining_tables WHERE id = ?').get(id);
+      if (tbl && tbl.status === 'OCCUPIED') {
+        return sendJson(res, 400, { error: 'ไม่สามารถลบโต๊ะที่มีบิลเปิดอยู่ได้ กรุณาเช็คบิลหรือยกเลิกบิลก่อน' });
+      }
+      db.prepare('DELETE FROM dining_tables WHERE id = ?').run(id);
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/customers/delete') {
+      const { id } = await parseJsonBody(req);
+      db.prepare('DELETE FROM customers WHERE id = ?').run(id);
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/ingredients/delete') {
+      const { id } = await parseJsonBody(req);
+      db.prepare('DELETE FROM recipe_items WHERE ingredient_id = ?').run(id);
+      db.prepare('DELETE FROM ingredients WHERE id = ?').run(id);
+      recalculateAllFoodCosts();
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/products/delete') {
+      const { id } = await parseJsonBody(req);
+      db.prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(id);
+      db.prepare('DELETE FROM recipe_items WHERE product_id = ?').run(id);
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
     }
 
     // Add Daily Expense

@@ -66,10 +66,12 @@ CREATE TABLE IF NOT EXISTS dining_tables (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   zone_name TEXT NOT NULL DEFAULT 'โซนในร้าน',
+  capacity INTEGER NOT NULL DEFAULT 4,
   voice_aliases JSONB NOT NULL DEFAULT '[]'::jsonb,
   status TEXT NOT NULL DEFAULT 'AVAILABLE' CHECK (status IN ('AVAILABLE', 'OCCUPIED', 'BILLING')),
   current_order_id TEXT
 );
+ALTER TABLE dining_tables ADD COLUMN IF NOT EXISTS capacity INTEGER NOT NULL DEFAULT 4;
 
 -- 6.1 ตารางสมาชิกลูกค้า (Customers)
 CREATE TABLE IF NOT EXISTS customers (
@@ -92,7 +94,7 @@ CREATE TABLE IF NOT EXISTS orders (
   bill_note TEXT DEFAULT '',
   customer_id TEXT,
   customer_name TEXT DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'PAID', 'CANCELLED')),
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED')),
   subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,
   discount NUMERIC(12,2) NOT NULL DEFAULT 0,
   total_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
@@ -108,6 +110,8 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS bill_title TEXT DEFAULT '';
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS bill_note TEXT DEFAULT '';
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_id TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_name TEXT DEFAULT '';
+ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check;
+ALTER TABLE orders ADD CONSTRAINT orders_status_check CHECK (status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED'));
 ALTER TABLE customers DISABLE ROW LEVEL SECURITY;
 
 -- 8. ตารางรายการในบิล (Order Items)
@@ -125,10 +129,12 @@ CREATE TABLE IF NOT EXISTS order_items (
   modifiers_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   recipe_snapshot_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   item_status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (item_status IN ('ACTIVE', 'RETURNED_RESTOCK', 'VOID_WASTE')),
-  kitchen_status TEXT NOT NULL DEFAULT 'NONE' CHECK (kitchen_status IN ('NONE', 'PENDING', 'COOKING', 'SERVED', 'CANCELLED')),
+  kitchen_status TEXT NOT NULL DEFAULT 'NONE' CHECK (kitchen_status IN ('NONE', 'PENDING', 'COOKING', 'SERVED', 'CANCELLED', 'CANCEL_REQUESTED', 'CANCELLED_ACK')),
   input_source TEXT NOT NULL DEFAULT 'TOUCH' CHECK (input_source IN ('BARCODE', 'TOUCH', 'VOICE')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE order_items DROP CONSTRAINT IF EXISTS order_items_kitchen_status_check;
+ALTER TABLE order_items ADD CONSTRAINT order_items_kitchen_status_check CHECK (kitchen_status IN ('NONE', 'PENDING', 'COOKING', 'SERVED', 'CANCELLED', 'CANCEL_REQUESTED', 'CANCELLED_ACK'));
 
 -- 9. ตารางใบรับสินค้าเข้าสต็อก (Stock-In Receipts)
 CREATE TABLE IF NOT EXISTS stock_in_receipts (

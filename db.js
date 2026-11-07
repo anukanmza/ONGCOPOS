@@ -83,6 +83,7 @@ function initSchema() {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       zone_name TEXT NOT NULL DEFAULT 'โซนในร้าน',
+      capacity INTEGER NOT NULL DEFAULT 4,
       voice_aliases TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'AVAILABLE' CHECK (status IN ('AVAILABLE', 'OCCUPIED', 'BILLING')),
       current_order_id TEXT
@@ -107,7 +108,7 @@ function initSchema() {
       bill_note TEXT DEFAULT '',
       customer_id TEXT,
       customer_name TEXT DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'PAID', 'CANCELLED')),
+      status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED')),
       subtotal REAL NOT NULL DEFAULT 0,
       discount REAL NOT NULL DEFAULT 0,
       total_amount REAL NOT NULL DEFAULT 0,
@@ -133,7 +134,7 @@ function initSchema() {
       modifiers_json TEXT NOT NULL DEFAULT '[]',
       recipe_snapshot_json TEXT NOT NULL DEFAULT '[]',
       item_status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (item_status IN ('ACTIVE', 'RETURNED_RESTOCK', 'VOID_WASTE')),
-      kitchen_status TEXT NOT NULL DEFAULT 'NONE' CHECK (kitchen_status IN ('NONE', 'PENDING', 'COOKING', 'SERVED', 'CANCELLED')),
+      kitchen_status TEXT NOT NULL DEFAULT 'NONE' CHECK (kitchen_status IN ('NONE', 'PENDING', 'COOKING', 'SERVED', 'CANCELLED', 'CANCEL_REQUESTED', 'CANCELLED_ACK')),
       input_source TEXT NOT NULL DEFAULT 'TOUCH' CHECK (input_source IN ('BARCODE', 'TOUCH', 'VOICE')),
       created_at TEXT NOT NULL,
       FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
@@ -195,10 +196,73 @@ function initSchema() {
     );
   `);
 
+  ensureColumn('dining_tables', 'capacity', 'INTEGER NOT NULL DEFAULT 4');
   ensureColumn('orders', 'bill_title', "TEXT DEFAULT ''");
   ensureColumn('orders', 'bill_note', "TEXT DEFAULT ''");
   ensureColumn('orders', 'customer_id', 'TEXT');
   ensureColumn('orders', 'customer_name', "TEXT DEFAULT ''");
+
+  // Migrate SQLite CHECK constraints on orders and order_items if created by older schema
+  const ordSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").get()?.sql || '';
+  if (ordSql && !ordSql.includes('VOIDED')) {
+    db.exec('PRAGMA foreign_keys = OFF;');
+    db.exec(`
+      CREATE TABLE orders_new (
+        id TEXT PRIMARY KEY,
+        order_type TEXT NOT NULL CHECK (order_type IN ('RETAIL', 'DINE_IN')),
+        table_id TEXT,
+        bill_title TEXT DEFAULT '',
+        bill_note TEXT DEFAULT '',
+        customer_id TEXT,
+        customer_name TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED')),
+        subtotal REAL NOT NULL DEFAULT 0,
+        discount REAL NOT NULL DEFAULT 0,
+        total_amount REAL NOT NULL DEFAULT 0,
+        total_cost REAL NOT NULL DEFAULT 0,
+        payment_method TEXT DEFAULT 'CASH',
+        cash_received REAL DEFAULT 0,
+        change_amount REAL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        paid_at TEXT
+      );
+      INSERT INTO orders_new SELECT id, order_type, table_id, bill_title, bill_note, customer_id, customer_name, status, subtotal, discount, total_amount, total_cost, payment_method, cash_received, change_amount, created_at, paid_at FROM orders;
+      DROP TABLE orders;
+      ALTER TABLE orders_new RENAME TO orders;
+    `);
+    db.exec('PRAGMA foreign_keys = ON;');
+  }
+
+  const oiSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='order_items'").get()?.sql || '';
+  if (oiSql && !oiSql.includes('CANCEL_REQUESTED')) {
+    db.exec('PRAGMA foreign_keys = OFF;');
+    db.exec(`
+      CREATE TABLE order_items_new (
+        id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        product_name TEXT NOT NULL,
+        item_type TEXT NOT NULL,
+        order_round INTEGER NOT NULL DEFAULT 1,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        returned_qty INTEGER NOT NULL DEFAULT 0,
+        unit_price REAL NOT NULL DEFAULT 0,
+        unit_cost REAL NOT NULL DEFAULT 0,
+        modifiers_json TEXT NOT NULL DEFAULT '[]',
+        recipe_snapshot_json TEXT NOT NULL DEFAULT '[]',
+        item_status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (item_status IN ('ACTIVE', 'RETURNED_RESTOCK', 'VOID_WASTE')),
+        kitchen_status TEXT NOT NULL DEFAULT 'NONE' CHECK (kitchen_status IN ('NONE', 'PENDING', 'COOKING', 'SERVED', 'CANCELLED', 'CANCEL_REQUESTED', 'CANCELLED_ACK')),
+        input_source TEXT NOT NULL DEFAULT 'TOUCH' CHECK (input_source IN ('BARCODE', 'TOUCH', 'VOICE')),
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id)
+      );
+      INSERT INTO order_items_new SELECT id, order_id, product_id, product_name, item_type, order_round, quantity, returned_qty, unit_price, unit_cost, modifiers_json, recipe_snapshot_json, item_status, kitchen_status, input_source, created_at FROM order_items;
+      DROP TABLE order_items;
+      ALTER TABLE order_items_new RENAME TO order_items;
+    `);
+    db.exec('PRAGMA foreign_keys = ON;');
+  }
 }
 
 function seedCustomersIfNeeded() {

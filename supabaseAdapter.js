@@ -62,7 +62,7 @@ async function getSupabaseBootstrapData() {
     sbRest('recipe_items?select=*'),
     sbRest('dining_tables?select=*&order=id.asc'),
     sbRest('orders?select=*&status=eq.OPEN&order=created_at.desc'),
-    sbRest('orders?select=*&status=in.(PAID,OPEN)&order=created_at.desc&limit=100'),
+    sbRest('orders?select=*&status=in.(PAID,OPEN,CANCELLED,VOIDED)&order=created_at.desc&limit=100'),
     sbRest('order_items?select=*&order=created_at.asc&limit=400'),
     sbRest('stock_in_receipts?select=*&order=created_at.desc&limit=30'),
     sbRest('stock_in_items?select=*'),
@@ -143,7 +143,13 @@ async function getSupabaseBootstrapData() {
   const kitchenQueue = normalizedItems
     .filter(it => {
       const ord = orderMap.get(it.order_id);
-      return ord && it.item_type === 'FOOD' && it.item_status === 'ACTIVE' && ['PENDING', 'COOKING', 'SERVED'].includes(it.kitchen_status);
+      if (!ord || it.item_type !== 'FOOD') return false;
+      if (it.kitchen_status === 'CANCEL_REQUESTED') return true;
+      return it.item_status === 'ACTIVE' && ['PENDING', 'COOKING', 'SERVED'].includes(it.kitchen_status) && ['OPEN', 'PAID'].includes(ord.status);
+    })
+    .sort((a, b) => {
+      const rank = { CANCEL_REQUESTED: 0, PENDING: 1, COOKING: 2, SERVED: 3 };
+      return (rank[a.kitchen_status] ?? 9) - (rank[b.kitchen_status] ?? 9);
     })
     .map(it => {
       const ord = orderMap.get(it.order_id);
@@ -152,6 +158,7 @@ async function getSupabaseBootstrapData() {
         ...it,
         order_type: ord ? ord.order_type : 'RETAIL',
         table_id: ord ? ord.table_id : null,
+        bill_title: ord ? ord.bill_title : null,
         table_name: tbl ? tbl.name : null,
         zone_name: tbl ? tbl.zone_name : null
       };
@@ -198,13 +205,18 @@ async function getSupabaseBootstrapData() {
   }
 
   for (const item of normalizedItems) {
-    if (!orderMap.has(item.order_id)) continue;
+    const parentOrd = orderMap.get(item.order_id);
+    if (!parentOrd) continue;
     if (item.item_status === 'VOID_WASTE') {
       wasteCost += item.quantity * item.unit_cost;
       continue;
     }
     if (item.item_status === 'RETURNED_RESTOCK') {
       returnedRestockValue += item.quantity * item.unit_price;
+      continue;
+    }
+    // Calculate revenue, COGS, and top sellers strictly from PAID orders!
+    if (parentOrd.status !== 'PAID' || item.item_status !== 'ACTIVE') {
       continue;
     }
     const activeQty = Math.max(0, item.quantity - item.returned_qty);
@@ -235,7 +247,7 @@ async function getSupabaseBootstrapData() {
     productSalesMap.set(item.product_id, prev);
   }
 
-  const totalRevenue = groceryRevenue + foodRevenue;
+  const totalRevenue = paidRevenue;
   const totalCogs = groceryCost + foodCost;
   const grossProfit = totalRevenue - totalCogs;
   const totalOperatingExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);

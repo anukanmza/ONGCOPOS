@@ -908,6 +908,13 @@ button {
   background: color-mix(in srgb, var(--ttl-good) 4%, var(--ttl-paper));
 }
 
+.kds-card[data-kds="CANCEL_REQUESTED"] {
+  border: 2px solid var(--ttl-bad);
+  border-left: 6px solid var(--ttl-bad);
+  background: color-mix(in srgb, var(--ttl-bad) 8%, var(--ttl-paper));
+  box-shadow: 0 8px 24px -10px rgba(179, 65, 46, 0.45);
+}
+
 /* Treasury Dashboard & Tables */
 .kpi-grid {
   display: grid;
@@ -1140,9 +1147,9 @@ button {
     background: var(--ttl-paper);
     border-top: 1px solid var(--ttl-rule);
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(7, 1fr);
     z-index: 80;
-    padding: 4px 4px env(safe-area-inset-bottom, 0);
+    padding: 4px 2px env(safe-area-inset-bottom, 0);
     box-shadow: 0 -6px 20px rgba(16, 41, 45, 0.08);
   }
 
@@ -1152,7 +1159,7 @@ button {
     align-items: center;
     justify-content: center;
     gap: 2px;
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 500;
     color: var(--ttl-muted);
     border-radius: 8px;

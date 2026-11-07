@@ -438,7 +438,7 @@ module.exports = async (req, res) => {
         method: 'PATCH',
         body: {
           item_status: validMode,
-          kitchen_status: targetItem.item_type === 'FOOD' ? 'CANCELLED' : 'NONE'
+          kitchen_status: targetItem.item_type === 'FOOD' ? 'CANCEL_REQUESTED' : 'NONE'
         }
       });
 
@@ -740,20 +740,227 @@ module.exports = async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/tables/save') {
-      const { name, zone_name = 'โซนในร้าน' } = body;
-      const tblId = `T${Date.now().toString().slice(-3)}`;
-      await sbRest('dining_tables', {
+      const { id, name, zone_name = 'โซนในร้าน' } = body;
+      const tblId = id || `T${Date.now().toString().slice(-3)}`;
+      if (id) {
+        await sbRest(`dining_tables?id=eq.${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: { name, zone_name, voice_aliases: [name, name.replace(/\s+/g, '')] }
+        });
+      } else {
+        await sbRest('dining_tables', {
+          method: 'POST',
+          body: {
+            id: tblId,
+            name,
+            zone_name,
+            voice_aliases: [name, name.replace(/\s+/g, '')],
+            status: 'AVAILABLE',
+            current_order_id: null
+          }
+        });
+      }
+      return send(200, { success: true, tblId, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/tables/delete') {
+      const { id } = body;
+      await sbRest(`dining_tables?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/customers/delete') {
+      const { id } = body;
+      try {
+        await sbRest(`customers?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      } catch {}
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/ingredients/delete') {
+      const { id } = body;
+      await sbRest(`recipe_items?ingredient_id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await sbRest(`ingredients?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/products/delete') {
+      const { id } = body;
+      await sbRest(`products?id=eq.${encodeURIComponent(id)}`, { method: 'PATCH', body: { is_active: false } });
+      await sbRest(`recipe_items?product_id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/orders/cancel') {
+      const { order_id, mode = 'RETURNED_RESTOCK' } = body;
+      const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(order_id)}`);
+      const ord = ords[0];
+      if (!ord) return send(404, { error: 'ไม่พบบิลที่ต้องการยกเลิก' });
+      const wasPaid = ord.status === 'PAID';
+      const nextStatus = wasPaid ? 'VOIDED' : 'CANCELLED';
+      const validMode = mode === 'VOID_WASTE' ? 'VOID_WASTE' : 'RETURNED_RESTOCK';
+
+      const items = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(order_id)}&item_status=eq.ACTIVE`);
+      for (const it of items) {
+        const nextKds = it.item_type === 'FOOD' ? (wasPaid ? 'CANCELLED_ACK' : 'CANCEL_REQUESTED') : 'NONE';
+        await sbRest(`order_items?id=eq.${encodeURIComponent(it.id)}`, {
+          method: 'PATCH',
+          body: { item_status: validMode, kitchen_status: nextKds }
+        });
+        if (validMode === 'RETURNED_RESTOCK' && it.item_type === 'GROCERY') {
+          const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(it.product_id)}`);
+          if (prods[0]) {
+            const nextStock = Math.round((Number(prods[0].stock_qty) + Number(it.quantity)) * 100) / 100;
+            await sbRest(`products?id=eq.${encodeURIComponent(prods[0].id)}`, { method: 'PATCH', body: { stock_qty: nextStock } });
+          }
+        }
+      }
+
+      await sbRest(`orders?id=eq.${encodeURIComponent(order_id)}`, {
+        method: 'PATCH',
+        body: { status: nextStatus }
+      });
+
+      if (ord.table_id) {
+        await sbRest(`dining_tables?id=eq.${encodeURIComponent(ord.table_id)}`, {
+          method: 'PATCH',
+          body: { status: 'AVAILABLE', current_order_id: null }
+        });
+      }
+
+      return send(200, { success: true, status: nextStatus, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/orders/transfer') {
+      const { source_order_id, action, target_table_id = null, target_order_id = null } = body;
+      const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(source_order_id)}`);
+      const srcOrd = ords[0];
+      if (!srcOrd) return send(404, { error: 'ไม่พบบิลต้นทาง' });
+
+      if (action === 'MOVE_TO_TABLE' && target_table_id) {
+        if (srcOrd.table_id && srcOrd.table_id !== target_table_id) {
+          await sbRest(`dining_tables?id=eq.${encodeURIComponent(srcOrd.table_id)}`, {
+            method: 'PATCH',
+            body: { status: 'AVAILABLE', current_order_id: null }
+          });
+        }
+        await sbRest(`orders?id=eq.${encodeURIComponent(srcOrd.id)}`, {
+          method: 'PATCH',
+          body: { order_type: 'DINE_IN', table_id: target_table_id }
+        });
+        await sbRest(`dining_tables?id=eq.${encodeURIComponent(target_table_id)}`, {
+          method: 'PATCH',
+          body: { status: 'OCCUPIED', current_order_id: srcOrd.id }
+        });
+        return send(200, { success: true, orderId: srcOrd.id, data: await getSupabaseBootstrapData() });
+      }
+
+      if (action === 'MOVE_TO_HELD') {
+        if (srcOrd.table_id) {
+          await sbRest(`dining_tables?id=eq.${encodeURIComponent(srcOrd.table_id)}`, {
+            method: 'PATCH',
+            body: { status: 'AVAILABLE', current_order_id: null }
+          });
+        }
+        await sbRest(`orders?id=eq.${encodeURIComponent(srcOrd.id)}`, {
+          method: 'PATCH',
+          body: { order_type: 'RETAIL', table_id: null }
+        });
+        return send(200, { success: true, orderId: srcOrd.id, data: await getSupabaseBootstrapData() });
+      }
+
+      if (action === 'MERGE_BILL') {
+        let destId = target_order_id;
+        if (!destId && target_table_id) {
+          const tbls = await sbRest(`dining_tables?select=*&id=eq.${encodeURIComponent(target_table_id)}`);
+          if (tbls[0]) destId = tbls[0].current_order_id;
+        }
+        if (!destId || destId === srcOrd.id) return send(400, { error: 'ไม่พบบิลปลายทางที่จะรวม' });
+
+        await sbRest(`order_items?order_id=eq.${encodeURIComponent(srcOrd.id)}`, {
+          method: 'PATCH',
+          body: { order_id: destId }
+        });
+        if (srcOrd.table_id) {
+          await sbRest(`dining_tables?id=eq.${encodeURIComponent(srcOrd.table_id)}`, {
+            method: 'PATCH',
+            body: { status: 'AVAILABLE', current_order_id: null }
+          });
+        }
+        await sbRest(`orders?id=eq.${encodeURIComponent(srcOrd.id)}`, { method: 'DELETE' });
+        await recalculateSupabaseOrderTotals(destId);
+        return send(200, { success: true, orderId: destId, data: await getSupabaseBootstrapData() });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/orders/split') {
+      const { source_order_id, split_items = [], new_bill_title = '' } = body;
+      const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(source_order_id)}`);
+      const srcOrd = ords[0];
+      if (!srcOrd) return send(404, { error: 'ไม่พบบิลต้นทาง' });
+
+      const now = new Date().toISOString();
+      const newOrderId = `ORD-${Date.now().toString().slice(-6)}`;
+      await sbRest('orders', {
         method: 'POST',
         body: {
-          id: tblId,
-          name,
-          zone_name,
-          voice_aliases: [name, name.replace(/\s+/g, '')],
-          status: 'AVAILABLE',
-          current_order_id: null
+          id: newOrderId,
+          order_type: 'RETAIL',
+          table_id: null,
+          bill_title: new_bill_title || `แยกจ่ายจาก ${srcOrd.bill_title || srcOrd.id}`,
+          status: 'OPEN',
+          subtotal: 0,
+          discount: 0,
+          total_amount: 0,
+          total_cost: 0,
+          payment_method: 'CASH',
+          created_at: now
         }
       });
-      return send(200, { success: true, tblId, data: await getSupabaseBootstrapData() });
+
+      const items = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(source_order_id)}&item_status=eq.ACTIVE`);
+      for (const sp of split_items) {
+        const it = items.find(x => x.id === sp.order_item_id);
+        const moveQty = Math.min(Number(it?.quantity || 0), Math.max(0, Number(sp.split_qty || 0)));
+        if (!it || moveQty <= 0) continue;
+
+        if (moveQty >= Number(it.quantity)) {
+          await sbRest(`order_items?id=eq.${encodeURIComponent(it.id)}`, {
+            method: 'PATCH',
+            body: { order_id: newOrderId }
+          });
+        } else {
+          await sbRest(`order_items?id=eq.${encodeURIComponent(it.id)}`, {
+            method: 'PATCH',
+            body: { quantity: Number(it.quantity) - moveQty }
+          });
+          await sbRest('order_items', {
+            method: 'POST',
+            body: {
+              id: `OI-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              order_id: newOrderId,
+              product_id: it.product_id,
+              product_name: it.product_name,
+              item_type: it.item_type,
+              order_round: it.order_round,
+              quantity: moveQty,
+              returned_qty: 0,
+              unit_price: it.unit_price,
+              unit_cost: it.unit_cost,
+              modifiers_json: it.modifiers_json,
+              recipe_snapshot_json: it.recipe_snapshot_json,
+              item_status: 'ACTIVE',
+              kitchen_status: it.kitchen_status,
+              input_source: it.input_source,
+              created_at: now
+            }
+          });
+        }
+      }
+
+      await recalculateSupabaseOrderTotals(srcOrd.id);
+      await recalculateSupabaseOrderTotals(newOrderId);
+      return send(200, { success: true, newOrderId, data: await getSupabaseBootstrapData() });
     }
 
     if (req.method === 'POST' && pathname === '/api/expenses/save') {
