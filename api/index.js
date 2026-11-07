@@ -1,4 +1,4 @@
-const { getSupabaseConfig, sbRest, getSupabaseBootstrapData } = require('../supabaseAdapter');
+const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, getSupabaseConfig, sbRest, getSupabaseBootstrapData } = require('../supabaseAdapter');
 
 async function recalculateSupabaseOrderTotals(orderId) {
   const items = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(orderId)}`);
@@ -414,6 +414,21 @@ module.exports = async (req, res) => {
       }
 
       await recalculateSupabaseOrderTotals(orderId);
+      if (settle_immediately && customer_id) {
+        try {
+          const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(orderId)}`);
+          const updatedOrd = ords[0];
+          const cusRows = await sbRest(`customers?select=*&id=eq.${encodeURIComponent(customer_id)}`);
+          if (updatedOrd && cusRows[0]) {
+            const redeemPts = Math.max(0, Math.floor(Number(body.redeem_points) || 0));
+            const lUpd = computeCustomerLoyaltyUpdate(cusRows[0], Number(updatedOrd.total_amount || 0), redeemPts, data.loyaltySettings);
+            await sbRest(`customers?id=eq.${encodeURIComponent(customer_id)}`, {
+              method: 'PATCH',
+              body: { points: lUpd.nextPts, total_spent: lUpd.nextSpent, tier: lUpd.nextTier }
+            });
+          }
+        } catch {}
+      }
       return send(200, { success: true, orderId, data: await getSupabaseBootstrapData() });
     }
 
@@ -471,7 +486,17 @@ module.exports = async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/orders/checkout') {
-      const { order_id, table_id, payment_method = 'CASH', discount = 0, cash_received = 0 } = body;
+      const {
+        order_id,
+        table_id,
+        payment_method = 'CASH',
+        discount = 0,
+        cash_received = 0,
+        customer_id = undefined,
+        customer_name = undefined,
+        redeem_points = 0,
+        points_discount = 0
+      } = body;
       const now = new Date().toISOString();
       let targetOrderId = order_id;
 
@@ -481,10 +506,21 @@ module.exports = async (req, res) => {
       }
       if (!targetOrderId) return send(404, { error: 'ไม่พบบิลที่ต้องการชำระเงิน' });
 
-      await sbRest(`orders?id=eq.${encodeURIComponent(targetOrderId)}`, {
-        method: 'PATCH',
-        body: { discount: Number(discount) || 0 }
-      });
+      const patchDiscBody = { discount: Number(discount) || 0 };
+      if (customer_id !== undefined) patchDiscBody.customer_id = customer_id;
+      if (customer_name !== undefined) patchDiscBody.customer_name = customer_name;
+
+      try {
+        await sbRest(`orders?id=eq.${encodeURIComponent(targetOrderId)}`, {
+          method: 'PATCH',
+          body: patchDiscBody
+        });
+      } catch {
+        await sbRest(`orders?id=eq.${encodeURIComponent(targetOrderId)}`, {
+          method: 'PATCH',
+          body: { discount: Number(discount) || 0 }
+        });
+      }
       await recalculateSupabaseOrderTotals(targetOrderId);
 
       const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(targetOrderId)}`);
@@ -492,10 +528,15 @@ module.exports = async (req, res) => {
       const totalAmt = Number(refreshed.total_amount);
       const received = Number(cash_received) >= totalAmt ? Number(cash_received) : totalAmt;
       const change = Math.round(Math.max(0, received - totalAmt) * 100) / 100;
+      const redeemPts = Math.max(0, Math.floor(Number(redeem_points) || 0));
+      const ptsDisc = Math.max(0, Number(points_discount) || 0);
+      const nextNote = redeemPts > 0
+        ? `${refreshed.bill_note || ''} [ใช้แต้มสะสม ${redeemPts} แต้ม ลด ฿${ptsDisc}]`.trim()
+        : (refreshed.bill_note || '');
 
       await sbRest(`orders?id=eq.${encodeURIComponent(targetOrderId)}`, {
         method: 'PATCH',
-        body: { status: 'PAID', payment_method, cash_received: received, change_amount: change, paid_at: now }
+        body: { status: 'PAID', payment_method, cash_received: received, change_amount: change, bill_note: nextNote, paid_at: now }
       });
 
       if (refreshed.table_id) {
@@ -503,6 +544,21 @@ module.exports = async (req, res) => {
           method: 'PATCH',
           body: { status: 'AVAILABLE', current_order_id: null }
         });
+      }
+
+      const finalCusId = customer_id !== undefined ? customer_id : refreshed.customer_id;
+      if (finalCusId) {
+        try {
+          const boot = await getSupabaseBootstrapData();
+          const cusRows = await sbRest(`customers?select=*&id=eq.${encodeURIComponent(finalCusId)}`);
+          if (cusRows[0]) {
+            const lUpd = computeCustomerLoyaltyUpdate(cusRows[0], totalAmt, redeemPts, boot.loyaltySettings);
+            await sbRest(`customers?id=eq.${encodeURIComponent(finalCusId)}`, {
+              method: 'PATCH',
+              body: { points: lUpd.nextPts, total_spent: lUpd.nextSpent, tier: lUpd.nextTier }
+            });
+          }
+        } catch {}
       }
 
       return send(200, { success: true, orderId: targetOrderId, change, data: await getSupabaseBootstrapData() });
@@ -1042,6 +1098,183 @@ module.exports = async (req, res) => {
         // Fallback if table not created yet in remote Supabase
       }
       return send(200, { success: true, cusId, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/loyalty-settings/save') {
+      const merged = {
+        ...DEFAULT_LOYALTY_SETTINGS,
+        spend_per_point: Math.max(1, Number(body.spend_per_point) || 25),
+        points_earned: Math.max(0.1, Number(body.points_earned) || 1),
+        redeem_points_unit: Math.max(1, Number(body.redeem_points_unit) || 10),
+        redeem_discount_baht: Math.max(1, Number(body.redeem_discount_baht) || 10),
+        min_redeem_points: Math.max(1, Number(body.min_redeem_points) || 10),
+        auto_upgrade_tier: body.auto_upgrade_tier !== false,
+        tiers: Array.isArray(body.tiers) && body.tiers.length > 0
+          ? body.tiers.map(t => ({
+              name: String(t.name || 'สมาชิก').trim(),
+              min_spent: Math.max(0, Number(t.min_spent) || 0),
+              points_multiplier: Math.max(0.1, Number(t.points_multiplier) || 1),
+              discount_pct: Math.max(0, Math.min(100, Number(t.discount_pct) || 0))
+            }))
+          : DEFAULT_LOYALTY_SETTINGS.tiers
+      };
+      try {
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-LOYALTY-CONFIG',
+            name: '__LOYALTY_CONFIG__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(merged)
+          }
+        });
+        if (merged.auto_upgrade_tier) {
+          const allCus = await sbRest('customers?select=*');
+          const sortedTiers = [...merged.tiers].sort((a, b) => b.min_spent - a.min_spent);
+          for (const c of allCus) {
+            if (c.id === 'SYS-LOYALTY-CONFIG') continue;
+            const matched = sortedTiers.find(t => (Number(c.total_spent) || 0) >= t.min_spent);
+            if (matched && matched.name !== c.tier) {
+              await sbRest(`customers?id=eq.${encodeURIComponent(c.id)}`, {
+                method: 'PATCH',
+                body: { tier: matched.name }
+              });
+            }
+          }
+        }
+      } catch {}
+      return send(200, { success: true, loyaltySettings: merged, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/stock-in/update') {
+      const { receipt_id, supplier_name = 'ร้านค้าส่ง / ตลาดสด', note = '', items = [] } = body;
+      const oldItems = await sbRest(`stock_in_items?select=*&receipt_id=eq.${encodeURIComponent(receipt_id)}`);
+      for (const oldIt of oldItems) {
+        if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
+          const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(oldIt.product_id)}`);
+          if (prods[0]) {
+            const rev = Math.max(0, Math.round((Number(prods[0].stock_qty) - Number(oldIt.qty_added)) * 100) / 100);
+            await sbRest(`products?id=eq.${encodeURIComponent(oldIt.product_id)}`, { method: 'PATCH', body: { stock_qty: rev } });
+          }
+        } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
+          const ings = await sbRest(`ingredients?select=*&id=eq.${encodeURIComponent(oldIt.ingredient_id)}`);
+          if (ings[0]) {
+            const rev = Math.max(0, Math.round((Number(ings[0].current_qty) - Number(oldIt.qty_added)) * 100) / 100);
+            await sbRest(`ingredients?id=eq.${encodeURIComponent(oldIt.ingredient_id)}`, { method: 'PATCH', body: { current_qty: rev } });
+          }
+        }
+      }
+      await sbRest(`stock_in_items?receipt_id=eq.${encodeURIComponent(receipt_id)}`, { method: 'DELETE' });
+
+      let newTotalCost = 0;
+      for (const line of items) {
+        const inputQty = Math.max(0, Number(line.input_qty) || 0);
+        if (inputQty <= 0) continue;
+        const conv = Math.max(1, Number(line.conversion_rate) || 1);
+        const lineCost = Math.max(0, Number(line.total_line_cost) || 0);
+        newTotalCost += lineCost;
+
+        if (line.item_target_type === 'GROCERY' && line.product_id) {
+          const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(line.product_id)}`);
+          const prod = prods[0];
+          if (!prod) continue;
+          const qtyBefore = Number(prod.stock_qty) || 0;
+          const qtyAdded = Math.round(inputQty * conv * 100) / 100;
+          const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
+          const baseCost = qtyAdded > 0 && lineCost > 0 ? Math.round((lineCost / qtyAdded) * 100) / 100 : Number(prod.cost);
+          await sbRest(`products?id=eq.${encodeURIComponent(prod.id)}`, { method: 'PATCH', body: { stock_qty: qtyAfter, cost: baseCost } });
+          await sbRest('stock_in_items', {
+            method: 'POST',
+            body: {
+              id: line.id || `SRI-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              receipt_id,
+              item_target_type: 'GROCERY',
+              product_id: prod.id,
+              ingredient_id: null,
+              item_name: prod.name,
+              unit_label: line.unit_label || prod.purchase_unit,
+              input_qty: inputQty,
+              conversion_rate: conv,
+              qty_before: qtyBefore,
+              qty_added: qtyAdded,
+              qty_after: qtyAfter,
+              purchase_cost_per_base_unit: baseCost,
+              total_line_cost: lineCost
+            }
+          });
+        } else if (line.item_target_type === 'INGREDIENT' && line.ingredient_id) {
+          const ings = await sbRest(`ingredients?select=*&id=eq.${encodeURIComponent(line.ingredient_id)}`);
+          const ing = ings[0];
+          if (!ing) continue;
+          const qtyBefore = Number(ing.current_qty) || 0;
+          const qtyAdded = Math.round(inputQty * conv * 100) / 100;
+          const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
+          const baseCost = qtyAdded > 0 && lineCost > 0 ? Math.round((lineCost / qtyAdded) * 10000) / 10000 : Number(ing.cost_per_unit);
+          await sbRest(`ingredients?id=eq.${encodeURIComponent(ing.id)}`, { method: 'PATCH', body: { current_qty: qtyAfter, cost_per_unit: baseCost } });
+          await sbRest('stock_in_items', {
+            method: 'POST',
+            body: {
+              id: line.id || `SRI-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              receipt_id,
+              item_target_type: 'INGREDIENT',
+              product_id: null,
+              ingredient_id: ing.id,
+              item_name: ing.name,
+              unit_label: line.unit_label || ing.purchase_unit,
+              input_qty: inputQty,
+              conversion_rate: conv,
+              qty_before: qtyBefore,
+              qty_added: qtyAdded,
+              qty_after: qtyAfter,
+              purchase_cost_per_base_unit: baseCost,
+              total_line_cost: lineCost
+            }
+          });
+        }
+      }
+
+      await sbRest(`stock_in_receipts?id=eq.${encodeURIComponent(receipt_id)}`, {
+        method: 'PATCH',
+        body: { supplier_name, note, total_cost: newTotalCost }
+      });
+      try {
+        await sbRest(`expenses?reference_id=eq.${encodeURIComponent(receipt_id)}`, {
+          method: 'PATCH',
+          body: { title: `รับของเข้าสต็อก (${receipt_id}) - ${supplier_name}`, amount: newTotalCost }
+        });
+      } catch {}
+
+      return send(200, { success: true, receiptId: receipt_id, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/stock-in/delete') {
+      const { receipt_id } = body;
+      const oldItems = await sbRest(`stock_in_items?select=*&receipt_id=eq.${encodeURIComponent(receipt_id)}`);
+      for (const oldIt of oldItems) {
+        if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
+          const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(oldIt.product_id)}`);
+          if (prods[0]) {
+            const rev = Math.max(0, Math.round((Number(prods[0].stock_qty) - Number(oldIt.qty_added)) * 100) / 100);
+            await sbRest(`products?id=eq.${encodeURIComponent(oldIt.product_id)}`, { method: 'PATCH', body: { stock_qty: rev } });
+          }
+        } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
+          const ings = await sbRest(`ingredients?select=*&id=eq.${encodeURIComponent(oldIt.ingredient_id)}`);
+          if (ings[0]) {
+            const rev = Math.max(0, Math.round((Number(ings[0].current_qty) - Number(oldIt.qty_added)) * 100) / 100);
+            await sbRest(`ingredients?id=eq.${encodeURIComponent(oldIt.ingredient_id)}`, { method: 'PATCH', body: { current_qty: rev } });
+          }
+        }
+      }
+      await sbRest(`stock_in_items?receipt_id=eq.${encodeURIComponent(receipt_id)}`, { method: 'DELETE' });
+      await sbRest(`stock_in_receipts?id=eq.${encodeURIComponent(receipt_id)}`, { method: 'DELETE' });
+      try {
+        await sbRest(`expenses?reference_id=eq.${encodeURIComponent(receipt_id)}`, { method: 'DELETE' });
+      } catch {}
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
     }
 
     return send(404, { error: `API route not found: ${pathname}` });

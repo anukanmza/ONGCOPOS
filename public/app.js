@@ -30,10 +30,14 @@ const state = {
   modifierModalProduct: null,
   selectedModifiers: [],
   modifierQty: 1,
-  checkoutModalOrder: null, // { mode: 'CART' | 'ORDER', tableId, orderId, totalAmount, subtotal, label }
+  checkoutModalOrder: null, // { mode: 'CART' | 'ORDER', tableId, orderId, totalAmount, subtotal, label, items, customerId }
   checkoutPaymentMethod: 'CASH',
   checkoutCashReceived: '',
   checkoutDiscount: 0,
+  checkoutRedeemPoints: 0,
+  checkoutMemberSearch: '',
+  showLoyaltySettingsModal: false,
+  loyaltyDraft: null,
   editingBillMetaOrder: null, // Modal to edit bill_title, bill_note, customer_id of any bill
   invoiceModalOrder: null, // Modal to view/print paid invoice & void paid invoice
   transferModalOrder: null, // Modal to move table / merge bill / attach held bill to table
@@ -50,7 +54,7 @@ const state = {
   showNewExpenseModal: false,
   showNewCustomerModal: false,
   editingCustomer: null,
-  // Stock-In Draft State
+  // Stock-In Draft & Inventory Search / Voice / History Modal State
   stockInSupplier: 'แม็คโคร & ตลาดสด',
   stockInNote: '',
   stockInRecordExpense: false,
@@ -60,6 +64,18 @@ const state = {
   stockInUsePurchaseUnit: true,
   stockInInputQty: 2,
   stockInLineCost: 264,
+  stockInSearchQuery: '',
+  stockVoiceListening: false,
+  stockVoiceText: '',
+  stockHistoryDatePreset: 'TODAY', // Default filter set to TODAY as requested
+  stockHistoryDateFrom: '',
+  stockHistoryDateTo: '',
+  viewingStockReceipt: null, // Modal to inspect a stock-in receipt
+  editingStockReceipt: null, // Modal to edit a stock-in receipt
+  invIngredientSearch: '',
+  invBomFoodSearch: '',
+  invProductSearch: '',
+  invProductTypeFilter: 'ALL',
   // Recipe BOM Editor State
   selectedBomFoodId: 'F-001',
   bomDraftRows: [],
@@ -70,6 +86,7 @@ const state = {
 };
 
 let recognition = null;
+let stockVoiceRecognition = null;
 let toastTimer = null;
 
 // Non-disruptive Toast: Updates ONLY the floating toast element without calling render()!
@@ -131,6 +148,10 @@ function toLocalYmd(isoOrDate) {
   return `${y}-${m}-${day}`;
 }
 
+// Initialize default TODAY dates for stock history filter
+state.stockHistoryDateFrom = toLocalYmd(new Date());
+state.stockHistoryDateTo = toLocalYmd(new Date());
+
 function applyDatePreset(scope, preset) {
   const now = new Date();
   const todayStr = toLocalYmd(now);
@@ -151,11 +172,18 @@ function applyDatePreset(scope, preset) {
     toStr = todayStr;
   }
 
-  if (scope === 'BILLS') {
+  const sc = String(scope || '').toUpperCase();
+  if (sc === 'BILLS') {
     state.billsDatePreset = preset;
     if (preset !== 'CUSTOM') {
       state.billsDateFrom = fromStr;
       state.billsDateTo = toStr;
+    }
+  } else if (sc === 'STOCK_HISTORY') {
+    state.stockHistoryDatePreset = preset;
+    if (preset !== 'CUSTOM') {
+      state.stockHistoryDateFrom = fromStr;
+      state.stockHistoryDateTo = toStr;
     }
   } else {
     state.dashboardDatePreset = preset;
@@ -167,34 +195,62 @@ function applyDatePreset(scope, preset) {
   render();
 }
 
-function isDateInRange(isoOrDateStr, preset, fromStr, toStr) {
-  if (!preset || preset === 'ALL') return true;
+function isDateInRange(isoOrDateStr, arg2, arg3, arg4) {
+  // Supports both (iso, fromStr, toStr) and (iso, preset, fromStr, toStr)
+  let preset = 'CUSTOM';
+  let fromStr = '';
+  let toStr = '';
+  if (arg4 !== undefined || ['ALL', 'TODAY', 'WEEK', 'MONTH', 'CUSTOM'].includes(arg2)) {
+    preset = arg2 || 'ALL';
+    fromStr = arg3 || '';
+    toStr = arg4 || '';
+  } else {
+    fromStr = arg2 || '';
+    toStr = arg3 || '';
+    if (!fromStr && !toStr) preset = 'ALL';
+  }
+
+  if (preset === 'ALL' && !fromStr && !toStr) return true;
   const itemYmd = toLocalYmd(isoOrDateStr);
   if (!itemYmd) return true;
 
   const now = new Date();
   const todayStr = toLocalYmd(now);
 
-  if (preset === 'TODAY') {
+  if (preset === 'TODAY' && !fromStr && !toStr) {
     return itemYmd === todayStr;
   }
-  if (preset === 'WEEK') {
+  if (preset === 'WEEK' && !fromStr && !toStr) {
     const start = new Date(now);
     start.setDate(now.getDate() - 6);
     const startStr = toLocalYmd(start);
     return itemYmd >= startStr && itemYmd <= todayStr;
   }
-  if (preset === 'MONTH') {
+  if (preset === 'MONTH' && !fromStr && !toStr) {
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
     const startStr = toLocalYmd(start);
     return itemYmd >= startStr && itemYmd <= todayStr;
   }
-  if (preset === 'CUSTOM') {
-    if (fromStr && itemYmd < fromStr) return false;
-    if (toStr && itemYmd > toStr) return false;
-    return true;
-  }
+  if (fromStr && itemYmd < fromStr) return false;
+  if (toStr && itemYmd > toStr) return false;
   return true;
+}
+
+function getLoyaltySettings() {
+  const defaults = {
+    spend_per_point: 25,
+    points_earned: 1,
+    redeem_points_unit: 10,
+    redeem_discount_baht: 10,
+    min_redeem_points: 10,
+    auto_upgrade_tier: true,
+    tiers: [
+      { name: 'สมาชิกใหม่', min_spent: 0, points_multiplier: 1, discount_pct: 0 },
+      { name: 'ขาประจำ', min_spent: 1000, points_multiplier: 1.2, discount_pct: 0 },
+      { name: 'VIP', min_spent: 5000, points_multiplier: 1.5, discount_pct: 5 }
+    ]
+  };
+  return { ...defaults, ...(state.data?.loyaltySettings || {}) };
 }
 
 async function apiCall(endpoint, method = 'GET', bodyObj = null) {
@@ -230,6 +286,8 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
   if (endpoint === '/api/orders/split') return eng.splitOrder(bodyObj || {});
   if (endpoint === '/api/kds/status') return eng.updateKds(bodyObj || {});
   if (endpoint === '/api/stock-in') return eng.stockIn(bodyObj || {});
+  if (endpoint === '/api/stock-in/update') return eng.updateStockInReceipt(bodyObj || {});
+  if (endpoint === '/api/stock-in/delete') return eng.deleteStockInReceipt(bodyObj || {});
   if (endpoint === '/api/products/save') return eng.saveProduct(bodyObj || {});
   if (endpoint === '/api/products/delete') return eng.deleteProduct(bodyObj || {});
   if (endpoint === '/api/ingredients/save') return eng.saveIngredient(bodyObj || {});
@@ -239,6 +297,7 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
   if (endpoint === '/api/expenses/save') return eng.saveExpense(bodyObj || {});
   if (endpoint === '/api/customers/save') return eng.saveCustomer(bodyObj || {});
   if (endpoint === '/api/customers/delete') return eng.deleteCustomer(bodyObj || {});
+  if (endpoint === '/api/loyalty-settings/save') return eng.saveLoyaltySettings(bodyObj || {});
   return eng.getBootstrap();
 }
 
@@ -851,6 +910,55 @@ async function handleReturnTableItem(orderItemId, mode) {
   showToast(mode === 'VOID_WASTE' ? '🗑️ ตัดเป็นของเสียและหักยอดออกจากบิลแล้ว' : '↩️ คืนสินค้ากลับเข้าสต็อกและหักยอดบิลเรียบร้อย');
 }
 
+function getCheckoutCustomerObj() {
+  if (!state.data || !state.data.customers) return null;
+  const cid = state.checkoutModalOrder?.customerId || state.selectedCustomerId;
+  if (!cid) return null;
+  return state.data.customers.find(c => c.id === cid) || null;
+}
+
+function getPointsDiscountBaht(redeemPoints, subtotal) {
+  const cfg = getLoyaltySettings();
+  const pts = Math.max(0, Math.floor(Number(redeemPoints) || 0));
+  if (pts <= 0) return 0;
+  const unitPts = Math.max(1, Number(cfg.redeem_points_unit) || 10);
+  const unitBaht = Math.max(1, Number(cfg.redeem_discount_baht) || 10);
+  const rawDisc = Math.floor(pts / unitPts) * unitBaht;
+  return Math.min(Math.max(0, Number(subtotal) || 0), rawDisc);
+}
+
+function setCheckoutRedeemPoints(pts) {
+  const co = state.checkoutModalOrder;
+  const cus = getCheckoutCustomerObj();
+  if (!co || !cus) {
+    state.checkoutRedeemPoints = 0;
+    render();
+    return;
+  }
+  const cfg = getLoyaltySettings();
+  const unitPts = Math.max(1, Number(cfg.redeem_points_unit) || 10);
+  const unitBaht = Math.max(1, Number(cfg.redeem_discount_baht) || 10);
+  const maxByPoints = Math.floor((cus.points || 0) / unitPts) * unitPts;
+  const maxBySubtotal = Math.floor((co.subtotal || 0) / unitBaht) * unitPts;
+  const maxAllowed = Math.max(0, Math.min(maxByPoints, maxBySubtotal));
+
+  let requested = Math.max(0, Math.floor(Number(pts) || 0));
+  if (requested > maxAllowed) requested = maxAllowed;
+  // Snap to redeem_points_unit step
+  requested = Math.floor(requested / unitPts) * unitPts;
+  if (requested > 0 && requested < (Number(cfg.min_redeem_points) || 0)) {
+    showToast(`⚠️ ต้องใช้แต้มขั้นต่ำอย่างน้อย ${cfg.min_redeem_points} แต้ม`);
+    return;
+  }
+
+  state.checkoutRedeemPoints = requested;
+  const ptsDisc = getPointsDiscountBaht(requested, co.subtotal);
+  const manualDisc = Math.max(0, Number(state.checkoutManualDiscount) || 0);
+  const net = Math.max(0, co.subtotal - manualDisc - ptsDisc);
+  state.checkoutCashReceived = String(net);
+  render();
+}
+
 async function openCheckoutForCurrentBill() {
   const activeOrd = getActiveContextOrder();
   const draftTotal = state.cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
@@ -862,18 +970,7 @@ async function openCheckoutForCurrentBill() {
 
   const refreshedOrd = getActiveContextOrder();
   if (refreshedOrd) {
-    state.checkoutModalOrder = {
-      mode: 'ORDER',
-      tableId: refreshedOrd.table_id || null,
-      orderId: refreshedOrd.id,
-      subtotal: refreshedOrd.subtotal,
-      totalAmount: refreshedOrd.total_amount,
-      label: refreshedOrd.bill_title || (refreshedOrd.table_name ? `บิล ${refreshedOrd.table_name}` : `บิล ${refreshedOrd.id}`)
-    };
-    state.checkoutPaymentMethod = 'CASH';
-    state.checkoutDiscount = refreshedOrd.discount || 0;
-    state.checkoutCashReceived = String(refreshedOrd.total_amount);
-    render();
+    openCheckoutModalByOrderId(refreshedOrd.id);
     return;
   }
 
@@ -882,16 +979,30 @@ async function openCheckoutForCurrentBill() {
     return;
   }
 
+  const cartItemsForReview = state.cart.map(it => ({
+    id: it.cart_key,
+    product_name: it.name,
+    item_type: it.item_type,
+    quantity: it.quantity,
+    unit_price: it.unit_price,
+    modifiers: it.modifiers || []
+  }));
+
   state.checkoutModalOrder = {
     mode: 'CART',
     tableId: state.posMode === 'DINE_IN' ? state.selectedTableId : null,
     orderId: null,
     subtotal: draftTotal,
     totalAmount: draftTotal,
+    customerId: state.selectedCustomerId || '',
+    items: cartItemsForReview,
     label: state.billTitle.trim() || (state.posMode === 'DINE_IN' ? `เช็คบิลโต๊ะ` : 'บิลขายหน้าร้าน (Walk-in)')
   };
   state.checkoutPaymentMethod = 'CASH';
   state.checkoutDiscount = 0;
+  state.checkoutManualDiscount = 0;
+  state.checkoutRedeemPoints = 0;
+  state.checkoutMemberSearch = '';
   state.checkoutCashReceived = String(draftTotal);
   render();
 }
@@ -901,16 +1012,22 @@ function openCheckoutModalByOrderId(orderId) {
   const ord = (state.data.allBills || []).find(b => b.id === orderId);
   if (!ord) return;
 
+  const activeItems = (ord.items || []).filter(i => i.item_status === 'ACTIVE');
   state.checkoutModalOrder = {
     mode: 'ORDER',
     tableId: ord.table_id || null,
     orderId: ord.id,
     subtotal: ord.subtotal,
     totalAmount: ord.total_amount,
+    customerId: ord.customer_id || state.selectedCustomerId || '',
+    items: activeItems,
     label: ord.bill_title || (ord.table_name ? `เช็คบิล ${ord.table_name}` : `บิล ${ord.id}`)
   };
   state.checkoutPaymentMethod = 'CASH';
   state.checkoutDiscount = ord.discount || 0;
+  state.checkoutManualDiscount = ord.discount || 0;
+  state.checkoutRedeemPoints = 0;
+  state.checkoutMemberSearch = '';
   state.checkoutCashReceived = String(ord.total_amount);
   render();
 }
@@ -925,10 +1042,20 @@ function openCheckoutModalForTable(tableId) {
 async function confirmCheckoutPayment() {
   const co = state.checkoutModalOrder;
   if (!co) return;
-  const discount = Math.max(0, Number(state.checkoutDiscount) || 0);
-  const netTotal = Math.max(0, co.subtotal - discount);
+  const cus = getCheckoutCustomerObj();
+  const cfg = getLoyaltySettings();
+  const redeemPts = cus ? Math.max(0, Math.floor(Number(state.checkoutRedeemPoints) || 0)) : 0;
+  const ptsDiscount = cus ? getPointsDiscountBaht(redeemPts, co.subtotal) : 0;
+  const manualDiscount = Math.max(0, Number(state.checkoutDiscount) || 0);
+  const totalDiscount = Math.min(co.subtotal, manualDiscount + ptsDiscount);
+  const netTotal = Math.max(0, co.subtotal - totalDiscount);
   const cashRec = Number(state.checkoutCashReceived) || netTotal;
-  const cus = getSelectedCustomerObj();
+
+  const tierObj = cus ? (cfg.tiers || []).find(t => t.name === cus.tier) : null;
+  const mult = tierObj ? (Number(tierObj.points_multiplier) || 1) : 1;
+  const earnedPts = cus && netTotal > 0
+    ? Math.floor((netTotal / Math.max(1, Number(cfg.spend_per_point) || 25)) * (Number(cfg.points_earned) || 1) * mult)
+    : 0;
 
   if (co.mode === 'CART') {
     const out = await apiCall('/api/orders/submit', 'POST', {
@@ -940,7 +1067,9 @@ async function confirmCheckoutPayment() {
       customer_name: cus ? cus.name : '',
       items: state.cart,
       payment_method: state.checkoutPaymentMethod,
-      discount,
+      discount: totalDiscount,
+      redeem_points: redeemPts,
+      points_discount: ptsDiscount,
       cash_received: cashRec,
       settle_immediately: true
     });
@@ -950,15 +1079,20 @@ async function confirmCheckoutPayment() {
     state.billNote = '';
     state.selectedCustomerId = '';
     state.checkoutModalOrder = null;
+    state.checkoutRedeemPoints = 0;
     state.billDrawerOpen = false;
     render();
-    showToast(`💰 รับชำระเงิน ${formatMoney(netTotal)} สำเร็จ!${cus ? ` (สะสมแต้มสมาชิก +${Math.floor(netTotal / 25)} แต้ม)` : ''}`);
+    showToast(`💰 รับชำระเงิน ${formatMoney(netTotal)} สำเร็จ!${cus ? ` (${redeemPts > 0 ? `ใช้ ${redeemPts} แต้ม • ` : ''}รับเพิ่ม +${earnedPts} แต้ม)` : ''}`);
   } else {
     const out = await apiCall('/api/orders/checkout', 'POST', {
       order_id: co.orderId,
       table_id: co.tableId,
       payment_method: state.checkoutPaymentMethod,
-      discount,
+      discount: totalDiscount,
+      customer_id: cus ? cus.id : null,
+      customer_name: cus ? cus.name : '',
+      redeem_points: redeemPts,
+      points_discount: ptsDiscount,
       cash_received: cashRec
     });
     if (out && out.data) state.data = out.data;
@@ -966,11 +1100,29 @@ async function confirmCheckoutPayment() {
       state.activeHeldOrderId = null;
     }
     state.checkoutModalOrder = null;
+    state.checkoutRedeemPoints = 0;
     state.billDrawerOpen = false;
     syncCurrentBillMetaFromContext();
     render();
-    showToast(`💰 เช็คบิล "${co.label}" ยอด ${formatMoney(netTotal)} เรียบร้อย! (เงินทอน ${formatMoney(out?.change || 0)})`);
+    showToast(`💰 เช็คบิล "${co.label}" ยอด ${formatMoney(netTotal)} เรียบร้อย!${cus ? ` (${redeemPts > 0 ? `ใช้ ${redeemPts} แต้ม • ` : ''}รับเพิ่ม +${earnedPts} แต้ม)` : ''} (ทอน ${formatMoney(out?.change || 0)})`);
   }
+}
+
+function openLoyaltySettingsModal() {
+  const current = getLoyaltySettings();
+  state.loyaltyDraft = JSON.parse(JSON.stringify(current));
+  state.showLoyaltySettingsModal = true;
+  render();
+}
+
+async function saveLoyaltySettingsForm() {
+  if (!state.loyaltyDraft) return;
+  const out = await apiCall('/api/loyalty-settings/save', 'POST', state.loyaltyDraft);
+  if (out && out.data) state.data = out.data;
+  state.showLoyaltySettingsModal = false;
+  state.loyaltyDraft = null;
+  render();
+  showToast('⚙️ บันทึกการตั้งค่าระดับสมาชิกและกติกาแต้มสะสมเรียบร้อยแล้ว!');
 }
 
 async function updateKdsStatus(orderItemId, nextStatus) {
@@ -986,7 +1138,169 @@ async function updateKdsStatus(orderItemId, nextStatus) {
   }
 }
 
-// Stock-In Helper Functions
+// ============================================================================
+// STOCK-IN DRAFT, VOICE STOCK-IN & RECEIPT DETAIL/EDIT/DELETE HELPERS
+// ============================================================================
+function selectStockInItemQuick(targetType, targetId) {
+  state.stockInTargetType = targetType;
+  state.stockInTargetId = targetId;
+  state.stockInUsePurchaseUnit = true;
+  if (state.data) {
+    if (targetType === 'GROCERY') {
+      const prod = state.data.products.find(p => p.id === targetId);
+      if (prod) {
+        const conv = prod.conversion_rate || 1;
+        state.stockInLineCost = Math.round((Number(state.stockInInputQty) || 1) * conv * (prod.cost || 0));
+      }
+    } else {
+      const ing = state.data.ingredients.find(i => i.id === targetId);
+      if (ing) {
+        const conv = ing.conversion_rate || 1;
+        state.stockInLineCost = Math.round((Number(state.stockInInputQty) || 1) * conv * (ing.cost_per_unit || 0));
+      }
+    }
+  }
+  render();
+}
+
+function toggleStockVoiceMic() {
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRec) {
+    showToast('เบราว์เซอร์นี้ไม่รองรับไมโครโฟน กรุณาพิมพ์ในช่องสั่งด้วยเสียงหรือใช้ Chrome');
+    return;
+  }
+  if (state.stockVoiceListening && stockVoiceRecognition) {
+    stockVoiceRecognition.stop();
+    state.stockVoiceListening = false;
+    render();
+    return;
+  }
+
+  stockVoiceRecognition = new SpeechRec();
+  stockVoiceRecognition.lang = 'th-TH';
+  stockVoiceRecognition.interimResults = false;
+  stockVoiceRecognition.maxAlternatives = 1;
+
+  stockVoiceRecognition.onstart = () => {
+    state.stockVoiceListening = true;
+    render();
+  };
+  stockVoiceRecognition.onresult = (event) => {
+    const transcript = event.results[0][0].transcript;
+    state.stockVoiceText = transcript;
+    state.stockVoiceListening = false;
+    parseAndApplyStockInVoice(transcript);
+  };
+  stockVoiceRecognition.onerror = () => {
+    state.stockVoiceListening = false;
+    render();
+    showToast('⚠️ ไม่ได้ยินเสียงพูด กรุณาลองใหม่อีกครั้ง');
+  };
+  stockVoiceRecognition.onend = () => {
+    state.stockVoiceListening = false;
+    render();
+  };
+  stockVoiceRecognition.start();
+}
+
+function parseAndApplyStockInVoice(rawText) {
+  const text = String(rawText || '').trim();
+  if (!text || !state.data) {
+    showToast('⚠️ กรุณาพูดหรือพิมพ์ชื่อสินค้าและจำนวนที่ต้องการนำเข้าสต็อก');
+    return;
+  }
+  state.stockVoiceText = text;
+
+  const thaiNums = { 'หนึ่ง': '1', 'นึง': '1', 'สอง': '2', 'สาม': '3', 'สี่': '4', 'ห้า': '5', 'หก': '6', 'เจ็ด': '7', 'แปด': '8', 'เก้า': '9', 'สิบ': '10', 'โหล': '12' };
+  let normalized = text;
+  for (const [k, v] of Object.entries(thaiNums)) {
+    normalized = normalized.replace(new RegExp(`(?<=\\s|^)${k}(?=\\s|$|แพ็ค|ลัง|กล่อง|กิโล|กก|แผง|ขวด|ชิ้น|ซอง|ห่อ|ถัง|กรัม|ฟอง)`, 'g'), v);
+  }
+
+  const groceryList = (state.data.products || []).filter(p => p.item_type === 'GROCERY');
+  const ingList = state.data.ingredients || [];
+
+  let matchedType = null;
+  let matchedItem = null;
+  let bestScore = 0;
+
+  const lower = normalized.toLowerCase();
+
+  for (const p of groceryList) {
+    const candidates = [p.name, ...(p.voice_aliases || [])];
+    for (const c of candidates) {
+      const cl = String(c || '').toLowerCase();
+      if (cl && lower.includes(cl) && cl.length > bestScore) {
+        bestScore = cl.length;
+        matchedType = 'GROCERY';
+        matchedItem = p;
+      }
+    }
+  }
+
+  for (const ing of ingList) {
+    const baseName = ing.name.split(' ')[0].replace(/สด|อนามัย|ทำเอง/g, '');
+    const candidates = [ing.name, baseName].filter(x => x && x.length >= 2);
+    for (const c of candidates) {
+      const cl = c.toLowerCase();
+      if (lower.includes(cl) && cl.length >= bestScore) {
+        bestScore = cl.length;
+        matchedType = 'INGREDIENT';
+        matchedItem = ing;
+      }
+    }
+  }
+
+  if (!matchedItem) {
+    showToast(`⚠️ ไม่พบสินค้าหรือวัตถุดิบที่ตรงกับ "${text}"`);
+    return;
+  }
+
+  // Remove item name to extract numbers cleanly
+  let rest = lower.replace(matchedItem.name.toLowerCase(), ' ');
+  if (matchedItem.voice_aliases) {
+    for (const al of matchedItem.voice_aliases) {
+      rest = rest.replace(String(al).toLowerCase(), ' ');
+    }
+  }
+
+  // Extract explicit cost e.g. "ทุน 250" or "ราคา 250" or "250 บาท"
+  let detectedCost = null;
+  const costMatch = rest.match(/(?:ทุน|ราคา|รวม|เป็นเงิน)\s*(\d+(?:\.\d+)?)/) || rest.match(/(\d+(?:\.\d+)?)\s*บาท/);
+  if (costMatch) {
+    detectedCost = Number(costMatch[1]);
+    rest = rest.replace(costMatch[0], ' ');
+  }
+
+  // Extract quantity
+  const qtyMatch = rest.match(/(\d+(?:\.\d+)?)/);
+  const inputQty = qtyMatch ? Math.max(0.1, Number(qtyMatch[1])) : 1;
+
+  // Detect whether user spoke base unit vs purchase unit
+  const baseUnitWords = ['ขวด', 'ซอง', 'ห่อ', 'กระป๋อง', 'ชิ้น', 'กรัม', 'ฟอง', 'ก้อน', 'ช้อน'];
+  const purchaseUnitWords = ['แพ็ค', 'ลัง', 'กล่อง', 'กิโล', 'กก', 'แผง', 'กระสอบ', 'หม้อ', 'ถุง'];
+  const hasPurchaseWord = purchaseUnitWords.some(w => lower.includes(w));
+  const hasBaseWord = baseUnitWords.some(w => lower.includes(w));
+  const usePurchaseUnit = hasPurchaseWord ? true : (hasBaseWord ? false : true);
+
+  state.stockInTargetType = matchedType;
+  state.stockInTargetId = matchedItem.id;
+  state.stockInUsePurchaseUnit = usePurchaseUnit;
+  state.stockInInputQty = inputQty;
+
+  const conv = usePurchaseUnit ? (matchedItem.conversion_rate || 1) : 1;
+  const unitCost = matchedType === 'GROCERY' ? (matchedItem.cost || 0) : (matchedItem.cost_per_unit || 0);
+  const calcCost = detectedCost !== null ? detectedCost : Math.round(inputQty * conv * unitCost);
+  state.stockInLineCost = calcCost;
+
+  // Also add directly to the Draft Receipt so the user sees it immediately in the Receipt Box!
+  addLineToStockInDraft();
+  const unitLabel = usePurchaseUnit
+    ? matchedItem.purchase_unit
+    : (matchedType === 'GROCERY' ? matchedItem.unit : matchedItem.stock_unit);
+  showToast(`🎙️ กรอกฟอร์มและเพิ่ม "${matchedItem.name}" จำนวน ${inputQty} ${unitLabel} (ทุน ฿${calcCost}) ลงใบรับของแล้ว!`);
+}
+
 function addLineToStockInDraft() {
   if (!state.data) return;
   const inputQty = Number(state.stockInInputQty);
@@ -1005,7 +1319,7 @@ function addLineToStockInDraft() {
     const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
 
     state.stockInDraftItems.push({
-      id: 'SID-' + Date.now(),
+      id: 'SID-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
       item_target_type: 'GROCERY',
       target_id: prod.id,
       name: prod.name,
@@ -1029,7 +1343,7 @@ function addLineToStockInDraft() {
     const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
 
     state.stockInDraftItems.push({
-      id: 'SID-' + Date.now(),
+      id: 'SID-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
       item_target_type: 'INGREDIENT',
       target_id: ing.id,
       name: ing.name,
@@ -1066,6 +1380,58 @@ async function submitStockInReceipt() {
   state.stockInNote = '';
   render();
   showToast(`📦 บันทึกใบรับของเข้าสต็อก ${out?.receiptId || ''} สำเร็จ!`);
+}
+
+function openStockReceiptDetailModal(receiptId) {
+  if (!state.data) return;
+  const rec = (state.data.stockInReceipts || []).find(r => r.id === receiptId);
+  if (!rec) return;
+  state.viewingStockReceipt = rec;
+  state.editingStockReceipt = null;
+  render();
+}
+
+function startEditStockReceipt(receiptId) {
+  if (!state.data) return;
+  const rec = (state.data.stockInReceipts || []).find(r => r.id === receiptId);
+  if (!rec) return;
+  state.editingStockReceipt = JSON.parse(JSON.stringify(rec));
+  state.viewingStockReceipt = null;
+  render();
+}
+
+async function saveEditedStockReceipt() {
+  const ed = state.editingStockReceipt;
+  if (!ed) return;
+  const validItems = (ed.items || []).filter(it => Number(it.input_qty) > 0);
+  if (validItems.length === 0) {
+    showToast('⚠️ ใบรับของต้องมีอย่างน้อย 1 รายการ (หรือกดปุ่มลบใบรับของแทน)');
+    return;
+  }
+  const out = await apiCall('/api/stock-in/update', 'POST', {
+    receipt_id: ed.id,
+    supplier_name: ed.supplier_name,
+    note: ed.note || '',
+    items: validItems
+  });
+  if (out && out.data) state.data = out.data;
+  state.editingStockReceipt = null;
+  const updatedRec = (state.data.stockInReceipts || []).find(r => r.id === ed.id);
+  state.viewingStockReceipt = updatedRec || null;
+  render();
+  showToast(`✏️ แก้ไขใบรับของ ${ed.id} และปรับยอดสต็อกเรียบร้อยแล้ว`);
+}
+
+async function deleteStockReceiptById(receiptId) {
+  if (!window.confirm(`🗑️ ยืนยันการลบใบรับของ "${receiptId}"?\n(ระบบจะหักจำนวนสต็อกที่เคยรับเข้าในใบนี้คืนกลับอัตโนมัติ)`)) {
+    return;
+  }
+  const out = await apiCall('/api/stock-in/delete', 'POST', { receipt_id: receiptId });
+  if (out && out.data) state.data = out.data;
+  state.viewingStockReceipt = null;
+  state.editingStockReceipt = null;
+  render();
+  showToast(`🗑️ ลบใบรับของ ${receiptId} และปรับปรุงสต็อกคืนเรียบร้อยแล้ว`);
 }
 
 async function saveBomForSelectedFood() {
@@ -2086,9 +2452,27 @@ function renderKdsView() {
 // VIEW 5: INVENTORY & RECIPE BOM
 // ============================================================================
 function renderInventoryView() {
-  const { products, ingredients, stockInReceipts, inventoryLogs } = state.data;
+  const { products, ingredients, stockInReceipts = [], inventoryLogs = [] } = state.data;
   const groceryProducts = products.filter(p => p.item_type === 'GROCERY');
   const foodProducts = products.filter(p => p.item_type === 'FOOD');
+
+  // ค้นหาสินค้า/วัตถุดิบในแท็บ 1 (นำเข้าสต็อก)
+  const stockSearchQ = (state.stockInSearchQuery || '').trim().toLowerCase();
+  const targetPool = state.stockInTargetType === 'GROCERY' ? groceryProducts : ingredients;
+  const filteredStockTargetPool = targetPool.filter(item =>
+    !stockSearchQ ||
+    item.name.toLowerCase().includes(stockSearchQ) ||
+    (item.id || '').toLowerCase().includes(stockSearchQ) ||
+    (item.barcode || '').toLowerCase().includes(stockSearchQ)
+  );
+
+  // ค้นหาด่วนรวมทั้งของชำและวัตถุดิบเมื่อพิมพ์ค้นหาในหน้า 1
+  const quickSearchMatches = stockSearchQ
+    ? [
+        ...groceryProducts.filter(p => p.name.toLowerCase().includes(stockSearchQ) || (p.barcode || '').includes(stockSearchQ)).map(p => ({ ...p, _kind: 'GROCERY' })),
+        ...ingredients.filter(i => i.name.toLowerCase().includes(stockSearchQ)).map(i => ({ ...i, _kind: 'INGREDIENT' }))
+      ].slice(0, 8)
+    : [];
 
   let currentBefore = 0;
   let convRate = 1;
@@ -2097,7 +2481,7 @@ function renderInventoryView() {
   let selectedItemName = '';
 
   if (state.stockInTargetType === 'GROCERY') {
-    const prod = groceryProducts.find(p => p.id === state.stockInTargetId) || groceryProducts[0];
+    const prod = groceryProducts.find(p => p.id === state.stockInTargetId) || filteredStockTargetPool[0] || groceryProducts[0];
     if (prod) {
       state.stockInTargetId = prod.id;
       currentBefore = prod.stock_qty;
@@ -2107,7 +2491,7 @@ function renderInventoryView() {
       selectedItemName = prod.name;
     }
   } else {
-    const ing = ingredients.find(i => i.id === state.stockInTargetId) || ingredients[0];
+    const ing = ingredients.find(i => i.id === state.stockInTargetId) || filteredStockTargetPool[0] || ingredients[0];
     if (ing) {
       state.stockInTargetId = ing.id;
       currentBefore = ing.current_qty;
@@ -2121,6 +2505,41 @@ function renderInventoryView() {
   const inputQtyNum = Math.max(0, Number(state.stockInInputQty) || 0);
   const previewAdded = Math.round(inputQtyNum * convRate * 100) / 100;
   const previewAfter = Math.round((currentBefore + previewAdded) * 100) / 100;
+  const draftTotalCost = state.stockInDraftItems.reduce((s, d) => s + (Number(d.line_cost) || 0), 0);
+
+  // กรองประวัติใบรับของเข้าสต็อกตามช่วงวัน (Default = วันนี้ TODAY)
+  const filteredStockReceipts = stockInReceipts.filter(r =>
+    isDateInRange(r.created_at, state.stockHistoryDateFrom, state.stockHistoryDateTo)
+  );
+
+  // กรองวัตถุดิบ & เมนูผูกสูตรในแท็บ 2
+  const ingSearchQ = (state.invIngredientSearch || '').trim().toLowerCase();
+  const filteredIngredients = ingredients.filter(ing =>
+    !ingSearchQ ||
+    ing.name.toLowerCase().includes(ingSearchQ) ||
+    (ing.id || '').toLowerCase().includes(ingSearchQ)
+  );
+
+  const bomFoodSearchQ = (state.invBomFoodSearch || '').trim().toLowerCase();
+  const filteredBomFoods = foodProducts.filter(fp =>
+    !bomFoodSearchQ ||
+    fp.name.toLowerCase().includes(bomFoodSearchQ) ||
+    (fp.id || '').toLowerCase().includes(bomFoodSearchQ)
+  );
+
+  // กรองสินค้า & เมนูทั้งหมดในแท็บ 3
+  const prodSearchQ = (state.invProductSearch || '').trim().toLowerCase();
+  const filteredAllProducts = products.filter(p => {
+    if (state.invProductTypeFilter !== 'ALL' && p.item_type !== state.invProductTypeFilter) return false;
+    if (!prodSearchQ) return true;
+    const aliasesStr = Array.isArray(p.voice_aliases) ? p.voice_aliases.join(' ') : String(p.voice_aliases || '');
+    return (
+      p.name.toLowerCase().includes(prodSearchQ) ||
+      (p.id || '').toLowerCase().includes(prodSearchQ) ||
+      (p.barcode || '').toLowerCase().includes(prodSearchQ) ||
+      aliasesStr.toLowerCase().includes(prodSearchQ)
+    );
+  });
 
   return `
     <div>
@@ -2128,7 +2547,7 @@ function renderInventoryView() {
         <div>
           <h3 style="margin:0; font-size:20px;">📦 คลังของชำ, นำเข้าสต็อก & สูตรวัตถุดิบอาหาร</h3>
           <p style="margin:2px 0 0; font-size:13px; color:var(--ttl-muted);">
-            กรอกจำนวนซื้อเข้าเพื่อบวกสต็อกอัตโนมัติ และตั้งค่าสูตรวัตถุดิบเมนูอาหาร
+            กรอกหรือสั่งด้วยเสียงเพื่อรับของเข้าสต็อก ผูกสูตรวัตถุดิบเมนูอาหาร และจัดการประวัติใบรับของย้อนหลัง
           </p>
         </div>
 
@@ -2143,29 +2562,104 @@ function renderInventoryView() {
             📦 3. สินค้า & เมนูทั้งหมด
           </button>
           <button type="button" aria-selected="${state.inventoryTab === 'audit'}" onclick="state.inventoryTab='audit'; render();">
-            📜 4. ประวัตินำเข้า
+            📜 4. ประวัติความเคลื่อนไหว
           </button>
         </div>
       </div>
 
       ${state.inventoryTab === 'stock_in' ? `
-        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(310px, 1fr)); gap:16px;">
-          <div style="padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page); display:flex; flex-direction:column; gap:12px;">
-            <div class="ttl-k">ฟอร์มนำเข้าสินค้าเพื่อเติมสต็อก (ไม่ต้องบวกเลขเอง)</div>
+        <!-- แถบสั่งกรอกฟอร์มนำเข้าสินค้าด้วยเสียง (เฉพาะหน้าย่อย 1. นำเข้าสต็อก) -->
+        <div style="padding:12px 16px; border-radius:14px; background:var(--ttl-deep); color:var(--ttl-deep-ink); margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; border:1px solid color-mix(in srgb, var(--ttl-gold) 35%, transparent);">
+          <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:260px;">
+            <button
+              type="button"
+              class="ttl-btn ${state.stockVoiceListening ? 'ttl-btn-danger-outline' : 'ttl-btn-gold'}"
+              style="height:40px; padding:0 14px; font-weight:700; flex-shrink:0;"
+              onclick="toggleStockVoiceMic()"
+            >
+              ${state.stockVoiceListening ? '🛑 กำลังฟังเสียง...' : '🎙️ พูดกรอกรับของเข้าสต็อก'}
+            </button>
+            <input
+              id="stock-voice-input"
+              type="text"
+              class="ttl-input"
+              style="flex:1; height:38px; background:rgba(255,255,255,0.1); color:#fff; border-color:rgba(255,255,255,0.22);"
+              placeholder="พูดหรือพิมพ์ เช่น 'โค้ก 2 ลัง ทุน 560' หรือ 'หมูสับ 3 กิโล ทุน 660'..."
+              value="${(state.stockVoiceText || '').replace(/"/g, '&quot;')}"
+              oninput="state.stockVoiceText=this.value"
+              onkeydown="if(event.key==='Enter'){ event.preventDefault(); parseAndApplyStockInVoice(this.value); }"
+            />
+            <button
+              type="button"
+              class="ttl-btn ttl-btn-sm ttl-btn-good"
+              style="height:38px; flex-shrink:0;"
+              onclick="parseAndApplyStockInVoice(state.stockVoiceText)"
+            >
+              ⚡ กรอกลงฟอร์ม
+            </button>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11.5px;">
+            <span style="color:var(--ttl-deep-muted);">ตัวอย่างเสียงพูด:</span>
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; padding:0 8px; color:#fff; border-color:rgba(255,255,255,0.2);" onclick="parseAndApplyStockInVoice('โค้ก 2 ลัง ทุน 560')">"โค้ก 2 ลัง ทุน 560"</button>
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; padding:0 8px; color:#fff; border-color:rgba(255,255,255,0.2);" onclick="parseAndApplyStockInVoice('หมูสับ 3 กิโล ทุน 660')">"หมูสับ 3 กิโล ทุน 660"</button>
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; padding:0 8px; color:#fff; border-color:rgba(255,255,255,0.2);" onclick="parseAndApplyStockInVoice('ไข่ไก่ 2 แผง ทุน 228')">"ไข่ไก่ 2 แผง ทุน 228"</button>
+          </div>
+        </div>
 
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:16px; align-items:start;">
+          <!-- คอลัมน์ซ้าย: ฟอร์มกรอกรับของเข้าสต็อก -->
+          <div style="padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page); display:flex; flex-direction:column; gap:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+              <div class="ttl-k">1. ฟอร์มนำเข้าสินค้าเพื่อเติมสต็อก (ไม่ต้องบวกเลขเอง)</div>
+              <span class="ttl-tag ttl-tag-grocery">คำนวณหน่วยให้อัตโนมัติ</span>
+            </div>
+
+            <!-- ช่องค้นหาสินค้าของชำหรือวัตถุดิบในหน้านำเข้าสต็อก -->
+            <div>
+              <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">🔍 ค้นหาสินค้าของชำ หรือ วัตถุดิบครัวที่ต้องการนำเข้า</label>
+              <div style="display:flex; gap:6px;">
+                <input
+                  id="stock-in-search-input"
+                  type="text"
+                  class="ttl-input"
+                  placeholder="พิมพ์ชื่อสินค้า/วัตถุดิบ หรือรหัสบาร์โค้ดเพื่อค้นหาด่วน..."
+                  value="${(state.stockInSearchQuery || '').replace(/"/g, '&quot;')}"
+                  oninput="state.stockInSearchQuery=this.value; render();"
+                />
+                ${state.stockInSearchQuery ? `
+                  <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.stockInSearchQuery=''; render();">ล้าง</button>
+                ` : ''}
+              </div>
+              ${quickSearchMatches.length > 0 ? `
+                <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; padding:8px; border-radius:10px; background:var(--ttl-paper); border:1px solid var(--ttl-rule);">
+                  <span style="font-size:11.5px; color:var(--ttl-muted); width:100%;">ผลลัพธ์ที่ตรงกัน (คลิกเพื่อเลือกเข้าฟอร์มทันที):</span>
+                  ${quickSearchMatches.map(m => `
+                    <button
+                      type="button"
+                      class="ttl-btn ttl-btn-sm ${m.id === state.stockInTargetId ? 'ttl-btn-dark' : 'ttl-btn-ghost'}"
+                      style="height:28px; font-size:12px;"
+                      onclick="selectStockInItemQuick('${m._kind}', '${m.id}')"
+                    >
+                      ${m._kind === 'GROCERY' ? '📦' : '🥩'} ${m.name} (เหลือ ${m._kind === 'GROCERY' ? m.stock_qty + ' ' + m.unit : m.current_qty + ' ' + m.stock_unit})
+                    </button>
+                  `).join('')}
+                </div>
+              ` : ''}
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1.3fr; gap:10px;">
               <div>
                 <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ประเภทที่จะนำเข้า</label>
                 <select class="ttl-select" onchange="state.stockInTargetType=this.value; state.stockInTargetId = this.value==='GROCERY' ? '${groceryProducts[0]?.id}' : '${ingredients[0]?.id}'; render();">
-                  <option value="GROCERY" ${state.stockInTargetType === 'GROCERY' ? 'selected' : ''}>📦 สินค้าของชำ</option>
-                  <option value="INGREDIENT" ${state.stockInTargetType === 'INGREDIENT' ? 'selected' : ''}>🥩 วัตถุดิบครัว</option>
+                  <option value="GROCERY" ${state.stockInTargetType === 'GROCERY' ? 'selected' : ''}>📦 สินค้าของชำ (${groceryProducts.length})</option>
+                  <option value="INGREDIENT" ${state.stockInTargetType === 'INGREDIENT' ? 'selected' : ''}>🥩 วัตถุดิบครัว (${ingredients.length})</option>
                 </select>
               </div>
 
               <div>
                 <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">เลือกสินค้า / วัตถุดิบ</label>
                 <select class="ttl-select" onchange="state.stockInTargetId=this.value; render();">
-                  ${(state.stockInTargetType === 'GROCERY' ? groceryProducts : ingredients).map(item => `
+                  ${(filteredStockTargetPool.length > 0 ? filteredStockTargetPool : targetPool).map(item => `
                     <option value="${item.id}" ${item.id === state.stockInTargetId ? 'selected' : ''}>
                       ${item.name} (เหลือ ${state.stockInTargetType === 'GROCERY' ? item.stock_qty + ' ' + item.unit : item.current_qty + ' ' + item.stock_unit})
                     </option>
@@ -2174,7 +2668,7 @@ function renderInventoryView() {
               </div>
             </div>
 
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px;">
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:10px;">
               <div>
                 <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">หน่วยที่นำเข้า</label>
                 <select class="ttl-select" onchange="state.stockInUsePurchaseUnit=(this.value==='PURCHASE'); render();">
@@ -2186,6 +2680,7 @@ function renderInventoryView() {
               <div>
                 <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">จำนวนที่ซื้อมาเติม (+)</label>
                 <input
+                  id="stock-in-qty-input"
                   type="number"
                   step="any"
                   min="0.1"
@@ -2197,14 +2692,15 @@ function renderInventoryView() {
               </div>
 
               <div>
-                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ทุนรวมรอบนี้ (บาท)</label>
+                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ทุนรวมรายการนี้ (บาท)</label>
                 <input
+                  id="stock-in-cost-input"
                   type="number"
                   step="any"
                   min="0"
                   class="ttl-input"
                   value="${state.stockInLineCost}"
-                  oninput="state.stockInLineCost=this.value;"
+                  oninput="state.stockInLineCost=this.value; render();"
                 />
               </div>
             </div>
@@ -2217,18 +2713,18 @@ function renderInventoryView() {
                 </div>
               </div>
               <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-gold" onclick="addLineToStockInDraft()">
-                + พักลงใบรับของ
+                + เพิ่มรายการลงใบรับของ
               </button>
             </div>
 
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
               <div>
                 <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ร้านค้าส่ง / แหล่งซื้อ</label>
-                <input type="text" class="ttl-input" value="${state.stockInSupplier}" oninput="state.stockInSupplier=this.value" />
+                <input id="stock-in-supplier-input" type="text" class="ttl-input" value="${(state.stockInSupplier || '').replace(/"/g, '&quot;')}" oninput="state.stockInSupplier=this.value" />
               </div>
               <div>
-                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">หมายเหตุ</label>
-                <input type="text" class="ttl-input" placeholder="เช่น รอบเช้า" value="${state.stockInNote}" oninput="state.stockInNote=this.value" />
+                <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">หมายเหตุใบรับของ</label>
+                <input id="stock-in-note-input" type="text" class="ttl-input" placeholder="เช่น รอบเช้า, บิลเงินสด" value="${(state.stockInNote || '').replace(/"/g, '&quot;')}" oninput="state.stockInNote=this.value" />
               </div>
             </div>
 
@@ -2238,38 +2734,156 @@ function renderInventoryView() {
             </label>
 
             <button type="button" class="ttl-btn ttl-btn-lg ttl-btn-dark" onclick="submitStockInReceipt()">
-              📦 ยืนยันนำเข้าสต็อก (${state.stockInDraftItems.length || 1} รายการ)
+              📦 ยืนยันบันทึกใบรับของเข้าสต็อก (${state.stockInDraftItems.length > 0 ? `${state.stockInDraftItems.length} รายการในใบรับของ` : '1 รายการที่เลือกอยู่'})
             </button>
           </div>
 
+          <!-- คอลัมน์ขวา: (1) ช่องแสดงใบรับของเข้าสต็อกรอบนี้ + (2) ช่องประวัติใบรับของเข้าสต็อก -->
           <div style="display:flex; flex-direction:column; gap:14px;">
-            <div style="padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-paper);">
-              <div class="ttl-k" style="margin-bottom:8px;">ประวัติใบรับของเข้าสต็อกล่าสุด</div>
-              ${stockInReceipts.slice(0, 5).map(r => `
-                <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); margin-bottom:8px; border:1px solid var(--ttl-rule);">
-                  <div style="display:flex; justify-content:space-between; font-weight:600; font-size:13px;">
-                    <span>📄 ${r.id} • ${r.supplier_name}</span>
-                    <span style="color:var(--ttl-gold);">${formatMoney(r.total_cost)}</span>
+            <!-- กล่องแสดงใบรับของเข้าสต็อกรอบนี้ (Draft Receipt Box) -->
+            <div style="padding:16px; border-radius:14px; border:2px solid var(--ttl-gold); background:var(--ttl-paper);">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+                <div>
+                  <div class="ttl-k" style="color:var(--ttl-gold);">CURRENT STOCK-IN RECEIPT • ใบรับของเข้าสต็อกรอบนี้</div>
+                  <h4 style="margin:2px 0 0; font-size:16px;">
+                    📋 รายการในใบรับของเข้าสต็อก (${state.stockInDraftItems.length} รายการที่พักไว้)
+                  </h4>
+                </div>
+                ${state.stockInDraftItems.length > 0 ? `
+                  <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-danger-outline" onclick="state.stockInDraftItems=[]; render();">
+                    ล้างใบรับของ
+                  </button>
+                ` : ''}
+              </div>
+
+              ${state.stockInDraftItems.length === 0 ? `
+                <div style="padding:14px; border-radius:10px; background:var(--ttl-page); border:1px dashed var(--ttl-rule); font-size:12.5px;">
+                  <div style="font-weight:700; color:var(--ttl-ink); margin-bottom:4px;">
+                    📌 รายการที่กำลังเลือกในฟอร์มตอนนี้ (พร้อมนำเข้าทันที หรือกด "+ เพิ่มรายการลงใบรับของ" เพื่อรวมหลายสินค้าในใบเดียว):
                   </div>
-                  ${(r.items || []).map(line => `
-                    <div style="font-size:12px; display:flex; justify-content:space-between; padding-top:4px; border-top:1px dashed var(--ttl-rule);">
-                      <span>• ${line.item_name}</span>
-                      <span>เดิม ${line.qty_before} <b style="color:var(--ttl-good);">+${line.qty_added}</b> ➔ <b>${line.qty_after}</b></span>
+                  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; padding-top:6px; border-top:1px dashed var(--ttl-rule);">
+                    <span><b>${selectedItemName}</b> (${inputQtyNum} ${state.stockInUsePurchaseUnit ? purchaseUnitLabel : baseUnit})</span>
+                    <span>เดิม ${currentBefore} <b style="color:var(--ttl-good);">+${previewAdded}</b> ➔ <b>${previewAfter} ${baseUnit}</b> • ทุน <b>${formatMoney(Number(state.stockInLineCost) || 0)}</b></span>
+                  </div>
+                </div>
+              ` : `
+                <div style="display:flex; flex-direction:column; gap:8px; max-height:240px; overflow-y:auto; margin-bottom:10px;">
+                  ${state.stockInDraftItems.map((d, idx) => `
+                    <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                      <div>
+                        <div style="font-weight:700; font-size:13.5px;">
+                          #${idx + 1} ${d.target_type === 'GROCERY' ? '📦' : '🥩'} ${d.item_name}
+                        </div>
+                        <div style="font-size:12px; color:var(--ttl-muted);">
+                          นำเข้า <b>${d.input_qty} ${d.input_unit_label}</b> (บวกสต็อก <b style="color:var(--ttl-good);">+${d.preview_added} ${d.base_unit}</b>)
+                        </div>
+                      </div>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="font-weight:700; color:var(--ttl-gold);">${formatMoney(d.line_cost)}</span>
+                        <button
+                          type="button"
+                          class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
+                          style="height:26px; padding:0 8px; font-size:11px;"
+                          onclick="state.stockInDraftItems.splice(${idx}, 1); render();"
+                        >
+                          🗑️ ลบ
+                        </button>
+                      </div>
                     </div>
                   `).join('')}
                 </div>
-              `).join('')}
+                <div style="display:flex; justify-content:space-between; align-items:center; padding-top:10px; border-top:1px solid var(--ttl-rule); font-size:14px;">
+                  <span>รวมต้นทุนใบรับของรอบนี้ (${state.stockInDraftItems.length} รายการ)</span>
+                  <b style="font-size:18px; color:var(--ttl-gold);">${formatMoney(draftTotalCost)}</b>
+                </div>
+              `}
+            </div>
+
+            <!-- กล่องประวัติใบรับของเข้าสต็อก (แสดงเฉพาะรหัส+วันเวลา คลิกเพื่อดูรายละเอียด/แก้ไข/ลบ + ฟิลเตอร์ช่วงวัน Default วันนี้) -->
+            <div style="padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-paper);">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+                <div>
+                  <div class="ttl-k">STOCK-IN RECEIPT HISTORY</div>
+                  <h4 style="margin:2px 0 0; font-size:16px;">📜 ประวัติใบรับของเข้าสต็อก (${filteredStockReceipts.length} ใบ)</h4>
+                </div>
+                <span style="font-size:11.5px; color:var(--ttl-muted);">👆 คลิกที่ใบประวัติเพื่อดูรายละเอียด / แก้ไข / ลบ</span>
+              </div>
+
+              <!-- ฟิลเตอร์ช่วงวันสำหรับประวัติใบรับของ (Default = วันนี้) -->
+              <div style="padding:10px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:10px; display:flex; flex-direction:column; gap:8px;">
+                <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                  <span style="font-size:11.5px; font-weight:700; color:var(--ttl-muted);">📅 ช่วงวัน:</span>
+                  <button type="button" class="ttl-btn ttl-btn-sm ${state.stockHistoryDatePreset === 'TODAY' ? 'ttl-btn-dark' : 'ttl-btn-ghost'}" style="height:26px; padding:0 8px; font-size:11.5px;" onclick="applyDatePreset('STOCK_HISTORY', 'TODAY')">วันนี้</button>
+                  <button type="button" class="ttl-btn ttl-btn-sm ${state.stockHistoryDatePreset === 'WEEK' ? 'ttl-btn-dark' : 'ttl-btn-ghost'}" style="height:26px; padding:0 8px; font-size:11.5px;" onclick="applyDatePreset('STOCK_HISTORY', 'WEEK')">7 วันล่าสุด</button>
+                  <button type="button" class="ttl-btn ttl-btn-sm ${state.stockHistoryDatePreset === 'MONTH' ? 'ttl-btn-dark' : 'ttl-btn-ghost'}" style="height:26px; padding:0 8px; font-size:11.5px;" onclick="applyDatePreset('STOCK_HISTORY', 'MONTH')">เดือนนี้</button>
+                  <button type="button" class="ttl-btn ttl-btn-sm ${state.stockHistoryDatePreset === 'ALL' ? 'ttl-btn-dark' : 'ttl-btn-ghost'}" style="height:26px; padding:0 8px; font-size:11.5px;" onclick="applyDatePreset('STOCK_HISTORY', 'ALL')">ทั้งหมด</button>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:11.5px;">
+                  <span>ตั้งแต่:</span>
+                  <input type="date" class="ttl-input" style="width:130px; height:28px; padding:2px 6px; font-size:11.5px;" value="${state.stockHistoryDateFrom}" onchange="state.stockHistoryDatePreset='CUSTOM'; state.stockHistoryDateFrom=this.value; render();" />
+                  <span>ถึง:</span>
+                  <input type="date" class="ttl-input" style="width:130px; height:28px; padding:2px 6px; font-size:11.5px;" value="${state.stockHistoryDateTo}" onchange="state.stockHistoryDatePreset='CUSTOM'; state.stockHistoryDateTo=this.value; render();" />
+                </div>
+              </div>
+
+              ${filteredStockReceipts.length === 0 ? `
+                <div style="padding:22px; text-align:center; color:var(--ttl-muted); font-size:12.5px; border:1px dashed var(--ttl-rule); border-radius:10px;">
+                  ไม่มีใบรับของเข้าสต็อกในช่วงวันที่เลือก
+                  ${state.stockHistoryDatePreset === 'TODAY' && stockInReceipts.length > 0 ? `
+                    <div style="margin-top:8px;">
+                      <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="applyDatePreset('STOCK_HISTORY', 'ALL')">
+                        ดูใบรับของทั้งหมด (${stockInReceipts.length} ใบ)
+                      </button>
+                    </div>
+                  ` : ''}
+                </div>
+              ` : `
+                <div style="display:flex; flex-direction:column; gap:8px; max-height:310px; overflow-y:auto;">
+                  ${filteredStockReceipts.map(r => `
+                    <button
+                      type="button"
+                      class="ttl-acc-card"
+                      style="width:100%; text-align:left; padding:11px 14px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:10px;"
+                      onclick="openStockReceiptDetailModal('${r.id}')"
+                    >
+                      <div>
+                        <div style="font-weight:700; font-size:13.5px; color:var(--ttl-ink);">
+                          📄 ${r.id} ${r.supplier_name ? `• ${r.supplier_name}` : ''}
+                        </div>
+                        <div style="font-size:11.5px; color:var(--ttl-muted); margin-top:2px;">
+                          🕒 ${formatDateTimeThai(r.created_at)}
+                        </div>
+                      </div>
+                      <span class="ttl-tag ttl-tag-grocery" style="flex-shrink:0;">🔍 ดูรายละเอียด / แก้ไข</span>
+                    </button>
+                  `).join('')}
+                </div>
+              `}
             </div>
           </div>
         </div>
       ` : state.inventoryTab === 'recipes' ? `
         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(310px, 1fr)); gap:16px;">
           <div style="padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-paper);">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-              <div class="ttl-k">คลังวัตถุดิบอาหารสดในครัว</div>
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+              <div class="ttl-k">คลังวัตถุดิบอาหารสดในครัว (${filteredIngredients.length}/${ingredients.length})</div>
               <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-dark" onclick="state.editingIngredient=null; state.showNewIngredientModal=true; render();">
                 + เพิ่มวัตถุดิบใหม่
               </button>
+            </div>
+            <!-- ช่องค้นหาวัตถุดิบครัว -->
+            <div style="display:flex; gap:6px; margin-bottom:10px;">
+              <input
+                id="inv-ing-search-input"
+                type="text"
+                class="ttl-input"
+                placeholder="🔍 ค้นหาชื่อวัตถุดิบในครัว..."
+                value="${(state.invIngredientSearch || '').replace(/"/g, '&quot;')}"
+                oninput="state.invIngredientSearch=this.value; render();"
+              />
+              ${state.invIngredientSearch ? `
+                <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.invIngredientSearch=''; render();">ล้าง</button>
+              ` : ''}
             </div>
             <div class="table-scroll-wrap">
               <table class="ttl-table">
@@ -2282,7 +2896,7 @@ function renderInventoryView() {
                   </tr>
                 </thead>
                 <tbody>
-                  ${ingredients.map(ing => {
+                  ${filteredIngredients.map(ing => {
                     const isLow = ing.current_qty <= ing.low_stock_threshold;
                     const safeIngJson = JSON.stringify(ing).replace(/"/g, '&quot;');
                     return `
@@ -2307,8 +2921,22 @@ function renderInventoryView() {
 
           <div style="padding:16px; border-radius:14px; border:1px solid var(--ttl-rule); background:var(--ttl-page); display:flex; flex-direction:column; gap:10px;">
             <div class="ttl-k">ผูกสูตรวัตถุดิบเข้ากับเมนูอาหาร (RECIPE BOM)</div>
+            <!-- ช่องค้นหาเมนูอาหารเพื่อผูกสูตร -->
+            <div style="display:flex; gap:6px;">
+              <input
+                id="inv-bom-search-input"
+                type="text"
+                class="ttl-input"
+                placeholder="🔍 พิมพ์ค้นหาเมนูอาหารที่ต้องการตั้งสูตร..."
+                value="${(state.invBomFoodSearch || '').replace(/"/g, '&quot;')}"
+                oninput="state.invBomFoodSearch=this.value; render();"
+              />
+              ${state.invBomFoodSearch ? `
+                <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.invBomFoodSearch=''; render();">ล้าง</button>
+              ` : ''}
+            </div>
             <select class="ttl-select" style="font-weight:600;" onchange="syncBomEditorWithProduct(this.value); render();">
-              ${foodProducts.map(fp => `
+              ${(filteredBomFoods.length > 0 ? filteredBomFoods : foodProducts).map(fp => `
                 <option value="${fp.id}" ${fp.id === state.selectedBomFoodId ? 'selected' : ''}>
                   ${fp.name} (ขาย ${formatMoney(fp.price)} | ทุนสูตร ${formatMoney(fp.cost)})
                 </option>
@@ -2341,11 +2969,30 @@ function renderInventoryView() {
         </div>
       ` : state.inventoryTab === 'products' ? `
         <div>
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <div class="ttl-k">รายการสินค้าของชำ & เมนูอาหารทั้งหมด (${products.length})</div>
-            <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.editingProduct=null; state.showNewProductModal=true; render();">
-              + เพิ่มสินค้า/เมนูใหม่
-            </button>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+            <div class="ttl-k">รายการสินค้าของชำ & เมนูอาหารทั้งหมด (${filteredAllProducts.length}/${products.length})</div>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <input
+                id="inv-prod-search-input"
+                type="text"
+                class="ttl-input"
+                style="width:250px; height:36px;"
+                placeholder="🔍 ค้นหาชื่อสินค้า / เมนู / บาร์โค้ด..."
+                value="${(state.invProductSearch || '').replace(/"/g, '&quot;')}"
+                oninput="state.invProductSearch=this.value; render();"
+              />
+              ${state.invProductSearch ? `
+                <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.invProductSearch=''; render();">ล้าง</button>
+              ` : ''}
+              <div class="ttl-seg">
+                <button type="button" aria-selected="${state.invProductTypeFilter === 'ALL'}" onclick="state.invProductTypeFilter='ALL'; render();">ทั้งหมด</button>
+                <button type="button" aria-selected="${state.invProductTypeFilter === 'GROCERY'}" onclick="state.invProductTypeFilter='GROCERY'; render();">📦 ของชำ</button>
+                <button type="button" aria-selected="${state.invProductTypeFilter === 'FOOD'}" onclick="state.invProductTypeFilter='FOOD'; render();">🍳 เมนูอาหาร</button>
+              </div>
+              <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.editingProduct=null; state.showNewProductModal=true; render();">
+                + เพิ่มสินค้า/เมนูใหม่
+              </button>
+            </div>
           </div>
           <div class="table-scroll-wrap">
             <table class="ttl-table">
@@ -2361,7 +3008,7 @@ function renderInventoryView() {
                 </tr>
               </thead>
               <tbody>
-                ${products.map(p => {
+                ${filteredAllProducts.map(p => {
                   const safeProdJson = JSON.stringify({
                     id: p.id,
                     name: p.name,
@@ -2412,7 +3059,7 @@ function renderInventoryView() {
             <tbody>
               ${inventoryLogs.map(log => `
                 <tr>
-                  <td style="font-size:11.5px; color:var(--ttl-muted);">${formatTimeAgo(log.created_at)}</td>
+                  <td style="font-size:11.5px; color:var(--ttl-muted);">${formatDateTimeThai(log.created_at)}</td>
                   <td><b>${log.item_name}</b></td>
                   <td style="font-weight:700; color:${log.change_qty > 0 ? 'var(--ttl-good)' : 'var(--ttl-ink)'};">${log.change_qty > 0 ? `+${log.change_qty}` : log.change_qty} ${log.unit}</td>
                   <td><b>${log.balance_after} ${log.unit}</b></td>
@@ -2428,21 +3075,22 @@ function renderInventoryView() {
 }
 
 // ============================================================================
-// VIEW 6: CUSTOMER MEMBERSHIP PAGE (แยกหน้าสมาชิกลูกค้าโดยเฉพาะ)
+// VIEW 6: CUSTOMER MEMBERSHIP PAGE (แยกหน้าสมาชิกลูกค้าโดยเฉพาะ + ปุ่มตั้งค่าระดับสมาชิกและแต้ม)
 // ============================================================================
 function renderCustomersView() {
   const { customers = [] } = state.data;
+  const ls = getLoyaltySettings();
   const q = state.customerSearch.trim().toLowerCase();
   const filteredCustomers = customers.filter(c => !q || c.name.toLowerCase().includes(q) || (c.phone || '').includes(q));
 
   return `
     <div>
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
         <div>
-          <div class="ttl-k">CUSTOMER MEMBERSHIP • ระบบสมาชิกลูกค้า & สะสมแต้ม</div>
+          <div class="ttl-k">CUSTOMER MEMBERSHIP & LOYALTY • ระบบสมาชิกลูกค้า & สะสมแต้มแลกส่วนลด</div>
           <h3 style="margin:2px 0 0; font-size:20px;">👥 รายชื่อสมาชิกลูกค้าประจำ (${customers.length} ท่าน)</h3>
           <p style="margin:2px 0 0; font-size:13px; color:var(--ttl-muted);">
-            จัดการข้อมูลสมาชิกแต่ละคน แก้ไข/ลบข้อมูล ดูแต้มสะสม และกดเลือกสมาชิกเข้าบิลขายได้ทันที (ทุกยอดชำระ ฿25 = 1 แต้ม)
+            จัดการข้อมูลสมาชิก ตั้งค่าระดับสมาชิก การคำนวณแต้มจากยอดซื้อ และการใช้แต้มแลกส่วนลดท้ายบิล
           </p>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -2450,7 +3098,7 @@ function renderCustomersView() {
             id="customer-page-search-input"
             type="text"
             class="ttl-input"
-            style="width:240px; height:36px;"
+            style="width:230px; height:36px;"
             placeholder="🔍 พิมพ์ค้นหาชื่อ หรือ เบอร์โทร..."
             value="${state.customerSearch.replace(/"/g, '&quot;')}"
             oninput="state.customerSearch=this.value; render();"
@@ -2458,9 +3106,28 @@ function renderCustomersView() {
           ${state.customerSearch ? `
             <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.customerSearch=''; render();">ล้าง</button>
           ` : ''}
+          <button type="button" class="ttl-btn ttl-btn-gold" onclick="openLoyaltySettingsModal()">
+            ⚙️ ตั้งค่าระดับสมาชิก & แต้ม
+          </button>
           <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.editingCustomer=null; state.showNewCustomerModal=true; render();">
             + สมัครสมาชิกลูกค้าใหม่
           </button>
+        </div>
+      </div>
+
+      <!-- แถบสรุปกติกาแต้มสะสมและระดับสมาชิกปัจจุบัน -->
+      <div style="padding:12px 16px; border-radius:12px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; font-size:12.5px;">
+          <span>🎯 <b>การได้แต้ม:</b> ซื้อครบทุก <b>฿${ls.spend_per_point}</b> = ได้ <b>${ls.points_earned} แต้ม</b></span>
+          <span>•</span>
+          <span>🎁 <b>แลกส่วนลดท้ายบิล:</b> ใช้ทุก <b>${ls.redeem_points_unit} แต้ม</b> = ลด <b>฿${ls.redeem_discount_baht}</b> (ขั้นต่ำ ${ls.min_redeem_points || 0} แต้ม)</span>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          ${(ls.tiers || []).map(t => `
+            <span class="ttl-tag ttl-tag-food" style="font-size:11.5px;">
+              ⭐ ${t.name} (สะสม ≥ ฿${Number(t.min_spent || 0).toLocaleString()} • แต้ม ×${t.points_multiplier || 1}${t.discount_pct ? ` • ลด ${t.discount_pct}%` : ''})
+            </span>
+          `).join('')}
         </div>
       </div>
 
@@ -2472,16 +3139,18 @@ function renderCustomersView() {
         <div class="tables-grid" style="margin-top:8px;">
           ${filteredCustomers.map(c => {
             const safeCusJson = JSON.stringify(c).replace(/"/g, '&quot;');
+            const redeemableBaht = getPointsDiscountBaht(c.points || 0);
             return `
               <div class="table-card" style="gap:8px;">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                   <div>
-                    <span class="ttl-tag ttl-tag-food">⭐ ${c.tier || 'สมาชิก'}</span>
+                    <span class="ttl-tag ttl-tag-food">⭐ ${c.tier || 'สมาชิกใหม่'}</span>
                     <div style="font-size:17px; font-weight:700; margin-top:4px;">${c.name}</div>
                     <div style="font-size:12.5px; color:var(--ttl-muted);">📞 ${c.phone || 'ไม่ระบุเบอร์โทร'}</div>
                   </div>
                   <div style="text-align:right;">
                     <div style="font-size:20px; font-weight:700; color:var(--ttl-gold);">${c.points || 0} แต้ม</div>
+                    <div style="font-size:11px; color:var(--ttl-good);">แลกส่วนลดได้สูงสุด ${formatMoney(redeemableBaht)}</div>
                     <div style="font-size:11px; color:var(--ttl-muted);">ยอดซื้อสะสม ${formatMoney(c.total_spent || 0)}</div>
                   </div>
                 </div>
@@ -2855,22 +3524,161 @@ function renderModals() {
     `;
   }
 
-  // 2. Checkout Modal
+  // 2. Checkout Modal (พร้อมแสดงรายการสินค้าและเมนูเพื่อรีเช็คความถูกต้อง + ใช้แต้มสมาชิกแลกส่วนลดท้ายบิล)
   if (state.checkoutModalOrder) {
     const co = state.checkoutModalOrder;
-    const discount = Math.max(0, Number(state.checkoutDiscount) || 0);
-    const netTotal = Math.max(0, co.subtotal - discount);
+    const ls = getLoyaltySettings();
+    const cusObj = getCheckoutCustomerObj();
+    const allCustomers = state.data.customers || [];
+    const activeItems = (co.items || []).filter(i => !i.item_status || i.item_status === 'ACTIVE');
+
+    const manualDiscount = Math.max(0, Number(state.checkoutDiscount) || 0);
+    const redeemPts = Math.max(0, Number(state.checkoutRedeemPoints) || 0);
+    const pointsDiscount = getPointsDiscountBaht(redeemPts);
+    const totalDiscount = manualDiscount + pointsDiscount;
+    const netTotal = Math.max(0, co.subtotal - totalDiscount);
     const cashRec = Number(state.checkoutCashReceived) || 0;
     const change = Math.max(0, cashRec - netTotal);
 
+    // คำนวณแต้มที่จะได้รับจากยอดสุทธิของบิลนี้
+    const spendUnit = Math.max(1, Number(ls.spend_per_point) || 25);
+    const ptsPerUnit = Math.max(0, Number(ls.points_earned) || 1);
+    const cusTierObj = cusObj ? (ls.tiers || []).find(t => t.name === cusObj.tier) : null;
+    const tierMult = cusTierObj ? (Number(cusTierObj.points_multiplier) || 1) : 1;
+    const earnedPointsPreview = cusObj ? Math.floor((netTotal / spendUnit) * ptsPerUnit * tierMult) : 0;
+
+    // คำนวณจำนวนแต้มสูงสุดที่ใช้แลกได้ในบิลนี้
+    const redeemUnit = Math.max(1, Number(ls.redeem_points_unit) || 10);
+    const redeemBahtPerUnit = Math.max(0, Number(ls.redeem_discount_baht) || 10);
+    const maxUnitsByPoints = cusObj ? Math.floor((Number(cusObj.points) || 0) / redeemUnit) : 0;
+    const maxUnitsBySubtotal = redeemBahtPerUnit > 0 ? Math.floor(Math.max(0, co.subtotal - manualDiscount) / redeemBahtPerUnit) : 0;
+    const maxRedeemPointsPossible = Math.max(0, Math.min(maxUnitsByPoints, maxUnitsBySubtotal) * redeemUnit);
+
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.checkoutModalOrder=null; render();}">
-        <div class="ttl-modal">
-          <div class="ttl-k">TREASURY CHECKOUT • รับชำระเงิน</div>
-          <h3 style="margin:4px 0 12px; font-size:20px;">${co.label}</h3>
+        <div class="ttl-modal" style="max-width:560px; max-height:92vh; overflow-y:auto;">
+          <div class="ttl-k">TREASURY CHECKOUT • รีเช็ครายการ & รับชำระเงิน</div>
+          <h3 style="margin:4px 0 10px; font-size:20px;">${co.label}</h3>
+
+          <!-- กล่องแสดงรายการสินค้าและเมนูในบิลเพื่อรีเช็คความถูกต้องก่อนชำระเงิน -->
+          <div style="padding:12px 14px; border-radius:12px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-size:12.5px; font-weight:700; color:var(--ttl-ink);">
+                📋 รีเช็ครายการสินค้าและเมนูในบิล (${activeItems.length} รายการ)
+              </span>
+              <span style="font-size:12px; color:var(--ttl-muted);">ยอดรวมก่อนลด: <b>${formatMoney(co.subtotal)}</b></span>
+            </div>
+            ${activeItems.length === 0 ? `
+              <div style="font-size:12px; color:var(--ttl-muted); padding:8px 0;">ไม่มีรายการสินค้าในบิล</div>
+            ` : `
+              <div style="display:flex; flex-direction:column; gap:6px; max-height:175px; overflow-y:auto; padding-right:4px;">
+                ${activeItems.map((it, idx) => {
+                  const itemName = it.product_name || it.name || 'สินค้า';
+                  const qty = Number(it.quantity) || 1;
+                  const uPrice = Number(it.unit_price) || 0;
+                  const mods = Array.isArray(it.modifiers) && it.modifiers.length > 0 ? ` (${it.modifiers.join(', ')})` : '';
+                  return `
+                    <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:5px 8px; border-radius:8px; background:var(--ttl-paper); border:1px solid var(--ttl-rule);">
+                      <div>
+                        <span style="font-weight:600;">${idx + 1}. ${it.item_type === 'FOOD' ? '🍳' : '📦'} ${itemName}${mods}</span>
+                        <span style="color:var(--ttl-muted); font-size:12px; margin-left:6px;">${formatMoney(uPrice)} × ${qty}</span>
+                      </div>
+                      <b style="font-variant-numeric:tabular-nums;">${formatMoney(uPrice * qty)}</b>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            `}
+          </div>
+
+          <!-- กล่องสมาชิกลูกค้า & การใช้แต้มสะสมแลกส่วนลดท้ายบิล -->
+          <div style="padding:12px 14px; border-radius:12px; background:color-mix(in srgb, var(--ttl-gold) 8%, var(--ttl-page)); border:1px solid color-mix(in srgb, var(--ttl-gold) 35%, var(--ttl-rule)); margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+              <label style="font-size:12.5px; font-weight:700;">👤 สมาชิกลูกค้า & สะสม/ใช้แต้มลดท้ายบิล</label>
+              <select
+                class="ttl-select"
+                style="width:auto; min-width:210px; height:32px; font-size:12.5px;"
+                onchange="
+                  const cid = this.value || null;
+                  const cfound = (state.data.customers || []).find(x => x.id === cid);
+                  state.checkoutModalOrder.customer_id = cid;
+                  state.checkoutModalOrder.customer_name = cfound ? cfound.name : '';
+                  if (state.checkoutModalOrder.mode === 'CURRENT_CART') state.selectedCustomerId = cid;
+                  state.checkoutRedeemPoints = 0;
+                  state.checkoutCashReceived = String(Math.max(0, ${co.subtotal} - (Number(state.checkoutDiscount)||0)));
+                  render();
+                "
+              >
+                <option value="">-- ไม่ระบุสมาชิก (ลูกค้าทั่วไป) --</option>
+                ${allCustomers.map(c => `
+                  <option value="${c.id}" ${cusObj && cusObj.id === c.id ? 'selected' : ''}>
+                    ${c.name} (${c.points || 0} แต้ม • ⭐ ${c.tier || 'สมาชิกใหม่'})
+                  </option>
+                `).join('')}
+              </select>
+            </div>
+
+            ${cusObj ? `
+              <div style="display:flex; flex-direction:column; gap:8px; padding-top:6px; border-top:1px dashed var(--ttl-rule);">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; font-size:12.5px;">
+                  <span>
+                    ⭐ ระดับ: <b>${cusObj.tier || 'สมาชิกใหม่'}</b> • แต้มคงเหลือ: <b style="color:var(--ttl-gold); font-size:14px;">${cusObj.points || 0} แต้ม</b>
+                  </span>
+                  <span style="color:var(--ttl-good); font-weight:600;">
+                    + บิลนี้จะได้เพิ่ม ${earnedPointsPreview} แต้ม
+                  </span>
+                </div>
+
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                  <div style="font-size:12px; color:var(--ttl-muted);">
+                    🎁 ใช้แต้มแลกส่วนลด (ทุก ${ls.redeem_points_unit} แต้ม = ลด ฿${ls.redeem_discount_baht}):
+                  </div>
+                  <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                    <button
+                      type="button"
+                      class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+                      style="height:28px; padding:0 8px; font-size:11.5px;"
+                      onclick="setCheckoutRedeemPoints(0)"
+                    >
+                      ไม่ใช้แต้ม
+                    </button>
+                    <div class="qty-stepper">
+                      <button type="button" onclick="setCheckoutRedeemPoints(${Math.max(0, redeemPts - redeemUnit)})">−${redeemUnit}</button>
+                      <span style="min-width:68px; text-align:center;">ใช้ ${redeemPts} แต้ม</span>
+                      <button type="button" onclick="setCheckoutRedeemPoints(${Math.min(maxRedeemPointsPossible, redeemPts + redeemUnit)})">+${redeemUnit}</button>
+                    </div>
+                    <button
+                      type="button"
+                      class="ttl-btn ttl-btn-sm ttl-btn-gold"
+                      style="height:28px; padding:0 8px; font-size:11.5px;"
+                      onclick="setCheckoutRedeemPoints(${maxRedeemPointsPossible})"
+                    >
+                      ใช้แต้มสูงสุด (${maxRedeemPointsPossible} แต้ม = -฿${getPointsDiscountBaht(maxRedeemPointsPossible)})
+                    </button>
+                  </div>
+                </div>
+                ${pointsDiscount > 0 ? `
+                  <div style="font-size:12.5px; font-weight:700; color:var(--ttl-good); text-align:right;">
+                    ✓ ลดจากแต้มสะสม -${formatMoney(pointsDiscount)} (ใช้ ${redeemPts} แต้ม • เหลือ ${(cusObj.points || 0) - redeemPts + earnedPointsPreview} แต้มหลังชำระ)
+                  </div>
+                ` : ''}
+              </div>
+            ` : `
+              <div style="font-size:12px; color:var(--ttl-muted);">
+                💡 เลือกสมาชิกลูกค้าด้านบนเพื่อสะสมแต้มจากยอดซื้อ หรือใช้แต้มแลกส่วนลดท้ายบิล
+              </div>
+            `}
+          </div>
 
           <div style="padding:14px 16px; border-radius:12px; background:var(--ttl-deep); color:var(--ttl-deep-ink); display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
-            <span>ยอดสุทธิที่ต้องชำระ</span>
+            <div>
+              <div>ยอดสุทธิที่ต้องชำระ</div>
+              ${totalDiscount > 0 ? `
+                <div style="font-size:11.5px; color:var(--ttl-deep-muted);">
+                  ก่อนลด ${formatMoney(co.subtotal)} • ส่วนลดรวม -${formatMoney(totalDiscount)} ${pointsDiscount > 0 ? `(แต้ม -฿${pointsDiscount})` : ''}
+                </div>
+              ` : ''}
+            </div>
             <span style="font-size:26px; font-weight:700; color:var(--ttl-gold); font-variant-numeric:tabular-nums;">${formatMoney(netTotal)}</span>
           </div>
 
@@ -2883,8 +3691,20 @@ function renderModals() {
               </div>
             </div>
             <div>
-              <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ส่วนลดท้ายบิล (บาท)</label>
-              <input id="checkout-discount-input" type="number" min="0" class="ttl-input" value="${state.checkoutDiscount}" oninput="state.checkoutDiscount=this.value; render();" />
+              <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">ส่วนลดท้ายบิลเพิ่มเติม (บาท)</label>
+              <input
+                id="checkout-discount-input"
+                type="number"
+                min="0"
+                class="ttl-input"
+                value="${state.checkoutDiscount}"
+                oninput="
+                  state.checkoutDiscount=this.value;
+                  const nextNet = Math.max(0, ${co.subtotal} - (Number(this.value)||0) - ${pointsDiscount});
+                  state.checkoutCashReceived = String(nextNet);
+                  render();
+                "
+              />
             </div>
           </div>
 
@@ -2976,6 +3796,13 @@ function renderModals() {
   // 4. Customer Member Modal (เพิ่ม / แก้ไขสมาชิกลูกค้า)
   if (state.showNewCustomerModal) {
     const ec = state.editingCustomer;
+    const ls = getLoyaltySettings();
+    const tierOptions = (ls.tiers && ls.tiers.length > 0)
+      ? ls.tiers.map(t => t.name)
+      : ['สมาชิกใหม่', 'ขาประจำ', 'VIP'];
+    if (ec && ec.tier && !tierOptions.includes(ec.tier)) {
+      tierOptions.push(ec.tier);
+    }
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showNewCustomerModal=false; state.editingCustomer=null; render();}">
         <form class="ttl-modal" onsubmit="
@@ -3012,9 +3839,7 @@ function renderModals() {
               <div>
                 <label style="font-size:12px; font-weight:600;">ระดับสมาชิก</label>
                 <select name="ctier" class="ttl-select">
-                  <option value="สมาชิกใหม่" ${ec?.tier === 'สมาชิกใหม่' ? 'selected' : ''}>สมาชิกใหม่</option>
-                  <option value="ขาประจำ" ${ec?.tier === 'ขาประจำ' ? 'selected' : ''}>ขาประจำ</option>
-                  <option value="VIP" ${ec?.tier === 'VIP' ? 'selected' : ''}>VIP</option>
+                  ${tierOptions.map(tName => `<option value="${tName}" ${ec?.tier === tName ? 'selected' : ''}>${tName}</option>`).join('')}
                 </select>
               </div>
             </div>
@@ -3499,6 +4324,351 @@ function renderModals() {
             <button type="button" class="ttl-btn ttl-btn-ghost" onclick="state.splitModalOrder=null; render();">ยกเลิก</button>
             <button type="button" class="ttl-btn ttl-btn-gold" onclick="submitSplitBill(false)">✂️ แยกเป็นบิลพักไว้ก่อน</button>
             <button type="button" class="ttl-btn ttl-btn-dark" onclick="submitSplitBill(true)">💰 แยกบิลและรับชำระเงินทันที</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // 12. Loyalty Settings Modal (ตั้งค่าระดับสมาชิก + คำนวณแต้มจากยอดซื้อ + ใช้แต้มเป็นส่วนลดท้ายบิล)
+  if (state.showLoyaltySettingsModal && state.loyaltyDraft) {
+    const ld = state.loyaltyDraft;
+    const tiers = ld.tiers || [];
+    html += `
+      <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showLoyaltySettingsModal=false; render();}">
+        <div class="ttl-modal" style="max-width:620px; max-height:92vh; overflow-y:auto;">
+          <div class="ttl-k">LOYALTY & TIER CONFIGURATION • ตั้งค่าระดับสมาชิกและระบบแต้ม</div>
+          <h3 style="margin:4px 0 12px;">⚙️ ตั้งค่าระดับสมาชิก การคำนวณแต้ม & ส่วนลดจากแต้ม</h3>
+
+          <div style="padding:14px; border-radius:12px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:14px; display:flex; flex-direction:column; gap:12px;">
+            <div style="font-weight:700; font-size:13.5px; color:var(--ttl-ink);">🎯 1. กติกาการคำนวณแต้มจากยอดซื้อ (Earn Points)</div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+              <div>
+                <label style="font-size:12px; font-weight:600;">ยอดซื้อครบทุกๆ (บาท)</label>
+                <input
+                  id="loyalty-spend-per-point"
+                  type="number"
+                  min="1"
+                  class="ttl-input"
+                  value="${ld.spend_per_point}"
+                  oninput="state.loyaltyDraft.spend_per_point = Math.max(1, Number(this.value)||1);"
+                />
+              </div>
+              <div>
+                <label style="font-size:12px; font-weight:600;">จะได้รับแต้มสะสม (แต้ม)</label>
+                <input
+                  id="loyalty-points-earned"
+                  type="number"
+                  min="0"
+                  class="ttl-input"
+                  value="${ld.points_earned}"
+                  oninput="state.loyaltyDraft.points_earned = Math.max(0, Number(this.value)||0);"
+                />
+              </div>
+            </div>
+
+            <div style="font-weight:700; font-size:13.5px; color:var(--ttl-ink); padding-top:8px; border-top:1px dashed var(--ttl-rule);">
+              🎁 2. กติกาการใช้แต้มแลกส่วนลดท้ายบิล (Redeem Points for Discount)
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px;">
+              <div>
+                <label style="font-size:12px; font-weight:600;">ใช้แต้มทุกๆ (แต้ม)</label>
+                <input
+                  id="loyalty-redeem-unit"
+                  type="number"
+                  min="1"
+                  class="ttl-input"
+                  value="${ld.redeem_points_unit}"
+                  oninput="state.loyaltyDraft.redeem_points_unit = Math.max(1, Number(this.value)||1);"
+                />
+              </div>
+              <div>
+                <label style="font-size:12px; font-weight:600;">แลกส่วนลดได้ (บาท)</label>
+                <input
+                  id="loyalty-redeem-baht"
+                  type="number"
+                  min="0"
+                  class="ttl-input"
+                  value="${ld.redeem_discount_baht}"
+                  oninput="state.loyaltyDraft.redeem_discount_baht = Math.max(0, Number(this.value)||0);"
+                />
+              </div>
+              <div>
+                <label style="font-size:12px; font-weight:600;">แต้มขั้นต่ำที่ใช้แลกได้</label>
+                <input
+                  id="loyalty-min-redeem"
+                  type="number"
+                  min="0"
+                  class="ttl-input"
+                  value="${ld.min_redeem_points || 0}"
+                  oninput="state.loyaltyDraft.min_redeem_points = Math.max(0, Number(this.value)||0);"
+                />
+              </div>
+            </div>
+
+            <label style="display:flex; align-items:center; gap:8px; font-size:12.5px; cursor:pointer; padding-top:4px;">
+              <input
+                type="checkbox"
+                ${ld.auto_upgrade_tier !== false ? 'checked' : ''}
+                onchange="state.loyaltyDraft.auto_upgrade_tier = this.checked;"
+              />
+              อัปเกรดระดับสมาชิกให้อัตโนมัติเมื่อยอดซื้อสะสมถึงเกณฑ์ของระดับนั้นๆ
+            </label>
+          </div>
+
+          <div style="padding:14px; border-radius:12px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <div style="font-weight:700; font-size:13.5px; color:var(--ttl-ink);">⭐ 3. ตั้งค่าระดับสมาชิก (Membership Tiers)</div>
+              <button
+                type="button"
+                class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+                onclick="state.loyaltyDraft.tiers.push({ name: 'ระดับใหม่', min_spent: 10000, points_multiplier: 2, discount_pct: 0 }); render();"
+              >
+                + เพิ่มระดับสมาชิก
+              </button>
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:8px;">
+              ${tiers.map((t, idx) => `
+                <div style="display:grid; grid-template-columns:1.3fr 1fr 0.9fr 0.9fr auto; gap:8px; align-items:end; padding:10px; border-radius:10px; background:var(--ttl-paper); border:1px solid var(--ttl-rule);">
+                  <div>
+                    <label style="font-size:11px; color:var(--ttl-muted); display:block;">ชื่อระดับสมาชิก</label>
+                    <input
+                      id="tier-name-${idx}"
+                      type="text"
+                      class="ttl-input"
+                      style="height:32px; font-size:12.5px; font-weight:700;"
+                      value="${(t.name || '').replace(/"/g, '&quot;')}"
+                      oninput="state.loyaltyDraft.tiers[${idx}].name = this.value;"
+                    />
+                  </div>
+                  <div>
+                    <label style="font-size:11px; color:var(--ttl-muted); display:block;">ยอดสะสมขั้นต่ำ (฿)</label>
+                    <input
+                      id="tier-min-spent-${idx}"
+                      type="number"
+                      min="0"
+                      class="ttl-input"
+                      style="height:32px; font-size:12.5px;"
+                      value="${t.min_spent || 0}"
+                      oninput="state.loyaltyDraft.tiers[${idx}].min_spent = Math.max(0, Number(this.value)||0);"
+                    />
+                  </div>
+                  <div>
+                    <label style="font-size:11px; color:var(--ttl-muted); display:block;">ตัวคูณแต้ม (×)</label>
+                    <input
+                      id="tier-mult-${idx}"
+                      type="number"
+                      step="0.1"
+                      min="0.1"
+                      class="ttl-input"
+                      style="height:32px; font-size:12.5px;"
+                      value="${t.points_multiplier || 1}"
+                      oninput="state.loyaltyDraft.tiers[${idx}].points_multiplier = Math.max(0.1, Number(this.value)||1);"
+                    />
+                  </div>
+                  <div>
+                    <label style="font-size:11px; color:var(--ttl-muted); display:block;">ส่วนลดระดับ (%)</label>
+                    <input
+                      id="tier-disc-${idx}"
+                      type="number"
+                      step="any"
+                      min="0"
+                      max="100"
+                      class="ttl-input"
+                      style="height:32px; font-size:12.5px;"
+                      value="${t.discount_pct || 0}"
+                      oninput="state.loyaltyDraft.tiers[${idx}].discount_pct = Math.max(0, Number(this.value)||0);"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
+                    style="height:32px; padding:0 8px;"
+                    onclick="if(state.loyaltyDraft.tiers.length > 1){ state.loyaltyDraft.tiers.splice(${idx}, 1); render(); }"
+                  >
+                    🗑️
+                  </button>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button type="button" class="ttl-btn ttl-btn-ghost" onclick="state.showLoyaltySettingsModal=false; render();">ยกเลิก</button>
+            <button type="button" class="ttl-btn ttl-btn-dark" onclick="saveLoyaltySettingsForm()">
+              💾 บันทึกการตั้งค่าระดับสมาชิกและแต้ม
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // 13. Stock-In Receipt Detail Popup Modal (ป๊อปอัพรายละเอียดใบรับของเข้าสต็อก + ปุ่มแก้ไข / ลบ)
+  if (state.viewingStockReceipt) {
+    const r = state.viewingStockReceipt;
+    html += `
+      <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.viewingStockReceipt=null; render();}">
+        <div class="ttl-modal" style="max-width:520px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; border-bottom:1px dashed var(--ttl-rule); padding-bottom:12px; margin-bottom:12px;">
+            <div>
+              <div class="ttl-k">STOCK-IN RECEIPT DETAIL • รายละเอียดใบรับของเข้าสต็อก</div>
+              <h3 style="margin:4px 0 2px; font-size:20px;">📄 ${r.id}</h3>
+              <div style="font-size:12.5px; color:var(--ttl-muted);">
+                🏪 ร้านค้าส่ง/แหล่งซื้อ: <b>${r.supplier_name || 'ไม่ระบุ'}</b>
+              </div>
+              <div style="font-size:12px; color:var(--ttl-muted); margin-top:2px;">
+                🕒 วันเวลาที่บันทึก: <b>${formatDateTimeThai(r.created_at)}</b>
+              </div>
+              ${r.note ? `<div style="font-size:12px; color:var(--ttl-ink); margin-top:4px;">📝 หมายเหตุ: ${r.note}</div>` : ''}
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:11px; color:var(--ttl-muted);">ต้นทุนรวมในใบรับของ</div>
+              <div style="font-size:22px; font-weight:700; color:var(--ttl-gold);">${formatMoney(r.total_cost)}</div>
+            </div>
+          </div>
+
+          <div style="font-size:12.5px; font-weight:700; margin-bottom:8px;">
+            📦 รายการสินค้า/วัตถุดิบในใบรับของ (${(r.items || []).length} รายการ):
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:8px; max-height:260px; overflow-y:auto; margin-bottom:14px;">
+            ${(r.items || []).map((line, idx) => `
+              <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <div>
+                  <div style="font-weight:700; font-size:13.5px;">
+                    ${idx + 1}. ${line.target_type === 'GROCERY' ? '📦' : '🥩'} ${line.item_name}
+                  </div>
+                  <div style="font-size:12px; color:var(--ttl-muted); margin-top:2px;">
+                    จำนวนซื้อเข้า: <b>${line.input_qty} ${line.input_unit}</b>
+                    • สต็อก: เดิม ${line.qty_before} <b style="color:var(--ttl-good);">+${line.qty_added}</b> ➔ <b>${line.qty_after}</b>
+                  </div>
+                </div>
+                <div style="font-weight:700; color:var(--ttl-gold); font-size:14px;">
+                  ${formatMoney(line.line_cost)}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding-top:10px; border-top:1px solid var(--ttl-rule);">
+            <div style="display:flex; gap:8px;">
+              <button
+                type="button"
+                class="ttl-btn ttl-btn-sm ttl-btn-gold"
+                onclick="startEditStockReceipt('${r.id}')"
+              >
+                ✏️ แก้ไขใบรับของ
+              </button>
+              <button
+                type="button"
+                class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
+                onclick="deleteStockReceiptById('${r.id}')"
+              >
+                🗑️ ลบใบรับของ
+              </button>
+            </div>
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-dark" onclick="state.viewingStockReceipt=null; render();">
+              ปิดหน้าต่าง
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // 14. Edit Stock-In Receipt Modal (แก้ไขใบรับของเข้าสต็อก + ปรับสต็อกตามส่วนต่างอัตโนมัติ)
+  if (state.editingStockReceipt) {
+    const er = state.editingStockReceipt;
+    const editTotalCost = (er.items || []).reduce((s, it) => s + (Number(it.line_cost) || 0), 0);
+    html += `
+      <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.editingStockReceipt=null; render();}">
+        <div class="ttl-modal" style="max-width:560px; max-height:92vh; overflow-y:auto;">
+          <div class="ttl-k">EDIT STOCK-IN RECEIPT • แก้ไขใบรับของเข้าสต็อก</div>
+          <h3 style="margin:4px 0 8px;">✏️ แก้ไขใบรับของ ${er.id}</h3>
+          <p style="margin:0 0 12px; font-size:12px; color:var(--ttl-muted);">
+            เมื่อแก้ไขจำนวนรับเข้า ระบบจะคำนวณปรับเพิ่ม/ลดสต็อกคงเหลือตามส่วนต่างให้อัตโนมัติ
+          </p>
+
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
+            <div>
+              <label style="font-size:12px; font-weight:600;">ร้านค้าส่ง / แหล่งซื้อ</label>
+              <input
+                id="edit-rcp-supplier"
+                type="text"
+                class="ttl-input"
+                value="${(er.supplier_name || '').replace(/"/g, '&quot;')}"
+                oninput="state.editingStockReceipt.supplier_name = this.value;"
+              />
+            </div>
+            <div>
+              <label style="font-size:12px; font-weight:600;">หมายเหตุ</label>
+              <input
+                id="edit-rcp-note"
+                type="text"
+                class="ttl-input"
+                value="${(er.note || '').replace(/"/g, '&quot;')}"
+                oninput="state.editingStockReceipt.note = this.value;"
+              />
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:8px; max-height:260px; overflow-y:auto; margin-bottom:12px;">
+            ${(er.items || []).map((line, idx) => `
+              <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); display:grid; grid-template-columns:1.4fr 1fr 1fr auto; gap:8px; align-items:end;">
+                <div>
+                  <div style="font-weight:700; font-size:13px;">${line.item_name}</div>
+                  <div style="font-size:11px; color:var(--ttl-muted);">หน่วย: ${line.input_unit} (แปลง ×${line.conversion_rate || 1})</div>
+                </div>
+                <div>
+                  <label style="font-size:11px; color:var(--ttl-muted); display:block;">จำนวน (${line.input_unit})</label>
+                  <input
+                    id="edit-rcp-qty-${idx}"
+                    type="number"
+                    step="any"
+                    min="0"
+                    class="ttl-input"
+                    style="height:32px; font-size:13px; font-weight:700;"
+                    value="${line.input_qty}"
+                    oninput="state.editingStockReceipt.items[${idx}].input_qty = Math.max(0, Number(this.value)||0); render();"
+                  />
+                </div>
+                <div>
+                  <label style="font-size:11px; color:var(--ttl-muted); display:block;">ทุนรวม (บาท)</label>
+                  <input
+                    id="edit-rcp-cost-${idx}"
+                    type="number"
+                    step="any"
+                    min="0"
+                    class="ttl-input"
+                    style="height:32px; font-size:13px;"
+                    value="${line.line_cost}"
+                    oninput="state.editingStockReceipt.items[${idx}].line_cost = Math.max(0, Number(this.value)||0); render();"
+                  />
+                </div>
+                <button
+                  type="button"
+                  class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
+                  style="height:32px; padding:0 8px;"
+                  onclick="if(state.editingStockReceipt.items.length > 1){ state.editingStockReceipt.items.splice(${idx}, 1); render(); }"
+                >
+                  🗑️
+                </button>
+              </div>
+            `).join('')}
+          </div>
+
+          <div style="padding:10px 14px; border-radius:10px; background:var(--ttl-deep); color:#fff; display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+            <span>ยอดทุนรวมใหม่ของใบรับของ</span>
+            <b style="font-size:18px; color:var(--ttl-gold);">${formatMoney(editTotalCost)}</b>
+          </div>
+
+          <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button type="button" class="ttl-btn ttl-btn-ghost" onclick="state.editingStockReceipt=null; render();">ยกเลิก</button>
+            <button type="button" class="ttl-btn ttl-btn-dark" onclick="saveEditedStockReceipt()">
+              💾 บันทึกการแก้ไขใบรับของ
+            </button>
           </div>
         </div>
       </div>

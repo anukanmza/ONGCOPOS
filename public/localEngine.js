@@ -318,6 +318,21 @@ function buildLocalBootstrap() {
     };
   });
 
+  const defaultLoyaltySettings = {
+    spend_per_point: 25,
+    points_earned: 1,
+    redeem_points_unit: 10,
+    redeem_discount_baht: 10,
+    min_redeem_points: 10,
+    auto_upgrade_tier: true,
+    tiers: [
+      { name: 'สมาชิกใหม่', min_spent: 0, points_multiplier: 1, discount_pct: 0 },
+      { name: 'ขาประจำ', min_spent: 1000, points_multiplier: 1.2, discount_pct: 0 },
+      { name: 'VIP', min_spent: 5000, points_multiplier: 1.5, discount_pct: 5 }
+    ]
+  };
+  const loyaltySettings = { ...defaultLoyaltySettings, ...(db.loyaltySettings || {}) };
+
   return {
     categories: db.categories,
     products,
@@ -325,7 +340,8 @@ function buildLocalBootstrap() {
     ingredients: db.ingredients,
     recipeItems: enrichedRecipes,
     tables,
-    customers: db.customers || [],
+    customers: (db.customers || []).filter(c => c.id !== 'SYS-LOYALTY-CONFIG'),
+    loyaltySettings,
     allBills,
     kitchenQueue,
     stockInReceipts: db.stockInReceipts,
@@ -855,11 +871,13 @@ window.LocalPosEngine = {
   checkoutOrder(body) {
     const db = loadLocalDb();
     const now = new Date().toISOString();
-    const { order_id, table_id, payment_method = 'CASH', discount = 0, cash_received = 0 } = body;
+    const { order_id, table_id, payment_method = 'CASH', discount = 0, cash_received = 0, customer_id, customer_name, redeem_points = 0 } = body;
     const ord = db.orders.find(o => o.id === order_id || (table_id && o.table_id === table_id && o.status === 'OPEN'));
     let change = 0;
     if (ord) {
       ord.discount = Number(discount) || 0;
+      if (customer_id !== undefined) ord.customer_id = customer_id;
+      if (customer_name !== undefined) ord.customer_name = customer_name;
       recalcLocalOrder(db, ord.id);
       const rec = Number(cash_received) >= ord.total_amount ? Number(cash_received) : ord.total_amount;
       change = Math.round(Math.max(0, rec - ord.total_amount) * 100) / 100;
@@ -878,7 +896,10 @@ window.LocalPosEngine = {
       if (ord.customer_id && Array.isArray(db.customers)) {
         const cus = db.customers.find(c => c.id === ord.customer_id);
         if (cus) {
-          cus.points = (cus.points || 0) + Math.floor((ord.total_amount || 0) / 25);
+          const cfg = db.loyaltySettings || { spend_per_point: 25, points_earned: 1 };
+          const usedPts = Math.min(cus.points || 0, Math.max(0, Math.floor(Number(redeem_points) || 0)));
+          const earned = Math.floor(((ord.total_amount || 0) / (cfg.spend_per_point || 25)) * (cfg.points_earned || 1));
+          cus.points = Math.max(0, (cus.points || 0) - usedPts + earned);
           cus.total_spent = Math.round(((cus.total_spent || 0) + (ord.total_amount || 0)) * 100) / 100;
           cus.visit_count = (cus.visit_count || 0) + 1;
         }
@@ -929,6 +950,13 @@ window.LocalPosEngine = {
     }
     saveLocalDb(db);
     return { success: true, cusId, data: buildLocalBootstrap() };
+  },
+
+  saveLoyaltySettings(body) {
+    const db = loadLocalDb();
+    db.loyaltySettings = { ...(db.loyaltySettings || {}), ...body };
+    saveLocalDb(db);
+    return { success: true, loyaltySettings: db.loyaltySettings, data: buildLocalBootstrap() };
   },
 
   updateKds(body) {
@@ -984,6 +1012,75 @@ window.LocalPosEngine = {
     }
     saveLocalDb(db);
     return { success: true, receiptId, data: buildLocalBootstrap() };
+  },
+
+  updateStockInReceipt(body) {
+    const db = loadLocalDb();
+    const { receipt_id, supplier_name = 'ร้านค้าส่ง', note = '', items = [] } = body;
+    const rec = (db.stockInReceipts || []).find(r => r.id === receipt_id);
+    if (!rec) return { error: 'ไม่พบใบรับของ' };
+    for (const oldIt of rec.items || []) {
+      if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
+        const prod = db.products.find(p => p.id === oldIt.product_id);
+        if (prod) prod.stock_qty = Math.max(0, Math.round((prod.stock_qty - (oldIt.qty_added || 0)) * 100) / 100);
+      } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
+        const ing = db.ingredients.find(i => i.id === oldIt.ingredient_id);
+        if (ing) ing.current_qty = Math.max(0, Math.round((ing.current_qty - (oldIt.qty_added || 0)) * 100) / 100);
+      }
+    }
+    let totalCost = 0;
+    const newLines = [];
+    for (const line of items) {
+      const inputQty = Math.max(0, Number(line.input_qty) || 0);
+      if (inputQty <= 0) continue;
+      const conv = Math.max(1, Number(line.conversion_rate) || 1);
+      const lineCost = Math.max(0, Number(line.total_line_cost) || 0);
+      totalCost += lineCost;
+      if (line.item_target_type === 'GROCERY' && line.product_id) {
+        const prod = db.products.find(p => p.id === line.product_id);
+        if (!prod) continue;
+        const before = prod.stock_qty;
+        const added = Math.round(inputQty * conv * 100) / 100;
+        const after = Math.round((before + added) * 100) / 100;
+        prod.stock_qty = after;
+        newLines.push({ ...line, input_qty: inputQty, conversion_rate: conv, qty_before: before, qty_added: added, qty_after: after, total_line_cost: lineCost });
+      } else if (line.item_target_type === 'INGREDIENT' && line.ingredient_id) {
+        const ing = db.ingredients.find(i => i.id === line.ingredient_id);
+        if (!ing) continue;
+        const before = ing.current_qty;
+        const added = Math.round(inputQty * conv * 100) / 100;
+        const after = Math.round((before + added) * 100) / 100;
+        ing.current_qty = after;
+        newLines.push({ ...line, input_qty: inputQty, conversion_rate: conv, qty_before: before, qty_added: added, qty_after: after, total_line_cost: lineCost });
+      }
+    }
+    rec.supplier_name = supplier_name;
+    rec.note = note;
+    rec.total_cost = totalCost;
+    rec.items = newLines;
+    saveLocalDb(db);
+    return { success: true, receiptId: receipt_id, data: buildLocalBootstrap() };
+  },
+
+  deleteStockInReceipt(body) {
+    const db = loadLocalDb();
+    const { receipt_id } = body;
+    const rec = (db.stockInReceipts || []).find(r => r.id === receipt_id);
+    if (rec) {
+      for (const oldIt of rec.items || []) {
+        if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
+          const prod = db.products.find(p => p.id === oldIt.product_id);
+          if (prod) prod.stock_qty = Math.max(0, Math.round((prod.stock_qty - (oldIt.qty_added || 0)) * 100) / 100);
+        } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
+          const ing = db.ingredients.find(i => i.id === oldIt.ingredient_id);
+          if (ing) ing.current_qty = Math.max(0, Math.round((ing.current_qty - (oldIt.qty_added || 0)) * 100) / 100);
+        }
+      }
+      db.stockInReceipts = (db.stockInReceipts || []).filter(r => r.id !== receipt_id);
+      db.expenses = (db.expenses || []).filter(e => e.reference_id !== receipt_id);
+      saveLocalDb(db);
+    }
+    return { success: true, data: buildLocalBootstrap() };
   },
 
   saveProduct(body) {

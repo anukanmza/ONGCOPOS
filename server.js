@@ -3,6 +3,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { db, recalculateAllFoodCosts } = require('./db');
 const { parseVoiceCommand, getRecipePreviewForProduct } = require('./voiceParser');
+const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate } = require('./supabaseAdapter');
+
+function getLoyaltySettingsFromDb() {
+  try {
+    const row = db.prepare('SELECT note FROM customers WHERE id = ?').get('SYS-LOYALTY-CONFIG');
+    if (row && row.note) {
+      return { ...DEFAULT_LOYALTY_SETTINGS, ...JSON.parse(row.note) };
+    }
+  } catch {}
+  return { ...DEFAULT_LOYALTY_SETTINGS };
+}
 
 const PORT = process.env.PORT || 3000;
 const sseClients = new Set();
@@ -104,7 +115,9 @@ function getFullBootstrapData() {
   });
 
   const rawTables = db.prepare('SELECT * FROM dining_tables ORDER BY id').all();
-  const customers = db.prepare('SELECT * FROM customers ORDER BY total_spent DESC, created_at DESC').all();
+  const rawCustomers = db.prepare('SELECT * FROM customers ORDER BY total_spent DESC, created_at DESC').all();
+  const customers = rawCustomers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG');
+  const loyaltySettings = getLoyaltySettingsFromDb();
   const openOrders = db.prepare("SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at DESC").all();
   const allRecentOrders = db.prepare("SELECT * FROM orders WHERE status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED') ORDER BY created_at DESC LIMIT 80").all();
   const allOrderIds = allRecentOrders.map(o => o.id);
@@ -172,7 +185,7 @@ function getFullBootstrapData() {
   }));
 
   // Stock-in receipts with items
-  const receipts = db.prepare('SELECT * FROM stock_in_receipts ORDER BY created_at DESC LIMIT 30').all();
+  const receipts = db.prepare('SELECT * FROM stock_in_receipts ORDER BY created_at DESC LIMIT 100').all();
   const receiptItems = db.prepare('SELECT * FROM stock_in_items').all();
   const stockInReceipts = receipts.map(r => ({
     ...r,
@@ -281,6 +294,7 @@ function getFullBootstrapData() {
     recipeItems,
     tables,
     customers,
+    loyaltySettings,
     allBills,
     kitchenQueue: kdsRows,
     stockInReceipts,
@@ -544,15 +558,25 @@ const server = http.createServer(async (req, res) => {
         const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
         const received = cash_received >= updatedOrder.total_amount ? cash_received : updatedOrder.total_amount;
         const change = Math.max(0, received - updatedOrder.total_amount);
-        db.prepare(`
-          UPDATE orders SET status = 'PAID', payment_method = ?, cash_received = ?, change_amount = ?, paid_at = ?
-          WHERE id = ?
-        `).run(payment_method, received, change, now, orderId);
+        const redeemPts = Math.max(0, Math.floor(Number(body.redeem_points) || 0));
+        const ptsDiscount = Math.max(0, Number(body.points_discount) || 0);
+        const noteWithRedeem = redeemPts > 0
+          ? `${updatedOrder.bill_note || ''} [ใช้แต้มสะสม ${redeemPts} แต้ม ลด ฿${ptsDiscount}]`.trim()
+          : (updatedOrder.bill_note || '');
 
-        if (updatedOrder.customer_id && updatedOrder.total_amount > 0) {
-          const pts = Math.floor(updatedOrder.total_amount / 25);
-          db.prepare('UPDATE customers SET points = points + ?, total_spent = total_spent + ? WHERE id = ?')
-            .run(pts, updatedOrder.total_amount, updatedOrder.customer_id);
+        db.prepare(`
+          UPDATE orders SET status = 'PAID', payment_method = ?, cash_received = ?, change_amount = ?, bill_note = ?, paid_at = ?
+          WHERE id = ?
+        `).run(payment_method, received, change, noteWithRedeem, now, orderId);
+
+        if (updatedOrder.customer_id) {
+          const cus = db.prepare('SELECT * FROM customers WHERE id = ?').get(updatedOrder.customer_id);
+          if (cus) {
+            const loyaltyCfg = getLoyaltySettingsFromDb();
+            const lUpd = computeCustomerLoyaltyUpdate(cus, updatedOrder.total_amount, redeemPts, loyaltyCfg);
+            db.prepare('UPDATE customers SET points = ?, total_spent = ?, tier = ? WHERE id = ?')
+              .run(lUpd.nextPts, lUpd.nextSpent, lUpd.nextTier, cus.id);
+          }
         }
       }
 
@@ -572,6 +596,52 @@ const server = http.createServer(async (req, res) => {
       `).run(bill_title, bill_note, customer_id, customer_name, order_id);
       broadcastUpdate('order_meta_updated', { order_id });
       return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    // Save Loyalty & Membership Tier Settings
+    if (req.method === 'POST' && pathname === '/api/loyalty-settings/save') {
+      const body = await parseJsonBody(req);
+      const merged = {
+        ...DEFAULT_LOYALTY_SETTINGS,
+        spend_per_point: Math.max(1, Number(body.spend_per_point) || 25),
+        points_earned: Math.max(0.1, Number(body.points_earned) || 1),
+        redeem_points_unit: Math.max(1, Number(body.redeem_points_unit) || 10),
+        redeem_discount_baht: Math.max(1, Number(body.redeem_discount_baht) || 10),
+        min_redeem_points: Math.max(1, Number(body.min_redeem_points) || 10),
+        auto_upgrade_tier: body.auto_upgrade_tier !== false,
+        tiers: Array.isArray(body.tiers) && body.tiers.length > 0
+          ? body.tiers.map(t => ({
+              name: String(t.name || 'สมาชิก').trim(),
+              min_spent: Math.max(0, Number(t.min_spent) || 0),
+              points_multiplier: Math.max(0.1, Number(t.points_multiplier) || 1),
+              discount_pct: Math.max(0, Math.min(100, Number(t.discount_pct) || 0))
+            }))
+          : DEFAULT_LOYALTY_SETTINGS.tiers
+      };
+      const now = new Date().toISOString();
+      const cfgJson = JSON.stringify(merged);
+      const existing = db.prepare('SELECT id FROM customers WHERE id = ?').get('SYS-LOYALTY-CONFIG');
+      if (existing) {
+        db.prepare('UPDATE customers SET note = ? WHERE id = ?').run(cfgJson, 'SYS-LOYALTY-CONFIG');
+      } else {
+        db.prepare('INSERT INTO customers (id, name, phone, tier, points, total_spent, note, created_at) VALUES (?, ?, ?, ?, 0, 0, ?, ?)')
+          .run('SYS-LOYALTY-CONFIG', '__LOYALTY_CONFIG__', '', 'SYSTEM', cfgJson, now);
+      }
+
+      if (merged.auto_upgrade_tier) {
+        const allCus = db.prepare("SELECT * FROM customers WHERE id != 'SYS-LOYALTY-CONFIG'").all();
+        const sortedTiers = [...merged.tiers].sort((a, b) => b.min_spent - a.min_spent);
+        const updTierStmt = db.prepare('UPDATE customers SET tier = ? WHERE id = ?');
+        for (const c of allCus) {
+          const matched = sortedTiers.find(t => (Number(c.total_spent) || 0) >= t.min_spent);
+          if (matched && matched.name !== c.tier) {
+            updTierStmt.run(matched.name, c.id);
+          }
+        }
+      }
+
+      broadcastUpdate('loyalty_settings_saved', {});
+      return sendJson(res, 200, { success: true, loyaltySettings: merged, data: getFullBootstrapData() });
     }
 
     // Save Customer Member
@@ -709,7 +779,17 @@ const server = http.createServer(async (req, res) => {
     // Checkout / Settle Open Table Order
     if (req.method === 'POST' && pathname === '/api/orders/checkout') {
       const body = await parseJsonBody(req);
-      const { order_id, table_id, payment_method = 'CASH', discount = 0, cash_received = 0 } = body;
+      const {
+        order_id,
+        table_id,
+        payment_method = 'CASH',
+        discount = 0,
+        cash_received = 0,
+        customer_id = undefined,
+        customer_name = undefined,
+        redeem_points = 0,
+        points_discount = 0
+      } = body;
       const now = new Date().toISOString();
 
       let targetOrder = null;
@@ -726,7 +806,16 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 404, { error: 'ไม่พบบิลที่ต้องการชำระเงิน' });
       }
 
-      db.prepare('UPDATE orders SET discount = ? WHERE id = ?').run(Number(discount) || 0, targetOrder.id);
+      const finalCusId = customer_id !== undefined ? customer_id : targetOrder.customer_id;
+      const finalCusName = customer_name !== undefined ? customer_name : targetOrder.customer_name;
+      const redeemPts = Math.max(0, Math.floor(Number(redeem_points) || 0));
+      const ptsDiscount = Math.max(0, Number(points_discount) || 0);
+      const nextNote = redeemPts > 0
+        ? `${targetOrder.bill_note || ''} [ใช้แต้มสะสม ${redeemPts} แต้ม ลด ฿${ptsDiscount}]`.trim()
+        : (targetOrder.bill_note || '');
+
+      db.prepare('UPDATE orders SET discount = ?, customer_id = ?, customer_name = ?, bill_note = ? WHERE id = ?')
+        .run(Number(discount) || 0, finalCusId, finalCusName || '', nextNote, targetOrder.id);
       recalculateOrderTotals(targetOrder.id);
 
       const refreshed = db.prepare('SELECT * FROM orders WHERE id = ?').get(targetOrder.id);
@@ -750,10 +839,14 @@ const server = http.createServer(async (req, res) => {
         db.prepare("UPDATE dining_tables SET status = 'AVAILABLE', current_order_id = NULL WHERE id = ?").run(refreshed.table_id);
       }
 
-      if (refreshed.customer_id && refreshed.total_amount > 0) {
-        const pts = Math.floor(refreshed.total_amount / 25);
-        db.prepare('UPDATE customers SET points = points + ?, total_spent = total_spent + ? WHERE id = ?')
-          .run(pts, refreshed.total_amount, refreshed.customer_id);
+      if (refreshed.customer_id) {
+        const cus = db.prepare('SELECT * FROM customers WHERE id = ?').get(refreshed.customer_id);
+        if (cus) {
+          const loyaltyCfg = getLoyaltySettingsFromDb();
+          const lUpd = computeCustomerLoyaltyUpdate(cus, refreshed.total_amount, redeemPts, loyaltyCfg);
+          db.prepare('UPDATE customers SET points = ?, total_spent = ?, tier = ? WHERE id = ?')
+            .run(lUpd.nextPts, lUpd.nextSpent, lUpd.nextTier, cus.id);
+        }
       }
 
       broadcastUpdate('order_paid', { orderId: targetOrder.id, tableId: refreshed.table_id });
@@ -1179,6 +1272,122 @@ const server = http.createServer(async (req, res) => {
       recalculateAllFoodCosts();
       broadcastUpdate('stock_in_completed', { receiptId });
       return sendJson(res, 200, { success: true, receiptId, data: getFullBootstrapData() });
+    }
+
+    // Update Existing Stock-In Receipt (แก้ไขใบรับของเข้าสต็อก พร้อมคำนวณปรับสต็อกส่วนต่างอัตโนมัติ)
+    if (req.method === 'POST' && pathname === '/api/stock-in/update') {
+      const body = await parseJsonBody(req);
+      const { receipt_id, supplier_name = 'ร้านค้าส่ง / ตลาดสด', note = '', items = [] } = body;
+      const existingRec = db.prepare('SELECT * FROM stock_in_receipts WHERE id = ?').get(receipt_id);
+      if (!existingRec) return sendJson(res, 404, { error: 'ไม่พบใบรับของที่ต้องการแก้ไข' });
+
+      const oldItems = db.prepare('SELECT * FROM stock_in_items WHERE receipt_id = ?').all(receipt_id);
+      // 1. Revert stock added by old items
+      for (const oldIt of oldItems) {
+        if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
+          const prod = db.prepare('SELECT stock_qty FROM products WHERE id = ?').get(oldIt.product_id);
+          if (prod) {
+            const reverted = Math.max(0, Math.round((prod.stock_qty - oldIt.qty_added) * 100) / 100);
+            db.prepare('UPDATE products SET stock_qty = ? WHERE id = ?').run(reverted, oldIt.product_id);
+          }
+        } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
+          const ing = db.prepare('SELECT current_qty FROM ingredients WHERE id = ?').get(oldIt.ingredient_id);
+          if (ing) {
+            const reverted = Math.max(0, Math.round((ing.current_qty - oldIt.qty_added) * 100) / 100);
+            db.prepare('UPDATE ingredients SET current_qty = ? WHERE id = ?').run(reverted, oldIt.ingredient_id);
+          }
+        }
+      }
+
+      db.prepare('DELETE FROM stock_in_items WHERE receipt_id = ?').run(receipt_id);
+
+      // 2. Apply updated items
+      let newTotalCost = 0;
+      const insertReceiptItem = db.prepare(`
+        INSERT INTO stock_in_items (
+          id, receipt_id, item_target_type, product_id, ingredient_id, item_name, unit_label,
+          input_qty, conversion_rate, qty_before, qty_added, qty_after, purchase_cost_per_base_unit, total_line_cost
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const line of items) {
+        const inputQty = Math.max(0, Number(line.input_qty) || 0);
+        if (inputQty <= 0) continue;
+        const conv = Math.max(1, Number(line.conversion_rate) || 1);
+        const lineCost = Math.max(0, Number(line.total_line_cost) || 0);
+        newTotalCost += lineCost;
+
+        if (line.item_target_type === 'GROCERY' && line.product_id) {
+          const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(line.product_id);
+          if (!prod) continue;
+          const qtyBefore = prod.stock_qty;
+          const qtyAdded = Math.round(inputQty * conv * 100) / 100;
+          const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
+          const baseUnitCost = qtyAdded > 0 && lineCost > 0 ? Math.round((lineCost / qtyAdded) * 100) / 100 : prod.cost;
+          db.prepare('UPDATE products SET stock_qty = ?, cost = ? WHERE id = ?').run(qtyAfter, baseUnitCost, prod.id);
+          insertReceiptItem.run(
+            line.id || `SRI-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            receipt_id, 'GROCERY', prod.id, null, prod.name, line.unit_label || prod.purchase_unit,
+            inputQty, conv, qtyBefore, qtyAdded, qtyAfter, baseUnitCost, lineCost
+          );
+        } else if (line.item_target_type === 'INGREDIENT' && line.ingredient_id) {
+          const ing = db.prepare('SELECT * FROM ingredients WHERE id = ?').get(line.ingredient_id);
+          if (!ing) continue;
+          const qtyBefore = ing.current_qty;
+          const qtyAdded = Math.round(inputQty * conv * 100) / 100;
+          const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
+          const baseUnitCost = qtyAdded > 0 && lineCost > 0 ? Math.round((lineCost / qtyAdded) * 10000) / 10000 : ing.cost_per_unit;
+          db.prepare('UPDATE ingredients SET current_qty = ?, cost_per_unit = ? WHERE id = ?').run(qtyAfter, baseUnitCost, ing.id);
+          insertReceiptItem.run(
+            line.id || `SRI-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            receipt_id, 'INGREDIENT', null, ing.id, ing.name, line.unit_label || ing.purchase_unit,
+            inputQty, conv, qtyBefore, qtyAdded, qtyAfter, baseUnitCost, lineCost
+          );
+        }
+      }
+
+      db.prepare('UPDATE stock_in_receipts SET supplier_name = ?, note = ?, total_cost = ? WHERE id = ?')
+        .run(supplier_name, note, newTotalCost, receipt_id);
+
+      db.prepare('UPDATE expenses SET title = ?, amount = ? WHERE reference_id = ?')
+        .run(`รับของเข้าสต็อก (${receipt_id}) - ${supplier_name}`, newTotalCost, receipt_id);
+
+      recalculateAllFoodCosts();
+      broadcastUpdate('stock_in_updated', { receipt_id });
+      return sendJson(res, 200, { success: true, receiptId: receipt_id, data: getFullBootstrapData() });
+    }
+
+    // Delete Stock-In Receipt (ลบใบรับของเข้าสต็อก พร้อมหักสต็อกที่เคยรับเข้าคืนกลับอัตโนมัติ)
+    if (req.method === 'POST' && pathname === '/api/stock-in/delete') {
+      const { receipt_id } = await parseJsonBody(req);
+      const existingRec = db.prepare('SELECT * FROM stock_in_receipts WHERE id = ?').get(receipt_id);
+      if (!existingRec) return sendJson(res, 404, { error: 'ไม่พบใบรับของที่ต้องการลบ' });
+
+      const oldItems = db.prepare('SELECT * FROM stock_in_items WHERE receipt_id = ?').all(receipt_id);
+      for (const oldIt of oldItems) {
+        if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
+          const prod = db.prepare('SELECT stock_qty FROM products WHERE id = ?').get(oldIt.product_id);
+          if (prod) {
+            const reverted = Math.max(0, Math.round((prod.stock_qty - oldIt.qty_added) * 100) / 100);
+            db.prepare('UPDATE products SET stock_qty = ? WHERE id = ?').run(reverted, oldIt.product_id);
+          }
+        } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
+          const ing = db.prepare('SELECT current_qty FROM ingredients WHERE id = ?').get(oldIt.ingredient_id);
+          if (ing) {
+            const reverted = Math.max(0, Math.round((ing.current_qty - oldIt.qty_added) * 100) / 100);
+            db.prepare('UPDATE ingredients SET current_qty = ? WHERE id = ?').run(reverted, oldIt.ingredient_id);
+          }
+        }
+      }
+
+      db.prepare('DELETE FROM stock_in_items WHERE receipt_id = ?').run(receipt_id);
+      db.prepare('DELETE FROM stock_in_receipts WHERE id = ?').run(receipt_id);
+      db.prepare('DELETE FROM expenses WHERE reference_id = ?').run(receipt_id);
+      db.prepare('DELETE FROM inventory_logs WHERE reference_id = ?').run(receipt_id);
+
+      recalculateAllFoodCosts();
+      broadcastUpdate('stock_in_deleted', { receipt_id });
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
     }
 
     // Create / Update Product + Recipe BOM

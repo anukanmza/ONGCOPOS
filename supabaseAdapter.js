@@ -1,6 +1,53 @@
 // Supabase REST (PostgREST) Adapter for Vercel Serverless Deployment
 // Works with zero external npm dependencies using native Node.js fetch()
 
+const DEFAULT_LOYALTY_SETTINGS = {
+  spend_per_point: 25,
+  points_earned: 1,
+  redeem_points_unit: 10,
+  redeem_discount_baht: 10,
+  min_redeem_points: 10,
+  auto_upgrade_tier: true,
+  tiers: [
+    { name: 'สมาชิกใหม่', min_spent: 0, points_multiplier: 1, discount_pct: 0 },
+    { name: 'ขาประจำ', min_spent: 1000, points_multiplier: 1.2, discount_pct: 0 },
+    { name: 'VIP', min_spent: 5000, points_multiplier: 1.5, discount_pct: 5 }
+  ]
+};
+
+function computeCustomerLoyaltyUpdate(customer, netTotal, redeemPoints, loyaltySettings = DEFAULT_LOYALTY_SETTINGS) {
+  const cfg = { ...DEFAULT_LOYALTY_SETTINGS, ...(loyaltySettings || {}) };
+  const spendPerPt = Math.max(1, Number(cfg.spend_per_point) || 25);
+  const ptsEarnedUnit = Math.max(0, Number(cfg.points_earned) || 1);
+  const tiers = Array.isArray(cfg.tiers) && cfg.tiers.length > 0 ? cfg.tiers : DEFAULT_LOYALTY_SETTINGS.tiers;
+
+  const currentPts = Math.max(0, Number(customer?.points) || 0);
+  const currentSpent = Math.max(0, Number(customer?.total_spent) || 0);
+  const usedPts = Math.min(currentPts, Math.max(0, Math.floor(Number(redeemPoints) || 0)));
+
+  const nextSpent = Math.round((currentSpent + Math.max(0, Number(netTotal) || 0)) * 100) / 100;
+  let nextTier = customer?.tier || tiers[0].name;
+
+  if (cfg.auto_upgrade_tier !== false) {
+    const sortedTiers = [...tiers].sort((a, b) => (Number(b.min_spent) || 0) - (Number(a.min_spent) || 0));
+    const matched = sortedTiers.find(t => nextSpent >= (Number(t.min_spent) || 0));
+    if (matched) nextTier = matched.name;
+  }
+
+  const tierObj = tiers.find(t => t.name === nextTier) || tiers.find(t => t.name === customer?.tier) || { points_multiplier: 1 };
+  const multiplier = Math.max(0.1, Number(tierObj.points_multiplier) || 1);
+  const earnedPts = netTotal > 0 ? Math.floor((netTotal / spendPerPt) * ptsEarnedUnit * multiplier) : 0;
+  const nextPts = Math.max(0, currentPts - usedPts + earnedPts);
+
+  return {
+    usedPts,
+    earnedPts,
+    nextPts,
+    nextSpent,
+    nextTier
+  };
+}
+
 function getSupabaseConfig() {
   const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
@@ -262,15 +309,25 @@ async function getSupabaseBootstrapData() {
     low_stock_threshold: Number(i.low_stock_threshold || 0)
   }));
 
-  let customers = [];
+  let rawCustomers = [];
   try {
-    customers = await sbRest('customers?select=*&order=total_spent.desc');
+    rawCustomers = await sbRest('customers?select=*&order=total_spent.desc');
   } catch {
-    customers = [
+    rawCustomers = [
       { id: 'CUS-001', name: 'ป้าสมศรี (ซอย 3)', phone: '081-234-5678', tier: 'VIP', points: 120, total_spent: 3450, note: 'ชอบสั่งกะเพราเผ็ดน้อย' },
       { id: 'CUS-002', name: 'พี่เอก (ช่างแอร์)', phone: '089-876-5432', tier: 'ขาประจำ', points: 45, total_spent: 1120, note: 'ซื้อน้ำแข็งและเครื่องดื่มประจำ' }
     ];
   }
+
+  let loyaltySettings = { ...DEFAULT_LOYALTY_SETTINGS };
+  const sysCfgRow = rawCustomers.find(c => c.id === 'SYS-LOYALTY-CONFIG');
+  if (sysCfgRow && sysCfgRow.note) {
+    try {
+      const parsed = JSON.parse(sysCfgRow.note);
+      loyaltySettings = { ...DEFAULT_LOYALTY_SETTINGS, ...parsed };
+    } catch {}
+  }
+  const customers = rawCustomers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG');
 
   const allBills = allValidOrders.map(o => {
     const tbl = o.table_id ? tableMap.get(o.table_id) : null;
@@ -294,6 +351,7 @@ async function getSupabaseBootstrapData() {
     recipeItems,
     tables,
     customers: customers.map(c => ({ ...c, points: Number(c.points || 0), total_spent: Number(c.total_spent || 0) })),
+    loyaltySettings,
     allBills,
     kitchenQueue,
     stockInReceipts,
@@ -329,6 +387,8 @@ async function getSupabaseBootstrapData() {
 }
 
 module.exports = {
+  DEFAULT_LOYALTY_SETTINGS,
+  computeCustomerLoyaltyUpdate,
   getSupabaseConfig,
   sbRest,
   getSupabaseBootstrapData
