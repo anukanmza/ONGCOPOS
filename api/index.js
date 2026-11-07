@@ -1,4 +1,4 @@
-const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, setRuntimeSupabaseConfig, getSupabaseConfig, sbRest, getSupabaseBootstrapData } = require('../supabaseAdapter');
+const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, setRuntimeSupabaseConfig, getSupabaseConfig, sbRest, getSupabaseSyncCheck, getSupabaseBootstrapData } = require('../supabaseAdapter');
 
 async function recalculateSupabaseOrderTotals(orderId) {
   const items = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(orderId)}`);
@@ -265,6 +265,13 @@ module.exports = async (req, res) => {
     if (pathname === '/api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
       return res.end(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+    }
+
+    if (req.method === 'GET' && pathname === '/api/sync-check') {
+      const scope = urlObj.searchParams.get('scope') || 'kds';
+      const sig = urlObj.searchParams.get('sig') || '';
+      const result = await getSupabaseSyncCheck(scope, sig);
+      return send(200, result);
     }
 
     if (req.method === 'GET' && pathname === '/api/bootstrap') {

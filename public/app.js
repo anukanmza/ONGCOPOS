@@ -272,6 +272,12 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
       state.backendMode = 'CLOUD_API';
       state.lastApiError = '';
       state.lastSyncAt = new Date().toISOString();
+      if (json.syncSig !== undefined) state.lastSyncSig = json.syncSig;
+      if (json.kdsSig !== undefined) state.lastKdsSig = json.kdsSig;
+      if (json.data) {
+        if (json.data.syncSig !== undefined) state.lastSyncSig = json.data.syncSig;
+        if (json.data.kdsSig !== undefined) state.lastKdsSig = json.data.kdsSig;
+      }
       return json;
     }
     if (json && json.error) {
@@ -351,19 +357,89 @@ function isUserBusyInteracting() {
   return false;
 }
 
+function computeClientDataFingerprint(d) {
+  if (!d) return '';
+  if (d.syncSig || d.kdsSig) return `${d.syncSig || ''}::${d.kdsSig || ''}`;
+  const bills = (d.allBills || []).map(b => `${b.id}:${b.status}:${b.total_amount}:${(b.items || []).length}`).join(',');
+  const kds = (d.kitchenQueue || []).map(k => `${k.id}:${k.kitchen_status}:${k.item_status}`).join(',');
+  const tbl = (d.tables || []).map(t => `${t.id}:${t.status}:${t.current_order_id || ''}`).join(',');
+  const prod = (d.products || []).map(p => `${p.id}:${p.stock_qty}:${p.price}`).join(',');
+  const ing = (d.ingredients || []).map(i => `${i.id}:${i.current_qty}`).join(',');
+  const cus = (d.customers || []).map(c => `${c.id}:${c.points}:${c.total_spent}:${c.tier}`).join(',');
+  return [bills, kds, tbl, prod, ing, cus].join('~');
+}
+
+let lastAutoSyncCheckMs = 0;
+let autoSyncInFlight = false;
+
 async function fetchBootstrap(silentBackground = false) {
-  if (silentBackground && isUserBusyInteracting()) return;
+  if (silentBackground && isUserBusyInteracting()) return false;
+  const prevFp = state.data ? computeClientDataFingerprint(state.data) : '';
   const data = await apiCall('/api/bootstrap', 'GET');
   if (data && Array.isArray(data.products)) {
+    const nextFp = computeClientDataFingerprint(data);
+    const hasChanged = !prevFp || prevFp !== nextFp;
     state.data = data;
+    if (data.syncSig !== undefined) state.lastSyncSig = data.syncSig;
+    if (data.kdsSig !== undefined) state.lastKdsSig = data.kdsSig;
+
+    // หากเป็นการซิงค์เบื้องหลังและข้อมูลไม่มีการเปลี่ยนแปลงเลย จะไม่สั่งวาดหน้าจอใหม่ (render) เพื่อไม่ให้หน้าจอกระตุก
+    if (silentBackground && !hasChanged) {
+      return false;
+    }
     syncBomEditorWithProduct(state.selectedBomFoodId);
-    syncCurrentBillMetaFromContext();
+    if (!silentBackground || getActiveContextOrder()) {
+      syncCurrentBillMetaFromContext();
+    }
     render();
+    return hasChanged;
   } else if (!state.data && window.LocalPosEngine) {
     state.data = window.LocalPosEngine.getBootstrap();
     syncBomEditorWithProduct(state.selectedBomFoodId);
     syncCurrentBillMetaFromContext();
     render();
+    return true;
+  }
+  return false;
+}
+
+// เช็คการเปลี่ยนแปลงแบบประหยัด Data Egress (ดึงเฉพาะ Signature ขนาดเล็กก่อน หากเปลี่ยนจริงค่อยดึง Bootstrap และวาดจอใหม่)
+async function smartAutoSync(scope = 'all', ignoreThrottle = false) {
+  if (autoSyncInFlight) return false;
+  if (isUserBusyInteracting()) return false;
+  const now = Date.now();
+  if (!ignoreThrottle && now - lastAutoSyncCheckMs < 3500) return false;
+  lastAutoSyncCheckMs = now;
+
+  if (!state.data) {
+    return await fetchBootstrap(false);
+  }
+
+  autoSyncInFlight = true;
+  try {
+    const clientSig = scope === 'kds' ? (state.lastKdsSig || '') : (state.lastSyncSig || '');
+    const checkUrl = `/api/sync-check?scope=${encodeURIComponent(scope)}&sig=${encodeURIComponent(clientSig)}`;
+    const checkRes = await apiCall(checkUrl, 'GET');
+
+    if (checkRes && checkRes.changed === false) {
+      // ข้อมูลตรงกับฐานข้อมูลกลางอยู่แล้ว ไม่ต้องดาวน์โหลด Bootstrap ชุดใหญ่ และไม่ต้องวาดหน้าจอใหม่!
+      return false;
+    }
+    if (checkRes && checkRes.changed === true) {
+      return await fetchBootstrap(true);
+    }
+    return false;
+  } finally {
+    autoSyncInFlight = false;
+  }
+}
+
+function switchMainView(nextView) {
+  const viewChanged = state.activeView !== nextView;
+  state.activeView = nextView;
+  render();
+  if (viewChanged && state.backendMode === 'CLOUD_API') {
+    smartAutoSync(nextView === 'kds' ? 'kds' : 'all', true);
   }
 }
 
@@ -4780,29 +4856,29 @@ function render() {
           </a>
 
           <nav class="ttl-nav-links">
-            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'pos'}" onclick="state.activeView='pos'; render();">
+            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'pos'}" onclick="switchMainView('pos')">
               🛒 แคชเชียร์
             </button>
-            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'bills'}" onclick="state.activeView='bills'; render();">
+            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'bills'}" onclick="switchMainView('bills')">
               🧾 จัดการบิล
               ${openBillsCount > 0 ? `<span class="ttl-badge-count">${openBillsCount}</span>` : ''}
             </button>
-            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'tables'}" onclick="state.activeView='tables'; render();">
+            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'tables'}" onclick="switchMainView('tables')">
               🍽️ ผังโต๊ะ
               <span class="ttl-badge-count">${occupiedCount}/${tables.length}</span>
             </button>
-            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'kds'}" onclick="state.activeView='kds'; render();">
+            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'kds'}" onclick="switchMainView('kds')">
               👩‍🍳 จอครัว
               ${pendingKdsCount > 0 ? `<span class="ttl-badge-count">${pendingKdsCount}</span>` : ''}
             </button>
-            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'inventory'}" onclick="state.activeView='inventory'; render();">
+            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'inventory'}" onclick="switchMainView('inventory')">
               📦 สต็อก & สูตร
               ${lowStockCount > 0 ? `<span class="ttl-badge-count" style="background:var(--ttl-bad);">${lowStockCount}</span>` : ''}
             </button>
-            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'customers'}" onclick="state.activeView='customers'; render();">
+            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'customers'}" onclick="switchMainView('customers')">
               👥 สมาชิก (${customers.length})
             </button>
-            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'dashboard'}" onclick="state.activeView='dashboard'; render();">
+            <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'dashboard'}" onclick="switchMainView('dashboard')">
               📈 กำไร/ขาดทุน
             </button>
           </nav>
@@ -4814,11 +4890,17 @@ function render() {
               style="height:30px; padding:0 10px; font-size:11.5px; font-weight:700;"
               title="${state.backendMode === 'CLOUD_API' ? 'เชื่อมต่อฐานข้อมูลกลางแล้ว กดเพื่อซิงค์ข้อมูลล่าสุดทันที' : `ขณะนี้อยู่ในโหมดบันทึกในเครื่อง (ไม่ซิงค์ข้ามอุปกรณ์) ${state.lastApiError ? 'สาเหตุ: ' + state.lastApiError : ''}`}"
               onclick="
-                fetchBootstrap(false).then(() => {
+                smartAutoSync('all', true).then((updated) => {
                   if (state.backendMode === 'CLOUD_API') {
-                    showToast('☁️ ซิงค์ข้อมูลล่าสุดจากฐานข้อมูลกลางเรียบร้อยแล้ว');
+                    showToast(updated ? '☁️ ดึงข้อมูลที่เปลี่ยนแปลงล่าสุดจาก Supabase เรียบร้อยแล้ว' : '✅ ข้อมูลบนหน้าจอเป็นปัจจุบันตรงกับ Supabase อยู่แล้ว');
                   } else {
-                    showToast('⚠️ เครื่องนี้อยู่ในโหมดออฟไลน์ในเบราว์เซอร์ (' + (state.lastApiError || 'ไม่ได้เชื่อมต่อ Supabase') + ')', 'warn');
+                    fetchBootstrap(false).then(() => {
+                      if (state.backendMode === 'CLOUD_API') {
+                        showToast('☁️ เชื่อมต่อและซิงค์ข้อมูลจาก Supabase สำเร็จ!');
+                      } else {
+                        showToast('⚠️ เครื่องนี้อยู่ในโหมดออฟไลน์ในเบราว์เซอร์ (' + (state.lastApiError || 'ไม่ได้เชื่อมต่อ Supabase') + ')', 'warn');
+                      }
+                    });
                   }
                 });
               "
@@ -4857,31 +4939,31 @@ function render() {
 
       <!-- Mobile Bottom Navigation Bar (7 Tabs) -->
       <nav class="ttl-mobile-nav">
-        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'pos'}" onclick="state.activeView='pos'; render();">
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'pos'}" onclick="switchMainView('pos')">
           <span class="mob-ico">🛒</span>
           <span>แคชเชียร์</span>
         </button>
-        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'bills'}" onclick="state.activeView='bills'; render();">
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'bills'}" onclick="switchMainView('bills')">
           <span class="mob-ico">🧾</span>
           <span>บิล (${openBillsCount})</span>
         </button>
-        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'tables'}" onclick="state.activeView='tables'; render();">
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'tables'}" onclick="switchMainView('tables')">
           <span class="mob-ico">🍽️</span>
           <span>ผังโต๊ะ</span>
         </button>
-        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'kds'}" onclick="state.activeView='kds'; render();">
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'kds'}" onclick="switchMainView('kds')">
           <span class="mob-ico">👩‍🍳</span>
           <span>ครัว (${pendingKdsCount})</span>
         </button>
-        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'inventory'}" onclick="state.activeView='inventory'; render();">
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'inventory'}" onclick="switchMainView('inventory')">
           <span class="mob-ico">📦</span>
           <span>สต็อก</span>
         </button>
-        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'customers'}" onclick="state.activeView='customers'; render();">
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'customers'}" onclick="switchMainView('customers')">
           <span class="mob-ico">👥</span>
           <span>สมาชิก</span>
         </button>
-        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'dashboard'}" onclick="state.activeView='dashboard'; render();">
+        <button type="button" class="ttl-mob-tab" data-active="${state.activeView === 'dashboard'}" onclick="switchMainView('dashboard')">
           <span class="mob-ico">📈</span>
           <span>กำไร</span>
         </button>
@@ -4930,20 +5012,18 @@ window.addEventListener('DOMContentLoaded', () => {
     // ignore if SSE not supported
   }
 
-  // ซิงค์ข้อมูลอัตโนมัติทุกๆ 5 วินาทีเพื่อให้ MacBook และ Mobile เห็นข้อมูลตรงกันเสมอบน Vercel + Supabase
+  // ซิงค์อัตโนมัติเป็นระยะเฉพาะเมื่อเปิด "หน้าจอครัว (KDS)" เท่านั้น (ทุก 7 วินาที)
+  // โดยเช็คเฉพาะ Signature ของรายการครัวขนาดเล็กก่อน และวาดหน้าจอใหม่เฉพาะเมื่อมีออเดอร์ครัวเปลี่ยนแปลงจริง!
   setInterval(() => {
-    if (document.visibilityState === 'visible') {
-      fetchBootstrap(true);
+    if (document.visibilityState === 'visible' && state.activeView === 'kds') {
+      smartAutoSync('kds');
     }
-  }, 5000);
+  }, 7000);
 
-  // ซิงค์ทันทีเมื่อสลับหน้าจอกลับมาหรือปลดล็อกหน้าจอมือถือ
+  // ซิงค์แบบประหยัด Data Egress เมื่อสลับหน้าจอกลับมาหรือปลดล็อกหน้าจอมือถือ (วาดจอใหม่เฉพาะเมื่อข้อมูลเปลี่ยนจริง)
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      fetchBootstrap(true);
+      smartAutoSync(state.activeView === 'kds' ? 'kds' : 'all');
     }
-  });
-  window.addEventListener('focus', () => {
-    fetchBootstrap(true);
   });
 });

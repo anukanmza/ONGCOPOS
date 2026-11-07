@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { db, recalculateAllFoodCosts } = require('./db');
 const { parseVoiceCommand, getRecipePreviewForProduct } = require('./voiceParser');
-const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, getSupabaseConfig } = require('./supabaseAdapter');
+const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, getSupabaseConfig, computeKdsSyncSig, computeAllSyncSig } = require('./supabaseAdapter');
 const supabaseApiHandler = require('./api/index');
 
 function getLoyaltySettingsFromDb() {
@@ -287,7 +287,21 @@ function getFullBootstrapData() {
   const lowStockGrocery = products.filter(p => p.item_type === 'GROCERY' && p.track_stock && p.stock_qty <= p.low_stock_threshold);
   const lowStockIngredients = ingredients.filter(i => i.current_qty <= i.low_stock_threshold);
 
+  const kdsSig = computeKdsSyncSig(allOrderItems);
+  const syncSig = computeAllSyncSig({
+    orders: allValidOrders,
+    orderItems: allOrderItems,
+    tables: rawTables,
+    products,
+    ingredients,
+    customers,
+    receipts: stockInReceipts,
+    expenses
+  });
+
   return {
+    kdsSig,
+    syncSig,
     categories,
     products,
     modifiers,
@@ -417,6 +431,15 @@ const server = http.createServer(async (req, res) => {
       sseClients.add(res);
       req.on('close', () => sseClients.delete(res));
       return;
+    }
+
+    // Lightweight Sync Check (for KDS & Tab Switching)
+    if (req.method === 'GET' && pathname === '/api/sync-check') {
+      const scope = urlObj.searchParams.get('scope') || 'kds';
+      const clientSig = urlObj.searchParams.get('sig') || '';
+      const boot = getFullBootstrapData();
+      const sig = scope === 'kds' ? boot.kdsSig : boot.syncSig;
+      return sendJson(res, 200, { changed: Boolean(!clientSig || sig !== clientSig), sig, scope });
     }
 
     // Bootstrap Full State

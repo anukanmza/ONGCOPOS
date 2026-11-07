@@ -118,6 +118,60 @@ function ensureArray(val) {
   return [];
 }
 
+function computeKdsSyncSig(items) {
+  const kdsStatuses = new Set(['PENDING', 'COOKING', 'SERVED', 'CANCEL_REQUESTED']);
+  return (items || [])
+    .filter(i => i.item_type === 'FOOD' && kdsStatuses.has(i.kitchen_status))
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    .map(i => `${i.id}:${i.kitchen_status}:${i.item_status}:${Number(i.quantity)}:${Number(i.returned_qty || 0)}`)
+    .join('|');
+}
+
+function computeAllSyncSig({ orders = [], orderItems = [], tables = [], products = [], ingredients = [], customers = [], receipts = [], expenses = [] }) {
+  const ordPart = orders.slice(0, 30).map(o => `${o.id}:${o.status}:${Number(o.total_amount || 0)}:${o.table_id || ''}:${o.bill_title || ''}:${o.customer_id || ''}`).join(',');
+  const itemPart = [...orderItems]
+    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    .slice(0, 60)
+    .map(i => `${i.id}:${i.item_status}:${i.kitchen_status}:${Number(i.quantity)}:${Number(i.returned_qty || 0)}`)
+    .join(',');
+  const tblPart = tables.map(t => `${t.id}:${t.status}:${t.current_order_id || ''}`).join(',');
+  const prodPart = products.map(p => `${p.id}:${Number(p.stock_qty || 0)}:${Number(p.price || 0)}`).join(',');
+  const ingPart = ingredients.map(i => `${i.id}:${Number(i.current_qty || 0)}`).join(',');
+  const cusPart = customers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG').map(c => `${c.id}:${Number(c.points || 0)}:${Number(c.total_spent || 0)}:${c.tier || ''}`).join(',');
+  const recPart = receipts.slice(0, 10).map(r => `${r.id}:${Number(r.total_cost || 0)}`).join(',');
+  const expPart = expenses.slice(0, 10).map(e => `${e.id}:${Number(e.amount || 0)}`).join(',');
+  return [ordPart, itemPart, tblPart, prodPart, ingPart, cusPart, recPart, expPart].join('~');
+}
+
+async function getSupabaseSyncCheck(scope = 'kds', clientSig = '') {
+  if (scope === 'kds') {
+    const kdsRows = await sbRest(
+      'order_items?select=id,item_type,kitchen_status,item_status,quantity,returned_qty&item_type=eq.FOOD&kitchen_status=in.(PENDING,COOKING,SERVED,CANCEL_REQUESTED)&order=id.asc'
+    );
+    const sig = computeKdsSyncSig(kdsRows);
+    return { changed: Boolean(!clientSig || sig !== clientSig), sig, scope: 'kds' };
+  }
+
+  let customers = [];
+  const [orders, orderItems, tables, products, ingredients, receipts, expenses] = await Promise.all([
+    sbRest('orders?select=id,status,total_amount,table_id,bill_title,customer_id,created_at&order=created_at.desc&limit=30'),
+    sbRest('order_items?select=id,item_status,kitchen_status,quantity,returned_qty,created_at&order=created_at.desc&limit=60'),
+    sbRest('dining_tables?select=id,status,current_order_id&order=id.asc'),
+    sbRest('products?select=id,stock_qty,price&is_active=eq.true&order=item_type.desc,id.asc'),
+    sbRest('ingredients?select=id,current_qty&order=id.asc'),
+    sbRest('stock_in_receipts?select=id,total_cost&order=created_at.desc&limit=10'),
+    sbRest('expenses?select=id,amount&order=created_at.desc&limit=10')
+  ]);
+  try {
+    customers = await sbRest('customers?select=id,points,total_spent,tier&order=total_spent.desc,created_at.desc');
+  } catch {
+    customers = [];
+  }
+
+  const sig = computeAllSyncSig({ orders, orderItems, tables, products, ingredients, customers, receipts, expenses });
+  return { changed: Boolean(!clientSig || sig !== clientSig), sig, scope: 'all' };
+}
+
 async function getSupabaseBootstrapData() {
   const [
     categories,
@@ -126,7 +180,6 @@ async function getSupabaseBootstrapData() {
     ingredients,
     rawRecipes,
     rawTables,
-    openOrders,
     allValidOrders,
     allOrderItems,
     receipts,
@@ -140,7 +193,6 @@ async function getSupabaseBootstrapData() {
     sbRest('ingredients?select=*&order=id.asc'),
     sbRest('recipe_items?select=*'),
     sbRest('dining_tables?select=*&order=id.asc'),
-    sbRest('orders?select=*&status=eq.OPEN&order=created_at.desc'),
     sbRest('orders?select=*&order=created_at.desc&limit=100'),
     sbRest('order_items?select=*&order=created_at.asc&limit=500'),
     sbRest('stock_in_receipts?select=*&order=created_at.desc&limit=60'),
@@ -148,6 +200,8 @@ async function getSupabaseBootstrapData() {
     sbRest('inventory_logs?select=*&order=created_at.desc&limit=60'),
     sbRest('expenses?select=*&order=created_at.desc&limit=60')
   ]);
+
+  const openOrders = allValidOrders.filter(o => o.status === 'OPEN');
 
   const ingMap = new Map(ingredients.map(i => [i.id, i]));
   const recipeItems = rawRecipes.map(r => {
@@ -380,8 +434,22 @@ async function getSupabaseBootstrapData() {
     };
   });
 
+  const kdsSig = computeKdsSyncSig(normalizedItems);
+  const syncSig = computeAllSyncSig({
+    orders: allValidOrders,
+    orderItems: normalizedItems,
+    tables: rawTables,
+    products,
+    ingredients: normalizedIngredients,
+    customers,
+    receipts: stockInReceipts,
+    expenses
+  });
+
   return {
     backendSource: 'SUPABASE_CLOUD',
+    kdsSig,
+    syncSig,
     categories,
     products,
     modifiers,
@@ -430,6 +498,9 @@ module.exports = {
   setRuntimeSupabaseConfig,
   getSupabaseConfig,
   sbRest,
+  computeKdsSyncSig,
+  computeAllSyncSig,
+  getSupabaseSyncCheck,
   getSupabaseBootstrapData
 };
 
