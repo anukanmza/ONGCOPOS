@@ -206,8 +206,41 @@ module.exports = async (req, res) => {
   const send = (code, payload) => {
     res.statusCode = code;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.end(JSON.stringify(payload));
   };
+
+  async function sbInsertOrderSafe(orderBody) {
+    try {
+      return await sbRest('orders', { method: 'POST', body: orderBody });
+    } catch {
+      const { bill_title, bill_note, customer_id, customer_name, ...baseBody } = orderBody;
+      return await sbRest('orders', { method: 'POST', body: baseBody });
+    }
+  }
+
+  async function sbPatchOrderSafe(orderId, patchBody) {
+    try {
+      return await sbRest(`orders?id=eq.${encodeURIComponent(orderId)}`, { method: 'PATCH', body: patchBody });
+    } catch {
+      const { bill_title, bill_note, customer_id, customer_name, ...basePatch } = patchBody;
+      if (basePatch.status === 'VOIDED') basePatch.status = 'CANCELLED';
+      if (Object.keys(basePatch).length === 0) return [];
+      return await sbRest(`orders?id=eq.${encodeURIComponent(orderId)}`, { method: 'PATCH', body: basePatch });
+    }
+  }
+
+  async function sbPatchOrderItemSafe(itemId, patchBody) {
+    try {
+      return await sbRest(`order_items?id=eq.${encodeURIComponent(itemId)}`, { method: 'PATCH', body: patchBody });
+    } catch {
+      const fallback = { ...patchBody };
+      if (fallback.kitchen_status === 'CANCEL_REQUESTED' || fallback.kitchen_status === 'CANCELLED_ACK') {
+        fallback.kitchen_status = 'CANCELLED';
+      }
+      return await sbRest(`order_items?id=eq.${encodeURIComponent(itemId)}`, { method: 'PATCH', body: fallback });
+    }
+  }
 
   try {
     if (pathname === '/api/events') {
@@ -251,16 +284,13 @@ module.exports = async (req, res) => {
 
       if (existingOrderId) {
         try {
-          await sbRest(`orders?id=eq.${encodeURIComponent(existingOrderId)}`, {
-            method: 'PATCH',
-            body: {
-              bill_title,
-              bill_note,
-              customer_id,
-              customer_name,
-              status: settle_immediately ? 'PAID' : 'OPEN',
-              paid_at: settle_immediately ? now : null
-            }
+          await sbPatchOrderSafe(existingOrderId, {
+            bill_title,
+            bill_note,
+            customer_id,
+            customer_name,
+            status: settle_immediately ? 'PAID' : 'OPEN',
+            paid_at: settle_immediately ? now : null
           });
         } catch {}
       } else if (order_type === 'DINE_IN' && table_id) {
@@ -270,30 +300,24 @@ module.exports = async (req, res) => {
           orderId = tbl.active_order.id;
           orderRound = Math.max(1, ...tbl.active_order.items.map(i => Number(i.order_round || 1))) + 1;
           try {
-            await sbRest(`orders?id=eq.${encodeURIComponent(orderId)}`, {
-              method: 'PATCH',
-              body: { bill_title, bill_note, customer_id, customer_name }
-            });
+            await sbPatchOrderSafe(orderId, { bill_title, bill_note, customer_id, customer_name });
           } catch {}
         } else {
-          await sbRest('orders', {
-            method: 'POST',
-            body: {
-              id: orderId,
-              order_type: 'DINE_IN',
-              table_id,
-              bill_title: bill_title || (tbl ? tbl.name : ''),
-              bill_note,
-              customer_id,
-              customer_name,
-              status: 'OPEN',
-              subtotal: 0,
-              discount: 0,
-              total_amount: 0,
-              total_cost: 0,
-              payment_method,
-              created_at: now
-            }
+          await sbInsertOrderSafe({
+            id: orderId,
+            order_type: 'DINE_IN',
+            table_id,
+            bill_title: bill_title || (tbl ? tbl.name : ''),
+            bill_note,
+            customer_id,
+            customer_name,
+            status: 'OPEN',
+            subtotal: 0,
+            discount: 0,
+            total_amount: 0,
+            total_cost: 0,
+            payment_method,
+            created_at: now
           });
           await sbRest(`dining_tables?id=eq.${encodeURIComponent(table_id)}`, {
             method: 'PATCH',
@@ -301,27 +325,24 @@ module.exports = async (req, res) => {
           });
         }
       } else {
-        await sbRest('orders', {
-          method: 'POST',
-          body: {
-            id: orderId,
-            order_type: 'RETAIL',
-            table_id: null,
-            bill_title: bill_title || (settle_immediately ? 'ขายหน้าร้าน' : 'พักบิลหน้าร้าน'),
-            bill_note,
-            customer_id,
-            customer_name,
-            status: settle_immediately ? 'PAID' : 'OPEN',
-            subtotal: 0,
-            discount: Number(discount) || 0,
-            total_amount: 0,
-            total_cost: 0,
-            payment_method,
-            cash_received: Number(cash_received) || 0,
-            change_amount: 0,
-            created_at: now,
-            paid_at: settle_immediately ? now : null
-          }
+        await sbInsertOrderSafe({
+          id: orderId,
+          order_type: 'RETAIL',
+          table_id: null,
+          bill_title: bill_title || (settle_immediately ? 'ขายหน้าร้าน' : 'พักบิลหน้าร้าน'),
+          bill_note,
+          customer_id,
+          customer_name,
+          status: settle_immediately ? 'PAID' : 'OPEN',
+          subtotal: 0,
+          discount: Number(discount) || 0,
+          total_amount: 0,
+          total_cost: 0,
+          payment_method,
+          cash_received: Number(cash_received) || 0,
+          change_amount: 0,
+          created_at: now,
+          paid_at: settle_immediately ? now : null
         });
       }
 
@@ -449,12 +470,9 @@ module.exports = async (req, res) => {
       if (!targetItem) return send(404, { error: 'ไม่พบรายการสินค้าที่ต้องการคืน' });
 
       const validMode = mode === 'VOID_WASTE' ? 'VOID_WASTE' : 'RETURNED_RESTOCK';
-      await sbRest(`order_items?id=eq.${encodeURIComponent(targetItem.id)}`, {
-        method: 'PATCH',
-        body: {
-          item_status: validMode,
-          kitchen_status: targetItem.item_type === 'FOOD' ? 'CANCEL_REQUESTED' : 'NONE'
-        }
+      await sbPatchOrderItemSafe(targetItem.id, {
+        item_status: validMode,
+        kitchen_status: targetItem.item_type === 'FOOD' ? 'CANCEL_REQUESTED' : 'NONE'
       });
 
       if (validMode === 'RETURNED_RESTOCK' && targetItem.item_type === 'GROCERY') {
@@ -510,17 +528,7 @@ module.exports = async (req, res) => {
       if (customer_id !== undefined) patchDiscBody.customer_id = customer_id;
       if (customer_name !== undefined) patchDiscBody.customer_name = customer_name;
 
-      try {
-        await sbRest(`orders?id=eq.${encodeURIComponent(targetOrderId)}`, {
-          method: 'PATCH',
-          body: patchDiscBody
-        });
-      } catch {
-        await sbRest(`orders?id=eq.${encodeURIComponent(targetOrderId)}`, {
-          method: 'PATCH',
-          body: { discount: Number(discount) || 0 }
-        });
-      }
+      await sbPatchOrderSafe(targetOrderId, patchDiscBody);
       await recalculateSupabaseOrderTotals(targetOrderId);
 
       const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(targetOrderId)}`);
@@ -534,9 +542,13 @@ module.exports = async (req, res) => {
         ? `${refreshed.bill_note || ''} [ใช้แต้มสะสม ${redeemPts} แต้ม ลด ฿${ptsDisc}]`.trim()
         : (refreshed.bill_note || '');
 
-      await sbRest(`orders?id=eq.${encodeURIComponent(targetOrderId)}`, {
-        method: 'PATCH',
-        body: { status: 'PAID', payment_method, cash_received: received, change_amount: change, bill_note: nextNote, paid_at: now }
+      await sbPatchOrderSafe(targetOrderId, {
+        status: 'PAID',
+        payment_method,
+        cash_received: received,
+        change_amount: change,
+        bill_note: nextNote,
+        paid_at: now
       });
 
       if (refreshed.table_id) {
@@ -566,10 +578,7 @@ module.exports = async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/api/kds/status') {
       const { order_item_id, kitchen_status } = body;
-      await sbRest(`order_items?id=eq.${encodeURIComponent(order_item_id)}`, {
-        method: 'PATCH',
-        body: { kitchen_status }
-      });
+      await sbPatchOrderItemSafe(order_item_id, { kitchen_status });
       return send(200, { success: true, data: await getSupabaseBootstrapData() });
     }
 
@@ -859,10 +868,7 @@ module.exports = async (req, res) => {
       const items = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(order_id)}&item_status=eq.ACTIVE`);
       for (const it of items) {
         const nextKds = it.item_type === 'FOOD' ? (wasPaid ? 'CANCELLED_ACK' : 'CANCEL_REQUESTED') : 'NONE';
-        await sbRest(`order_items?id=eq.${encodeURIComponent(it.id)}`, {
-          method: 'PATCH',
-          body: { item_status: validMode, kitchen_status: nextKds }
-        });
+        await sbPatchOrderItemSafe(it.id, { item_status: validMode, kitchen_status: nextKds });
         if (validMode === 'RETURNED_RESTOCK' && it.item_type === 'GROCERY') {
           const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(it.product_id)}`);
           if (prods[0]) {
@@ -872,10 +878,7 @@ module.exports = async (req, res) => {
         }
       }
 
-      await sbRest(`orders?id=eq.${encodeURIComponent(order_id)}`, {
-        method: 'PATCH',
-        body: { status: nextStatus }
-      });
+      await sbPatchOrderSafe(order_id, { status: nextStatus });
 
       if (ord.table_id) {
         await sbRest(`dining_tables?id=eq.${encodeURIComponent(ord.table_id)}`, {

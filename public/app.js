@@ -254,21 +254,43 @@ function getLoyaltySettings() {
 }
 
 async function apiCall(endpoint, method = 'GET', bodyObj = null) {
+  const fetchUrl = method === 'GET'
+    ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}_t=${Date.now()}`
+    : endpoint;
+
   try {
-    const res = await fetch(endpoint, {
+    const res = await fetch(fetchUrl, {
       method,
-      headers: bodyObj ? { 'Content-Type': 'application/json' } : undefined,
+      cache: 'no-store',
+      headers: bodyObj
+        ? { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' }
+        : { 'Cache-Control': 'no-cache' },
       body: bodyObj ? JSON.stringify(bodyObj) : undefined
     });
-    if (res.ok) {
-      const json = await res.json();
-      if (json && !json.error) {
-        state.backendMode = 'CLOUD_API';
-        return json;
+    const json = await res.json().catch(() => null);
+    if (res.ok && json && !json.error) {
+      state.backendMode = 'CLOUD_API';
+      state.lastApiError = '';
+      state.lastSyncAt = new Date().toISOString();
+      return json;
+    }
+    if (json && json.error) {
+      state.lastApiError = json.error;
+      // หากเชื่อมต่อ CLOUD_API อยู่แล้ว แต่คำสั่งบันทึกมีปัญหา ห้ามสลับกลับไปใช้ LocalStorage ของเครื่องใครเครื่องมัน!
+      if (state.backendMode === 'CLOUD_API' && endpoint !== '/api/bootstrap') {
+        showToast(`⚠️ ซิงค์ฐานข้อมูลขัดข้อง: ${json.error}`, 'warn');
+        return null;
       }
     }
-  } catch {
-    // Fallback to LocalPosEngine
+  } catch (err) {
+    state.lastApiError = err?.message || 'Network error';
+    // หากเคยเชื่อมต่อ CLOUD_API สำเร็จแล้ว แต่เน็ตมือถือสะดุดชั่วคราว ห้ามเอาข้อมูล LocalStorage มาทับข้อมูล Cloud
+    if (state.backendMode === 'CLOUD_API') {
+      if (endpoint !== '/api/bootstrap') {
+        showToast('⚠️ สัญญาณอินเทอร์เน็ตสะดุด กรุณาลองกดอีกครั้ง', 'warn');
+      }
+      return null;
+    }
   }
 
   state.backendMode = 'LOCAL_ENGINE';
@@ -301,18 +323,48 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
   return eng.getBootstrap();
 }
 
-async function fetchBootstrap() {
+function isUserBusyInteracting() {
+  if (
+    state.modifierModalProduct ||
+    state.checkoutModalOrder ||
+    state.editingBillMetaOrder ||
+    state.showNewCustomerModal ||
+    state.showNewTableModal ||
+    state.showNewProductModal ||
+    state.showNewIngredientModal ||
+    state.showNewExpenseModal ||
+    state.invoiceModalOrder ||
+    state.transferModalOrder ||
+    state.splitModalOrder ||
+    state.showLoyaltySettingsModal ||
+    state.viewingStockReceipt ||
+    state.editingStockReceipt ||
+    state.voiceListening ||
+    state.stockVoiceListening
+  ) {
+    return true;
+  }
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
+    return true;
+  }
+  return false;
+}
+
+async function fetchBootstrap(silentBackground = false) {
+  if (silentBackground && isUserBusyInteracting()) return;
   const data = await apiCall('/api/bootstrap', 'GET');
   if (data && Array.isArray(data.products)) {
     state.data = data;
     syncBomEditorWithProduct(state.selectedBomFoodId);
     syncCurrentBillMetaFromContext();
-  } else if (window.LocalPosEngine) {
+    render();
+  } else if (!state.data && window.LocalPosEngine) {
     state.data = window.LocalPosEngine.getBootstrap();
     syncBomEditorWithProduct(state.selectedBomFoodId);
     syncCurrentBillMetaFromContext();
+    render();
   }
-  render();
 }
 
 function getActiveContextOrder() {
@@ -4755,7 +4807,26 @@ function render() {
             </button>
           </nav>
 
-          <div class="ttl-nav-end">
+          <div class="ttl-nav-end" style="display:flex; align-items:center; gap:8px;">
+            <button
+              type="button"
+              class="ttl-btn ttl-btn-sm ${state.backendMode === 'CLOUD_API' ? 'ttl-btn-good' : 'ttl-btn-danger-outline'}"
+              style="height:30px; padding:0 10px; font-size:11.5px; font-weight:700;"
+              title="${state.backendMode === 'CLOUD_API' ? 'เชื่อมต่อฐานข้อมูลกลางแล้ว กดเพื่อซิงค์ข้อมูลล่าสุดทันที' : `ขณะนี้อยู่ในโหมดบันทึกในเครื่อง (ไม่ซิงค์ข้ามอุปกรณ์) ${state.lastApiError ? 'สาเหตุ: ' + state.lastApiError : ''}`}"
+              onclick="
+                fetchBootstrap(false).then(() => {
+                  if (state.backendMode === 'CLOUD_API') {
+                    showToast('☁️ ซิงค์ข้อมูลล่าสุดจากฐานข้อมูลกลางเรียบร้อยแล้ว');
+                  } else {
+                    showToast('⚠️ เครื่องนี้อยู่ในโหมดออฟไลน์ในเบราว์เซอร์ (' + (state.lastApiError || 'ไม่ได้เชื่อมต่อ Supabase') + ')', 'warn');
+                  }
+                });
+              "
+            >
+              ${state.backendMode === 'CLOUD_API'
+                ? (state.data?.backendSource === 'SUPABASE_CLOUD' ? '☁️ ซิงค์ออนไลน์ (Supabase)' : '🖥️ เซิร์ฟเวอร์กลาง')
+                : '⚠️ โหมดในเครื่อง (ไม่ซิงค์)'}
+            </button>
             <div class="ttl-seg" role="group" aria-label="Theme">
               <button type="button" aria-selected="${state.theme === 'teal'}" onclick="state.theme='teal'; render();">Teal</button>
               <button type="button" aria-selected="${state.theme === 'plum'}" onclick="state.theme='plum'; render();">Plum</button>
@@ -4840,15 +4911,17 @@ function render() {
   }
 }
 
-// Initialize SSE & Bootstrap on Load
+// Initialize SSE, Auto-Sync Polling (for Vercel Serverless across MacBook & Mobile), and Visibility Sync
 window.addEventListener('DOMContentLoaded', () => {
-  fetchBootstrap();
+  fetchBootstrap(false);
   try {
     const evtSource = new EventSource('/api/events');
     evtSource.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'refresh') fetchBootstrap();
+        if (msg && msg.type && msg.type !== 'connected') {
+          fetchBootstrap(true);
+        }
       } catch {
         // ignore
       }
@@ -4856,4 +4929,21 @@ window.addEventListener('DOMContentLoaded', () => {
   } catch {
     // ignore if SSE not supported
   }
+
+  // ซิงค์ข้อมูลอัตโนมัติทุกๆ 5 วินาทีเพื่อให้ MacBook และ Mobile เห็นข้อมูลตรงกันเสมอบน Vercel + Supabase
+  setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      fetchBootstrap(true);
+    }
+  }, 5000);
+
+  // ซิงค์ทันทีเมื่อสลับหน้าจอกลับมาหรือปลดล็อกหน้าจอมือถือ
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      fetchBootstrap(true);
+    }
+  });
+  window.addEventListener('focus', () => {
+    fetchBootstrap(true);
+  });
 });

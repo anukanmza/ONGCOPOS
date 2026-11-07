@@ -109,12 +109,12 @@ async function getSupabaseBootstrapData() {
     sbRest('recipe_items?select=*'),
     sbRest('dining_tables?select=*&order=id.asc'),
     sbRest('orders?select=*&status=eq.OPEN&order=created_at.desc'),
-    sbRest('orders?select=*&status=in.(PAID,OPEN,CANCELLED,VOIDED)&order=created_at.desc&limit=100'),
-    sbRest('order_items?select=*&order=created_at.asc&limit=400'),
-    sbRest('stock_in_receipts?select=*&order=created_at.desc&limit=30'),
+    sbRest('orders?select=*&order=created_at.desc&limit=100'),
+    sbRest('order_items?select=*&order=created_at.asc&limit=500'),
+    sbRest('stock_in_receipts?select=*&order=created_at.desc&limit=60'),
     sbRest('stock_in_items?select=*'),
     sbRest('inventory_logs?select=*&order=created_at.desc&limit=60'),
-    sbRest('expenses?select=*&order=created_at.desc&limit=40')
+    sbRest('expenses?select=*&order=created_at.desc&limit=60')
   ]);
 
   const ingMap = new Map(ingredients.map(i => [i.id, i]));
@@ -218,11 +218,16 @@ async function getSupabaseBootstrapData() {
       .filter(it => it.receipt_id === r.id)
       .map(it => ({
         ...it,
+        target_type: it.item_target_type || it.target_type || 'GROCERY',
+        target_id: it.product_id || it.ingredient_id || it.target_id,
+        input_unit: it.unit_label || it.input_unit || '',
+        conversion_rate: Number(it.conversion_rate || 1),
         input_qty: Number(it.input_qty),
         qty_before: Number(it.qty_before),
         qty_added: Number(it.qty_added),
         qty_after: Number(it.qty_after),
-        total_line_cost: Number(it.total_line_cost || 0)
+        line_cost: Number(it.total_line_cost ?? it.line_cost ?? 0),
+        total_line_cost: Number(it.total_line_cost ?? it.line_cost ?? 0)
       }))
   }));
 
@@ -344,6 +349,7 @@ async function getSupabaseBootstrapData() {
   });
 
   return {
+    backendSource: 'SUPABASE_CLOUD',
     categories,
     products,
     modifiers,
