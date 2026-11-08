@@ -353,6 +353,47 @@ function getFullBootstrapData() {
   };
 }
 
+// หาต้นทุนเดิมก่อนรับของใบนี้ เพื่อคืนค่าต้นทุนเมื่อลบ/แก้ไขใบรับของ
+function resolveLocalCostBeforeReceipt(receiptId, oldIt) {
+  const isGrocery = oldIt.item_target_type === 'GROCERY';
+  const col = isGrocery ? 'product_id' : 'ingredient_id';
+  const targetId = isGrocery ? oldIt.product_id : oldIt.ingredient_id;
+  if (!targetId) return null;
+  try {
+    const logs = db.prepare(`SELECT note FROM inventory_logs WHERE reference_id = ? AND ${col} = ?`).all(receiptId, targetId);
+    for (const l of logs) {
+      const m = String(l.note || '').match(/\[COST_BEFORE=([\d.]+)\]/);
+      if (m) return Number(m[1]);
+    }
+  } catch {}
+  try {
+    const prev = db.prepare(`SELECT purchase_cost_per_base_unit FROM stock_in_items WHERE ${col} = ? AND receipt_id != ? AND id < ? ORDER BY id DESC LIMIT 1`).get(targetId, receiptId, oldIt.id);
+    if (prev && Number(prev.purchase_cost_per_base_unit) > 0) return Number(prev.purchase_cost_per_base_unit);
+  } catch {}
+  return null;
+}
+
+// คืนสต็อก + คืนต้นทุนเดิม ของรายการในใบรับของ (ใช้ทั้งตอนลบและแก้ไข)
+function revertLocalStockInItem(receiptId, oldIt) {
+  const purchaseCost = Number(oldIt.purchase_cost_per_base_unit) || 0;
+  const costBefore = resolveLocalCostBeforeReceipt(receiptId, oldIt);
+  if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
+    const prod = db.prepare('SELECT stock_qty, cost FROM products WHERE id = ?').get(oldIt.product_id);
+    if (prod) {
+      const reverted = Math.max(0, Math.round((prod.stock_qty - oldIt.qty_added) * 100) / 100);
+      const restoreCost = costBefore !== null && purchaseCost > 0 && Math.abs(Number(prod.cost) - purchaseCost) < 0.011;
+      db.prepare('UPDATE products SET stock_qty = ?, cost = ? WHERE id = ?').run(reverted, restoreCost ? costBefore : prod.cost, oldIt.product_id);
+    }
+  } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
+    const ing = db.prepare('SELECT current_qty, cost_per_unit FROM ingredients WHERE id = ?').get(oldIt.ingredient_id);
+    if (ing) {
+      const reverted = Math.max(0, Math.round((ing.current_qty - oldIt.qty_added) * 100) / 100);
+      const restoreCost = costBefore !== null && purchaseCost > 0 && Math.abs(Number(ing.cost_per_unit) - purchaseCost) < 0.0011;
+      db.prepare('UPDATE ingredients SET current_qty = ?, cost_per_unit = ? WHERE id = ?').run(reverted, restoreCost ? costBefore : ing.cost_per_unit, oldIt.ingredient_id);
+    }
+  }
+}
+
 // Helper to deduct stock for a single order item
 function deductStockAndRecipeForItem(product, modifierNames, quantity, orderId, contextLabel) {
   const now = new Date().toISOString();
@@ -1199,6 +1240,7 @@ const server = http.createServer(async (req, res) => {
             product_id: prod.id,
             ingredient_id: null,
             item_name: prod.name,
+            cost_before: Number(prod.cost) || 0,
             base_unit: prod.unit,
             unit_label: unitLabel,
             input_qty: inputQty,
@@ -1230,6 +1272,7 @@ const server = http.createServer(async (req, res) => {
             product_id: null,
             ingredient_id: ing.id,
             item_name: ing.name,
+            cost_before: Number(ing.cost_per_unit) || 0,
             base_unit: ing.stock_unit,
             unit_label: unitLabel,
             input_qty: inputQty,
@@ -1294,7 +1337,7 @@ const server = http.createServer(async (req, res) => {
           pl.qty_after,
           pl.base_unit,
           receiptId,
-          `นำเข้า ${pl.input_qty} ${pl.unit_label} (เดิม ${pl.qty_before} -> ใหม่ ${pl.qty_after} ${pl.base_unit}) จาก ${supplier_name}`,
+          `นำเข้า ${pl.input_qty} ${pl.unit_label} (เดิม ${pl.qty_before} -> ใหม่ ${pl.qty_after} ${pl.base_unit}) จาก ${supplier_name} [COST_BEFORE=${Number(pl.cost_before) || 0}]`,
           now
         );
       }
@@ -1326,21 +1369,9 @@ const server = http.createServer(async (req, res) => {
       if (!existingRec) return sendJson(res, 404, { error: 'ไม่พบใบรับของที่ต้องการแก้ไข' });
 
       const oldItems = db.prepare('SELECT * FROM stock_in_items WHERE receipt_id = ?').all(receipt_id);
-      // 1. Revert stock added by old items
+      // 1. Revert stock (and restore previous cost) added by old items
       for (const oldIt of oldItems) {
-        if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
-          const prod = db.prepare('SELECT stock_qty FROM products WHERE id = ?').get(oldIt.product_id);
-          if (prod) {
-            const reverted = Math.max(0, Math.round((prod.stock_qty - oldIt.qty_added) * 100) / 100);
-            db.prepare('UPDATE products SET stock_qty = ? WHERE id = ?').run(reverted, oldIt.product_id);
-          }
-        } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
-          const ing = db.prepare('SELECT current_qty FROM ingredients WHERE id = ?').get(oldIt.ingredient_id);
-          if (ing) {
-            const reverted = Math.max(0, Math.round((ing.current_qty - oldIt.qty_added) * 100) / 100);
-            db.prepare('UPDATE ingredients SET current_qty = ? WHERE id = ?').run(reverted, oldIt.ingredient_id);
-          }
-        }
+        revertLocalStockInItem(receipt_id, oldIt);
       }
 
       db.prepare('DELETE FROM stock_in_items WHERE receipt_id = ?').run(receipt_id);
@@ -1412,19 +1443,7 @@ const server = http.createServer(async (req, res) => {
 
       const oldItems = db.prepare('SELECT * FROM stock_in_items WHERE receipt_id = ?').all(receipt_id);
       for (const oldIt of oldItems) {
-        if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
-          const prod = db.prepare('SELECT stock_qty FROM products WHERE id = ?').get(oldIt.product_id);
-          if (prod) {
-            const reverted = Math.max(0, Math.round((prod.stock_qty - oldIt.qty_added) * 100) / 100);
-            db.prepare('UPDATE products SET stock_qty = ? WHERE id = ?').run(reverted, oldIt.product_id);
-          }
-        } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
-          const ing = db.prepare('SELECT current_qty FROM ingredients WHERE id = ?').get(oldIt.ingredient_id);
-          if (ing) {
-            const reverted = Math.max(0, Math.round((ing.current_qty - oldIt.qty_added) * 100) / 100);
-            db.prepare('UPDATE ingredients SET current_qty = ? WHERE id = ?').run(reverted, oldIt.ingredient_id);
-          }
-        }
+        revertLocalStockInItem(receipt_id, oldIt);
       }
 
       db.prepare('DELETE FROM stock_in_items WHERE receipt_id = ?').run(receipt_id);

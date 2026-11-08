@@ -1,5 +1,53 @@
 const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, setRuntimeSupabaseConfig, getSupabaseConfig, sbRest, getSupabaseSyncCheck, getSupabaseBootstrapData } = require('../supabaseAdapter');
 
+// หาต้นทุนเดิมก่อนรับของใบนี้ เพื่อคืนค่าต้นทุนเมื่อลบ/แก้ไขใบรับของ
+async function sbResolveCostBeforeReceipt(receiptId, oldIt) {
+  const isGrocery = oldIt.item_target_type === 'GROCERY';
+  const col = isGrocery ? 'product_id' : 'ingredient_id';
+  const targetId = isGrocery ? oldIt.product_id : oldIt.ingredient_id;
+  if (!targetId) return null;
+  // 1) อ่านจากบันทึก [COST_BEFORE=x] ใน inventory_logs ของใบรับของนี้
+  try {
+    const logs = await sbRest(`inventory_logs?select=note&reference_id=eq.${encodeURIComponent(receiptId)}&${col}=eq.${encodeURIComponent(targetId)}`);
+    for (const l of logs || []) {
+      const m = String(l.note || '').match(/\[COST_BEFORE=([\d.]+)\]/);
+      if (m) return Number(m[1]);
+    }
+  } catch {}
+  // 2) สำรอง: ใช้ราคาทุนจากใบรับของใบก่อนหน้าของสินค้าตัวเดียวกัน
+  try {
+    const prev = await sbRest(`stock_in_items?select=purchase_cost_per_base_unit&${col}=eq.${encodeURIComponent(targetId)}&receipt_id=neq.${encodeURIComponent(receiptId)}&id=lt.${encodeURIComponent(oldIt.id)}&order=id.desc&limit=1`);
+    if (prev && prev[0] && Number(prev[0].purchase_cost_per_base_unit) > 0) return Number(prev[0].purchase_cost_per_base_unit);
+  } catch {}
+  return null;
+}
+
+// คืนสต็อก + คืนต้นทุนเดิม ของรายการในใบรับของ (ใช้ทั้งตอนลบและแก้ไข)
+async function sbRevertStockInItem(receiptId, oldIt) {
+  const purchaseCost = Number(oldIt.purchase_cost_per_base_unit) || 0;
+  const costBefore = await sbResolveCostBeforeReceipt(receiptId, oldIt);
+  if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
+    const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(oldIt.product_id)}`);
+    if (prods[0]) {
+      const patch = { stock_qty: Math.max(0, Math.round((Number(prods[0].stock_qty) - Number(oldIt.qty_added)) * 100) / 100) };
+      // คืนต้นทุนเฉพาะกรณีที่ต้นทุนปัจจุบันยังมาจากใบนี้ (ยังไม่มีใบใหม่กว่าหรือแก้ไขมือทับ)
+      if (costBefore !== null && purchaseCost > 0 && Math.abs(Number(prods[0].cost) - purchaseCost) < 0.011) {
+        patch.cost = costBefore;
+      }
+      await sbRest(`products?id=eq.${encodeURIComponent(oldIt.product_id)}`, { method: 'PATCH', body: patch });
+    }
+  } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
+    const ings = await sbRest(`ingredients?select=*&id=eq.${encodeURIComponent(oldIt.ingredient_id)}`);
+    if (ings[0]) {
+      const patch = { current_qty: Math.max(0, Math.round((Number(ings[0].current_qty) - Number(oldIt.qty_added)) * 100) / 100) };
+      if (costBefore !== null && purchaseCost > 0 && Math.abs(Number(ings[0].cost_per_unit) - purchaseCost) < 0.0011) {
+        patch.cost_per_unit = costBefore;
+      }
+      await sbRest(`ingredients?id=eq.${encodeURIComponent(oldIt.ingredient_id)}`, { method: 'PATCH', body: patch });
+    }
+  }
+}
+
 async function recalculateSupabaseOrderTotals(orderId) {
   const items = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(orderId)}`);
   let subtotal = 0;
@@ -646,6 +694,7 @@ module.exports = async (req, res) => {
             product_id: prod.id,
             ingredient_id: null,
             item_name: prod.name,
+            cost_before: Number(prod.cost) || 0,
             base_unit: prod.unit,
             unit_label: usePurchaseUnit ? prod.purchase_unit : prod.unit,
             input_qty: inputQty,
@@ -675,6 +724,7 @@ module.exports = async (req, res) => {
             product_id: null,
             ingredient_id: ing.id,
             item_name: ing.name,
+            cost_before: Number(ing.cost_per_unit) || 0,
             base_unit: ing.stock_unit,
             unit_label: usePurchaseUnit ? ing.purchase_unit : ing.stock_unit,
             input_qty: inputQty,
@@ -736,7 +786,7 @@ module.exports = async (req, res) => {
             unit: pl.base_unit,
             reason: 'STOCK_IN_RECEIPT',
             reference_id: receiptId,
-            note: `นำเข้า ${pl.input_qty} ${pl.unit_label} (เดิม ${pl.qty_before} -> ใหม่ ${pl.qty_after})`,
+            note: `นำเข้า ${pl.input_qty} ${pl.unit_label} (เดิม ${pl.qty_before} -> ใหม่ ${pl.qty_after}) [COST_BEFORE=${Number(pl.cost_before) || 0}]`,
             created_at: now
           }
         });
@@ -1185,19 +1235,7 @@ module.exports = async (req, res) => {
       const { receipt_id, supplier_name = 'ร้านค้าส่ง / ตลาดสด', note = '', items = [] } = body;
       const oldItems = await sbRest(`stock_in_items?select=*&receipt_id=eq.${encodeURIComponent(receipt_id)}`);
       for (const oldIt of oldItems) {
-        if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
-          const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(oldIt.product_id)}`);
-          if (prods[0]) {
-            const rev = Math.max(0, Math.round((Number(prods[0].stock_qty) - Number(oldIt.qty_added)) * 100) / 100);
-            await sbRest(`products?id=eq.${encodeURIComponent(oldIt.product_id)}`, { method: 'PATCH', body: { stock_qty: rev } });
-          }
-        } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
-          const ings = await sbRest(`ingredients?select=*&id=eq.${encodeURIComponent(oldIt.ingredient_id)}`);
-          if (ings[0]) {
-            const rev = Math.max(0, Math.round((Number(ings[0].current_qty) - Number(oldIt.qty_added)) * 100) / 100);
-            await sbRest(`ingredients?id=eq.${encodeURIComponent(oldIt.ingredient_id)}`, { method: 'PATCH', body: { current_qty: rev } });
-          }
-        }
+        await sbRevertStockInItem(receipt_id, oldIt);
       }
       await sbRest(`stock_in_items?receipt_id=eq.${encodeURIComponent(receipt_id)}`, { method: 'DELETE' });
 
@@ -1289,19 +1327,7 @@ module.exports = async (req, res) => {
       const { receipt_id } = body;
       const oldItems = await sbRest(`stock_in_items?select=*&receipt_id=eq.${encodeURIComponent(receipt_id)}`);
       for (const oldIt of oldItems) {
-        if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
-          const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(oldIt.product_id)}`);
-          if (prods[0]) {
-            const rev = Math.max(0, Math.round((Number(prods[0].stock_qty) - Number(oldIt.qty_added)) * 100) / 100);
-            await sbRest(`products?id=eq.${encodeURIComponent(oldIt.product_id)}`, { method: 'PATCH', body: { stock_qty: rev } });
-          }
-        } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
-          const ings = await sbRest(`ingredients?select=*&id=eq.${encodeURIComponent(oldIt.ingredient_id)}`);
-          if (ings[0]) {
-            const rev = Math.max(0, Math.round((Number(ings[0].current_qty) - Number(oldIt.qty_added)) * 100) / 100);
-            await sbRest(`ingredients?id=eq.${encodeURIComponent(oldIt.ingredient_id)}`, { method: 'PATCH', body: { current_qty: rev } });
-          }
-        }
+        await sbRevertStockInItem(receipt_id, oldIt);
       }
       await sbRest(`stock_in_items?receipt_id=eq.${encodeURIComponent(receipt_id)}`, { method: 'DELETE' });
       await sbRest(`stock_in_receipts?id=eq.${encodeURIComponent(receipt_id)}`, { method: 'DELETE' });
