@@ -1,5 +1,17 @@
 const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, setRuntimeSupabaseConfig, getSupabaseConfig, sbRest, getSupabaseSyncCheck, getSupabaseBootstrapData } = require('../supabaseAdapter');
 
+// ต้นทุนเฉลี่ยถ่วงน้ำหนักตามจำนวน: (ของเดิม × ทุนเดิม + ยอดซื้อล็อตใหม่) ÷ (จำนวนเดิม + จำนวนใหม่)
+// หมายเหตุ: ค่าที่ได้จะถูกเก็บใน stock_in_items.purchase_cost_per_base_unit (= ต้นทุนเฉลี่ยหลังรับของใบนี้)
+function weightedAverageCost(qtyBefore, oldCost, qtyAdded, lineCost, decimals = 2) {
+  const oldQty = Math.max(0, Number(qtyBefore) || 0);
+  const addQty = Math.max(0, Number(qtyAdded) || 0);
+  const prevCost = Math.max(0, Number(oldCost) || 0);
+  const buyTotal = Math.max(0, Number(lineCost) || 0);
+  if (addQty <= 0 || buyTotal <= 0) return prevCost;
+  const f = 10 ** decimals;
+  return Math.round(((oldQty * prevCost + buyTotal) / (oldQty + addQty)) * f) / f;
+}
+
 // หาต้นทุนเดิมก่อนรับของใบนี้ เพื่อคืนค่าต้นทุนเมื่อลบ/แก้ไขใบรับของ
 async function sbResolveCostBeforeReceipt(receiptId, oldIt) {
   const isGrocery = oldIt.item_target_type === 'GROCERY';
@@ -682,7 +694,7 @@ module.exports = async (req, res) => {
           const qtyBefore = prod.stock_qty;
           const qtyAdded = Math.round(inputQty * conv * 100) / 100;
           const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
-          const baseCost = qtyAdded > 0 && lineCost > 0 ? Math.round((lineCost / qtyAdded) * 100) / 100 : prod.cost;
+          const baseCost = weightedAverageCost(qtyBefore, prod.cost, qtyAdded, lineCost, 2);
 
           await sbRest(`products?id=eq.${encodeURIComponent(prod.id)}`, {
             method: 'PATCH',
@@ -712,7 +724,7 @@ module.exports = async (req, res) => {
           const qtyBefore = ing.current_qty;
           const qtyAdded = Math.round(inputQty * conv * 100) / 100;
           const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
-          const baseCost = qtyAdded > 0 && lineCost > 0 ? Math.round((lineCost / qtyAdded) * 10000) / 10000 : ing.cost_per_unit;
+          const baseCost = weightedAverageCost(qtyBefore, ing.cost_per_unit, qtyAdded, lineCost, 4);
 
           await sbRest(`ingredients?id=eq.${encodeURIComponent(ing.id)}`, {
             method: 'PATCH',
@@ -1257,7 +1269,7 @@ module.exports = async (req, res) => {
           const qtyBefore = Number(prod.stock_qty) || 0;
           const qtyAdded = Math.round(inputQty * conv * 100) / 100;
           const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
-          const baseCost = qtyAdded > 0 && lineCost > 0 ? Math.round((lineCost / qtyAdded) * 100) / 100 : Number(prod.cost);
+          const baseCost = weightedAverageCost(qtyBefore, prod.cost, qtyAdded, lineCost, 2);
           await sbRest(`products?id=eq.${encodeURIComponent(prod.id)}`, { method: 'PATCH', body: { stock_qty: qtyAfter, cost: baseCost } });
           await sbRest('stock_in_items', {
             method: 'POST',
@@ -1285,7 +1297,7 @@ module.exports = async (req, res) => {
           const qtyBefore = Number(ing.current_qty) || 0;
           const qtyAdded = Math.round(inputQty * conv * 100) / 100;
           const qtyAfter = Math.round((qtyBefore + qtyAdded) * 100) / 100;
-          const baseCost = qtyAdded > 0 && lineCost > 0 ? Math.round((lineCost / qtyAdded) * 10000) / 10000 : Number(ing.cost_per_unit);
+          const baseCost = weightedAverageCost(qtyBefore, ing.cost_per_unit, qtyAdded, lineCost, 4);
           await sbRest(`ingredients?id=eq.${encodeURIComponent(ing.id)}`, { method: 'PATCH', body: { current_qty: qtyAfter, cost_per_unit: baseCost } });
           await sbRest('stock_in_items', {
             method: 'POST',
