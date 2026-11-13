@@ -403,11 +403,36 @@ window.LocalPosEngine = {
     if (!originalText) {
       return { success: false, raw_text: '', intent: 'ORDER', order_type: 'RETAIL', table: null, items: [], message: 'กรุณาพูดหรือพิมพ์คำสั่งออเดอร์' };
     }
-    const numMap = { 'ครึ่ง': 1, 'หนึ่ง': 1, 'นึง': 1, 'สอง': 2, 'คู่': 2, 'สาม': 3, 'สี่': 4, 'ห้า': 5, 'หก': 6, 'เจ็ด': 7, 'แปด': 8, 'เก้า': 9, 'สิบ': 10, 'โหล': 12 };
+    const thaiDigitMap = {
+      '๐': '0', '๑': '1', '๒': '2', '๓': '3', '๔': '4',
+      '๕': '5', '๖': '6', '๗': '7', '๘': '8', '๙': '9'
+    };
+    const numMap = {
+      'หนึ่ง': 1, 'นึง': 1, 'สอง': 2, 'คู่': 2, 'สาม': 3, 'สี่': 4,
+      'ห้า': 5, 'หก': 6, 'เจ็ด': 7, 'แปด': 8, 'เก้า': 9, 'สิบ': 10,
+      'สิบเอ็ด': 11, 'สิบสอง': 12, 'สิบสาม': 13, 'สิบสี่': 14, 'สิบห้า': 15,
+      'สิบหก': 16, 'สิบเจ็ด': 17, 'สิบแปด': 18, 'สิบเก้า': 19,
+      'ยี่สิบ': 20, 'ยี่สิบเอ็ด': 21, 'ยี่สิบสอง': 22, 'ยี่สิบสาม': 23, 'ยี่สิบสี่': 24, 'ยี่สิบห้า': 25,
+      'สามสิบ': 30, 'สี่สิบ': 40, 'ห้าสิบ': 50, 'ครึ่ง': 1, 'โหล': 12
+    };
+    const thaiUnits = 'จาน|ถ้วย|ชาม|ขวด|แก้ว|กระป๋อง|ซอง|ห่อ|ถัง|ชิ้น|กล่อง|แพ็ค|ฟอง|ที่|ชุด|อัน|ถุง|ลัง|ลูก|หม้อ|กิโล|โล';
+
     let workingText = originalText;
-    for (const [k, v] of Object.entries(numMap)) {
-      workingText = workingText.replace(new RegExp(k, 'g'), ` ${v} `);
+    // 1. Thai digits
+    workingText = workingText.replace(/[๐-๙]/g, d => thaiDigitMap[d] || d);
+    // 2. Space around digits
+    workingText = workingText.replace(/([ก-๙])(\d+)/g, '$1 $2 ').replace(/(\d+)([ก-๙])/g, ' $1 $2');
+    // 3. Unit + นึง
+    workingText = workingText.replace(new RegExp(`(${thaiUnits})\\s*นึง`, 'g'), '$1 1');
+    // 4. Thai number words
+    const wordKeys = Object.keys(numMap).sort((a, b) => b.length - a.length);
+    for (const k of wordKeys) {
+      const val = numMap[k];
+      workingText = workingText.replace(new RegExp(`(${k})\\s*(${thaiUnits}|$)`, 'g'), (m, w, u) => ` ${val} ${u}`);
+      workingText = workingText.replace(new RegExp(`(โต๊ะ\\s*|เบอร์\\s*|เอา\\s*|ขอ\\s*|สั่ง\\s*|เพิ่ม\\s*|\\s+)(${k})`, 'g'), (m, pfx, w) => `${pfx} ${val} `);
+      workingText = workingText.replace(new RegExp(`(^|\\s+)(${k})(\\s+|$)`, 'g'), (m, p1, w, p2) => `${p1}${val}${p2}`);
     }
+    workingText = workingText.replace(/\s+/g, ' ').trim();
 
     let intent = 'ORDER';
     let returnMode = 'RETURNED_RESTOCK';
@@ -472,11 +497,24 @@ window.LocalPosEngine = {
     const parsedItems = [];
     for (let i = 0; i < matches.length; i++) {
       const cur = matches[i];
+      const prevEnd = i > 0 ? matches[i - 1].end : 0;
       const nextStart = i + 1 < matches.length ? matches[i + 1].start : workingText.length;
       const tail = workingText.slice(cur.end, nextStart);
+      const head = workingText.slice(prevEnd, cur.start);
+
       let quantity = 1;
-      const qm = tail.match(/(\d+)/);
-      if (qm) quantity = Math.min(100, Math.max(1, parseInt(qm[1], 10)));
+      const qmUnit = tail.match(new RegExp(`(\\d+)\\s*(?:${thaiUnits})`));
+      const qmTail = tail.match(/(\d+)/);
+      const qmHead = head.match(new RegExp(`(\\d+)\\s*(?:${thaiUnits})?\\s*$`));
+
+      if (qmUnit) {
+        quantity = parseInt(qmUnit[1], 10);
+      } else if (qmTail) {
+        quantity = parseInt(qmTail[1], 10);
+      } else if (qmHead) {
+        quantity = parseInt(qmHead[1], 10);
+      }
+      quantity = Math.min(100, Math.max(1, quantity));
 
       const matchedModifiers = [];
       let extraPrice = 0;

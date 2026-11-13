@@ -583,14 +583,51 @@ function toggleVoiceMic() {
   }
 }
 
+function normalizeThaiVoiceInput(text) {
+  let out = (text || '').trim();
+  if (!out) return '';
+  const thaiDigitMap = {
+    '๐': '0', '๑': '1', '๒': '2', '๓': '3', '๔': '4',
+    '๕': '5', '๖': '6', '๗': '7', '๘': '8', '๙': '9'
+  };
+  const numMap = {
+    'หนึ่ง': 1, 'นึง': 1, 'สอง': 2, 'คู่': 2, 'สาม': 3, 'สี่': 4,
+    'ห้า': 5, 'หก': 6, 'เจ็ด': 7, 'แปด': 8, 'เก้า': 9, 'สิบ': 10,
+    'สิบเอ็ด': 11, 'สิบสอง': 12, 'สิบสาม': 13, 'สิบสี่': 14, 'สิบห้า': 15,
+    'สิบหก': 16, 'สิบเจ็ด': 17, 'สิบแปด': 18, 'สิบเก้า': 19,
+    'ยี่สิบ': 20, 'ยี่สิบเอ็ด': 21, 'ยี่สิบสอง': 22, 'ยี่สิบสาม': 23, 'ยี่สิบสี่': 24, 'ยี่สิบห้า': 25,
+    'สามสิบ': 30, 'สี่สิบ': 40, 'ห้าสิบ': 50, 'ครึ่ง': 1, 'โหล': 12
+  };
+  const thaiUnits = 'จาน|ถ้วย|ชาม|ขวด|แก้ว|กระป๋อง|ซอง|ห่อ|ถัง|ชิ้น|กล่อง|แพ็ค|ฟอง|ที่|ชุด|อัน|ถุง|ลัง|ลูก|หม้อ|กิโล|โล';
+
+  // 1. Thai digits
+  out = out.replace(/[๐-๙]/g, d => thaiDigitMap[d] || d);
+  // 2. Space around digits
+  out = out.replace(/([ก-๙])(\d+)/g, '$1 $2 ').replace(/(\d+)([ก-๙])/g, ' $1 $2');
+  // 3. Unit + นึง
+  out = out.replace(new RegExp(`(${thaiUnits})\\s*นึง`, 'g'), '$1 1');
+  // 4. Thai number words
+  const wordKeys = Object.keys(numMap).sort((a, b) => b.length - a.length);
+  for (const k of wordKeys) {
+    const val = numMap[k];
+    out = out.replace(new RegExp(`(${k})\\s*(${thaiUnits}|$)`, 'g'), (m, w, u) => ` ${val} ${u}`);
+    out = out.replace(new RegExp(`(โต๊ะ\\s*|เบอร์\\s*|เอา\\s*|ขอ\\s*|สั่ง\\s*|เพิ่ม\\s*|\\s+)(${k})`, 'g'), (m, pfx, w) => `${pfx} ${val} `);
+    out = out.replace(new RegExp(`(^|\\s+)(${k})(\\s+|$)`, 'g'), (m, p1, w, p2) => `${p1}${val}${p2}`);
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
 async function analyzeVoiceCommand(text) {
   const query = (text !== undefined ? text : state.voiceText).trim();
   if (!query) {
     showToast('กรุณาพูดหรือพิมพ์คำสั่งออเดอร์');
     return;
   }
+  const cleanQuery = normalizeThaiVoiceInput(query);
+  const inputEl = document.getElementById('voice-command-input');
+  if (inputEl) inputEl.value = cleanQuery;
   const fallbackTableId = state.posMode === 'DINE_IN' ? state.selectedTableId : null;
-  const pv = await apiCall('/api/voice/parse', 'POST', { text: query, fallbackTableId });
+  const pv = await apiCall('/api/voice/parse', 'POST', { text: cleanQuery, fallbackTableId });
 
   if (!pv || !pv.success || !Array.isArray(pv.items) || pv.items.length === 0) {
     showToast(`⚠️ ไม่พบชื่อเมนูหรือสินค้าจากคำว่า "${query}"`);

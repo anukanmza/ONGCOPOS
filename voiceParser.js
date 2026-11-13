@@ -1,40 +1,53 @@
 const { db } = require('./db');
 
-const THAI_NUM_MAP = {
-  'ครึ่ง': 1,
-  'หนึ่ง': 1,
-  'นึง': 1,
-  'สอง': 2,
-  'คู่': 2,
-  'สาม': 3,
-  'สี่': 4,
-  'ห้า': 5,
-  'หก': 6,
-  'เจ็ด': 7,
-  'แปด': 8,
-  'เก้า': 9,
-  'สิบ': 10,
-  'สิบเอ็ด': 11,
-  'สิบสอง': 12,
-  'โหล': 12
+const THAI_DIGIT_MAP = {
+  '๐': '0', '๑': '1', '๒': '2', '๓': '3', '๔': '4',
+  '๕': '5', '๖': '6', '๗': '7', '๘': '8', '๙': '9'
 };
 
+const THAI_NUM_MAP = {
+  'หนึ่ง': 1, 'นึง': 1, 'สอง': 2, 'คู่': 2, 'สาม': 3, 'สี่': 4,
+  'ห้า': 5, 'หก': 6, 'เจ็ด': 7, 'แปด': 8, 'เก้า': 9, 'สิบ': 10,
+  'สิบเอ็ด': 11, 'สิบสอง': 12, 'สิบสาม': 13, 'สิบสี่': 14, 'สิบห้า': 15,
+  'สิบหก': 16, 'สิบเจ็ด': 17, 'สิบแปด': 18, 'สิบเก้า': 19,
+  'ยี่สิบ': 20, 'ยี่สิบเอ็ด': 21, 'ยี่สิบสอง': 22, 'ยี่สิบสาม': 23, 'ยี่สิบสี่': 24, 'ยี่สิบห้า': 25,
+  'สามสิบ': 30, 'สี่สิบ': 40, 'ห้าสิบ': 50, 'ครึ่ง': 1, 'โหล': 12
+};
+
+const THAI_UNITS_REGEX = 'จาน|ถ้วย|ชาม|ขวด|แก้ว|กระป๋อง|ซอง|ห่อ|ถัง|ชิ้น|กล่อง|แพ็ค|ฟอง|ที่|ชุด|อัน|ถุง|ลัง|ลูก|หม้อ|กิโล|โล';
+
 function normalizeThaiNumbers(text) {
-  let out = text;
-  const keys = Object.keys(THAI_NUM_MAP).sort((a, b) => b.length - a.length);
-  for (const k of keys) {
-    // Replace Thai number words when preceded by space/product/table context
-    const re = new RegExp(`(โต๊ะ\\s*|เบอร์\\s*|ซุ้ม\\s*|เอา\\s*|จำนวน\\s*|\\s+)${k}(?=\\s|$|จาน|ถ้วย|ขวด|ซอง|ห่อ|ถัง|ชิ้น|กล่อง|แพ็ค|ฟอง)`, 'g');
-    out = out.replace(re, `$1${THAI_NUM_MAP[k]}`);
+  let out = (text || '').trim();
+  if (!out) return '';
+
+  // 1. Convert Thai digits ๑-๙ to 1-9 (Essential for iOS Safari / Apple Dictation)
+  out = out.replace(/[๐-๙]/g, d => THAI_DIGIT_MAP[d] || d);
+
+  // 2. Ensure spacing around digits if attached directly to Thai characters
+  out = out.replace(/([ก-๙])(\d+)/g, '$1 $2 ').replace(/(\d+)([ก-๙])/g, ' $1 $2');
+
+  // 3. Handle "[Unit]นึง" (e.g. จานนึง, แก้วนึง, ขวดนึง -> จาน 1)
+  const reUnitNeung = new RegExp(`(${THAI_UNITS_REGEX})\\s*นึง`, 'g');
+  out = out.replace(reUnitNeung, '$1 1');
+
+  // 4. Convert Thai number words (sorted longest first to match สิบห้า before ห้า)
+  const wordKeys = Object.keys(THAI_NUM_MAP).sort((a, b) => b.length - a.length);
+  for (const k of wordKeys) {
+    const val = THAI_NUM_MAP[k];
+    // Word followed by unit or end of string
+    const reWithUnit = new RegExp(`(${k})\\s*(${THAI_UNITS_REGEX}|$)`, 'g');
+    out = out.replace(reWithUnit, (match, word, unit) => ` ${val} ${unit}`);
+
+    // Word preceded by common prefixes or spaces
+    const reGeneral = new RegExp(`(โต๊ะ\\s*|เบอร์\\s*|เอา\\s*|ขอ\\s*|สั่ง\\s*|เพิ่ม\\s*|\\s+)(${k})`, 'g');
+    out = out.replace(reGeneral, (match, pfx, word) => `${pfx} ${val} `);
+
+    // Standalone word
+    const reStandalone = new RegExp(`(^|\\s+)(${k})(\\s+|$)`, 'g');
+    out = out.replace(reStandalone, (match, p1, word, p2) => `${p1}${val}${p2}`);
   }
-  // Also standalone at end of string
-  for (const k of keys) {
-    const reEnd = new RegExp(`${k}$`);
-    if (reEnd.test(out)) {
-      out = out.replace(reEnd, ` ${THAI_NUM_MAP[k]}`);
-    }
-  }
-  return out;
+
+  return out.replace(/\s+/g, ' ').trim();
 }
 
 function getRecipePreviewForProduct(productId, modifierIds, quantity) {
@@ -194,27 +207,26 @@ function parseVoiceCommand(rawText, fallbackTableId = null) {
 
   for (let i = 0; i < matches.length; i++) {
     const current = matches[i];
+    const prevEnd = i > 0 ? matches[i - 1].end : 0;
     const nextStart = i + 1 < matches.length ? matches[i + 1].start : workingText.length;
-    // Context segment for this item is from current.end up to next product's start
+    // Context segment for this item
     const tailText = workingText.slice(current.end, nextStart);
+    const headText = workingText.slice(prevEnd, current.start);
 
-    // Extract quantity from tailText (default 1)
+    // Extract quantity from tailText or headText (default 1)
     let quantity = 1;
-    const qtyMatch = tailText.match(/(\d+)\s*(?:จาน|ถ้วย|ขวด|ซอง|ห่อ|ถัง|ชิ้น|กล่อง|แพ็ค|ฟอง|แก้ว|ชุด)?/);
-    if (qtyMatch) {
-      const parsedQty = parseInt(qtyMatch[1], 10);
-      if (parsedQty > 0 && parsedQty <= 100) {
-        quantity = parsedQty;
-      }
-    } else {
-      // Check Thai number word in tailText just in case
-      for (const [word, val] of Object.entries(THAI_NUM_MAP)) {
-        if (tailText.includes(word)) {
-          quantity = val;
-          break;
-        }
-      }
+    const qmUnit = tailText.match(new RegExp(`(\\d+)\\s*(?:${THAI_UNITS_REGEX})`));
+    const qmTail = tailText.match(/(\d+)/);
+    const qmHead = headText.match(new RegExp(`(\\d+)\\s*(?:${THAI_UNITS_REGEX})?\\s*$`));
+
+    if (qmUnit) {
+      quantity = parseInt(qmUnit[1], 10);
+    } else if (qmTail) {
+      quantity = parseInt(qmTail[1], 10);
+    } else if (qmHead) {
+      quantity = parseInt(qmHead[1], 10);
     }
+    quantity = Math.min(100, Math.max(1, quantity));
 
     // Extract modifiers if FOOD
     const matchedModifiers = [];
