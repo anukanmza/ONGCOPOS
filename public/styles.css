@@ -280,6 +280,12 @@ button {
   transform: scale(0.97);
 }
 
+.ttl-btn-xs {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
 .ttl-btn-sm {
   height: 32px;
   padding: 0 12px;

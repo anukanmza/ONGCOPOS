@@ -939,6 +939,7 @@ module.exports = async (req, res) => {
           track_stock: item_type === 'GROCERY',
           stock_qty: Number(stock_qty) || 0,
           low_stock_threshold: Number(low_stock_threshold) || 5,
+          modifier_group_ids: Array.isArray(body.modifier_group_ids) ? body.modifier_group_ids : [],
           send_to_kitchen: item_type === 'FOOD',
           is_active: true
         }
@@ -1053,6 +1054,88 @@ module.exports = async (req, res) => {
       const { id } = body;
       await sbRest(`products?id=eq.${encodeURIComponent(id)}`, { method: 'PATCH', body: { is_active: false } });
       await sbRest(`recipe_items?product_id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
+    // Categories Management
+    if (req.method === 'POST' && pathname === '/api/categories/save') {
+      const { id, name, category_type = 'GROCERY' } = body;
+      if (!name || !name.trim()) return send(400, { error: 'กรุณาระบุชื่อหมวดหมู่' });
+      const catId = id || `CAT-${Date.now().toString().slice(-4)}`;
+      await sbRest('categories', {
+        method: 'POST',
+        prefer: 'resolution=merge-duplicates,return=representation',
+        body: { id: catId, name: name.trim(), category_type }
+      });
+      return send(200, { success: true, catId, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/categories/delete') {
+      const { id } = body;
+      const cats = await sbRest(`categories?id=eq.${encodeURIComponent(id)}`);
+      const fallbackCat = cats[0]?.category_type === 'FOOD' ? 'CAT-RICE' : 'CAT-DRINK';
+      try {
+        await sbRest(`products?category_id=eq.${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: { category_id: fallbackCat }
+        });
+      } catch {}
+      await sbRest(`categories?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
+    // Modifier Groups Management
+    if (req.method === 'POST' && pathname === '/api/modifier-groups/save') {
+      const { id, name, selection_type = 'MULTIPLE', is_required = false, sort_order = 0 } = body;
+      if (!name || !name.trim()) return send(400, { error: 'กรุณาระบุชื่อกลุ่มตัวเลือกพิเศษ' });
+      const grpId = id || `GRP-${Date.now().toString().slice(-4)}`;
+      await sbRest('modifier_groups', {
+        method: 'POST',
+        prefer: 'resolution=merge-duplicates,return=representation',
+        body: {
+          id: grpId,
+          name: name.trim(),
+          selection_type,
+          is_required: Boolean(is_required),
+          sort_order: Number(sort_order) || 0
+        }
+      });
+      return send(200, { success: true, grpId, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/modifier-groups/delete') {
+      const { id } = body;
+      try {
+        await sbRest(`product_modifiers?group_id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      } catch {}
+      await sbRest(`modifier_groups?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
+    // Individual Modifiers Management
+    if (req.method === 'POST' && pathname === '/api/modifiers/save') {
+      const { id, group_id, name, extra_price = 0, extra_cost = 0, voice_keywords = [] } = body;
+      if (!name || !name.trim()) return send(400, { error: 'กรุณาระบุชื่อตัวเลือกพิเศษ' });
+      const modId = id || `MOD-${Date.now().toString().slice(-4)}`;
+      const vKw = Array.isArray(voice_keywords) ? voice_keywords : String(voice_keywords || '').split(',').map(s => s.trim()).filter(Boolean);
+      await sbRest('product_modifiers', {
+        method: 'POST',
+        prefer: 'resolution=merge-duplicates,return=representation',
+        body: {
+          id: modId,
+          group_id: group_id || null,
+          name: name.trim(),
+          voice_keywords: vKw,
+          extra_price: Number(extra_price) || 0,
+          extra_cost: Number(extra_cost) || 0
+        }
+      });
+      return send(200, { success: true, modId, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/modifiers/delete') {
+      const { id } = body;
+      await sbRest(`product_modifiers?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
       return send(200, { success: true, data: await getSupabaseBootstrapData() });
     }
 

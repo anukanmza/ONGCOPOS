@@ -56,16 +56,22 @@ function createInitialSeedState() {
       { id: 'F-007', category_id: 'CAT-NOODLE', barcode: null, name: 'ต้มยำกุ้งน้ำข้น (ถ้วย)', voice_aliases: ['ต้มยำกุ้ง', 'ต้มยำกุ้งน้ำข้น', 'ต้มยำ'], price: 90, cost: 49.8, unit: 'ถ้วย', purchase_unit: 'ถ้วย', conversion_rate: 1, item_type: 'FOOD', track_stock: false, stock_qty: 0, low_stock_threshold: 0, send_to_kitchen: true },
       { id: 'F-008', category_id: 'CAT-APPETIZER', barcode: null, name: 'หมูกรอบคั่วพริกเกลือ (กับข้าว)', voice_aliases: ['หมูกรอบคั่วพริกเกลือ', 'คั่วพริกเกลือ'], price: 85, cost: 55.0, unit: 'จาน', purchase_unit: 'จาน', conversion_rate: 1, item_type: 'FOOD', track_stock: false, stock_qty: 0, low_stock_threshold: 0, send_to_kitchen: true }
     ],
+    modifierGroups: [
+      { id: 'GRP-SPICY', name: 'ระดับความเผ็ด', selection_type: 'SINGLE', is_required: false, sort_order: 1 },
+      { id: 'GRP-TOPPING', name: 'ท็อปปิ้งไข่ & เพิ่มเติม', selection_type: 'MULTIPLE', is_required: false, sort_order: 2 }
+    ],
     modifiers: [
-      { id: 'MOD-FRIED-EGG', name: 'ไข่ดาว', voice_keywords: ['ไข่ดาว'], extra_price: 10, extra_cost: 4.2 },
-      { id: 'MOD-OMELET', name: 'ไข่เจียว', voice_keywords: ['โปะไข่เจียว', 'เพิ่มไข่เจียว'], extra_price: 15, extra_cost: 8.4 },
-      { id: 'MOD-SPECIAL', name: 'พิเศษ', voice_keywords: ['พิเศษ', 'จานพิเศษ', 'เพิ่มหมู'], extra_price: 15, extra_cost: 9.0 },
-      { id: 'MOD-RUNNY', name: 'ไข่ดาวไม่สุก', voice_keywords: ['ไม่สุก', 'ยางมะตูม', 'ไข่ดาวไม่สุก'], extra_price: 0, extra_cost: 0 },
-      { id: 'MOD-WELLDONE', name: 'ไข่ดาวสุกๆ', voice_keywords: ['สุกๆ', 'ไข่สุก', 'กรอบๆ'], extra_price: 0, extra_cost: 0 },
-      { id: 'MOD-LESS-SPICY', name: 'เผ็ดน้อย', voice_keywords: ['เผ็ดน้อย', 'พริกเม็ดเดียว'], extra_price: 0, extra_cost: 0 },
-      { id: 'MOD-VERY-SPICY', name: 'เผ็ดมาก', voice_keywords: ['เผ็ดมาก', 'เผ็ดจัด'], extra_price: 0, extra_cost: 0 },
-      { id: 'MOD-NO-VEG', name: 'ไม่ใส่ผัก', voice_keywords: ['ไม่ใส่ผัก', 'ไม่ผัก'], extra_price: 0, extra_cost: 0 },
-      { id: 'MOD-TAKEAWAY', name: 'ใส่กล่องกลับบ้าน', voice_keywords: ['กลับบ้าน', 'ใส่ห่อ', 'ใส่กล่อง'], extra_price: 0, extra_cost: 0 }
+      { id: 'MOD-LESS-SPICY', group_id: 'GRP-SPICY', name: 'เผ็ดน้อย', voice_keywords: ['เผ็ดน้อย', 'พริกเม็ดเดียว'], extra_price: 0, extra_cost: 0 },
+      { id: 'MOD-MED-SPICY', group_id: 'GRP-SPICY', name: 'เผ็ดกลาง', voice_keywords: ['เผ็ดกลาง', 'เผ็ดปกติ'], extra_price: 0, extra_cost: 0 },
+      { id: 'MOD-VERY-SPICY', group_id: 'GRP-SPICY', name: 'เผ็ดมาก', voice_keywords: ['เผ็ดมาก', 'เผ็ดจัด'], extra_price: 0, extra_cost: 0 },
+      { id: 'MOD-NO-SPICY', group_id: 'GRP-SPICY', name: 'ไม่เผ็ด', voice_keywords: ['ไม่เผ็ด', 'ไม่ใส่พริก'], extra_price: 0, extra_cost: 0 },
+      { id: 'MOD-FRIED-EGG', group_id: 'GRP-TOPPING', name: 'ไข่ดาว', voice_keywords: ['ไข่ดาว'], extra_price: 10, extra_cost: 4.2 },
+      { id: 'MOD-OMELET', group_id: 'GRP-TOPPING', name: 'ไข่เจียว', voice_keywords: ['โปะไข่เจียว', 'เพิ่มไข่เจียว'], extra_price: 15, extra_cost: 8.4 },
+      { id: 'MOD-SPECIAL', group_id: 'GRP-TOPPING', name: 'พิเศษ', voice_keywords: ['พิเศษ', 'จานพิเศษ', 'เพิ่มหมู'], extra_price: 15, extra_cost: 9.0 },
+      { id: 'MOD-RUNNY', group_id: 'GRP-TOPPING', name: 'ไข่ดาวไม่สุก', voice_keywords: ['ไม่สุก', 'ยางมะตูม', 'ไข่ดาวไม่สุก'], extra_price: 0, extra_cost: 0 },
+      { id: 'MOD-WELLDONE', group_id: 'GRP-TOPPING', name: 'ไข่ดาวสุกๆ', voice_keywords: ['สุกๆ', 'ไข่สุก', 'กรอบๆ'], extra_price: 0, extra_cost: 0 },
+      { id: 'MOD-NO-VEG', group_id: 'GRP-TOPPING', name: 'ไม่ใส่ผัก', voice_keywords: ['ไม่ใส่ผัก', 'ไม่ผัก'], extra_price: 0, extra_cost: 0 },
+      { id: 'MOD-TAKEAWAY', group_id: 'GRP-TOPPING', name: 'ใส่กล่องกลับบ้าน', voice_keywords: ['กลับบ้าน', 'ใส่ห่อ', 'ใส่กล่อง'], extra_price: 0, extra_cost: 0 }
     ],
     recipeItems: [
       { id: 'REC-01', product_id: 'F-001', ingredient_id: 'ING-PORK-MINCE', quantity_used: 110 },
@@ -170,6 +176,26 @@ function loadLocalDb() {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.products) && Array.isArray(parsed.tables)) {
+        let changed = false;
+        if (!Array.isArray(parsed.modifierGroups)) {
+          parsed.modifierGroups = [
+            { id: 'GRP-SPICY', name: 'ระดับความเผ็ด', selection_type: 'SINGLE', is_required: false, sort_order: 1 },
+            { id: 'GRP-TOPPING', name: 'ท็อปปิ้งไข่ & เพิ่มเติม', selection_type: 'MULTIPLE', is_required: false, sort_order: 2 }
+          ];
+          for (const m of (parsed.modifiers || [])) {
+            if (!m.group_id) {
+              m.group_id = m.name.includes('เผ็ด') ? 'GRP-SPICY' : 'GRP-TOPPING';
+            }
+          }
+          changed = true;
+        }
+        for (const p of (parsed.products || [])) {
+          if (p.item_type === 'FOOD' && !Array.isArray(p.modifier_group_ids)) {
+            p.modifier_group_ids = ['GRP-SPICY', 'GRP-TOPPING'];
+            changed = true;
+          }
+        }
+        if (changed) saveLocalDb(parsed);
         return parsed;
       }
     }
@@ -336,6 +362,7 @@ function buildLocalBootstrap() {
   return {
     categories: db.categories,
     products,
+    modifierGroups: db.modifierGroups || [],
     modifiers: db.modifiers,
     ingredients: db.ingredients,
     recipeItems: enrichedRecipes,
@@ -1204,10 +1231,13 @@ window.LocalPosEngine = {
     const db = loadLocalDb();
     const prodId = body.id || `${body.item_type === 'FOOD' ? 'F' : 'G'}-${Date.now().toString().slice(-4)}`;
     const aliases = Array.isArray(body.voice_aliases) ? body.voice_aliases : String(body.voice_aliases || '').split(',').map(s => s.trim()).filter(Boolean);
+    const modGrpIds = Array.isArray(body.modifier_group_ids) ? body.modifier_group_ids : [];
+    const catId = body.category_id || (body.item_type === 'FOOD' ? 'CAT-RICE' : 'CAT-DRINK');
     const existing = db.products.find(p => p.id === prodId);
     if (existing) {
       Object.assign(existing, {
         name: body.name,
+        category_id: catId,
         barcode: body.barcode !== undefined ? (body.barcode || null) : existing.barcode,
         price: Number(body.price),
         cost: Number(body.cost),
@@ -1216,12 +1246,13 @@ window.LocalPosEngine = {
         conversion_rate: Number(body.conversion_rate) || existing.conversion_rate || 1,
         stock_qty: body.stock_qty !== undefined ? Number(body.stock_qty) : existing.stock_qty,
         low_stock_threshold: body.low_stock_threshold !== undefined ? Number(body.low_stock_threshold) : (existing.low_stock_threshold ?? 5),
+        modifier_group_ids: modGrpIds,
         voice_aliases: aliases
       });
     } else {
       db.products.push({
         id: prodId,
-        category_id: body.item_type === 'FOOD' ? 'CAT-RICE' : 'CAT-DRINK',
+        category_id: catId,
         barcode: body.barcode || null,
         name: body.name,
         voice_aliases: aliases,
@@ -1234,6 +1265,7 @@ window.LocalPosEngine = {
         track_stock: body.item_type === 'GROCERY',
         stock_qty: Number(body.stock_qty) || 0,
         low_stock_threshold: Number(body.low_stock_threshold) || 5,
+        modifier_group_ids: modGrpIds,
         send_to_kitchen: body.item_type === 'FOOD'
       });
     }
@@ -1349,6 +1381,102 @@ window.LocalPosEngine = {
       reference_id: '',
       created_at: now
     });
+    saveLocalDb(db);
+    return { success: true, data: buildLocalBootstrap() };
+  },
+
+  saveCategory(body) {
+    const db = loadLocalDb();
+    const catId = body.id || `CAT-${Date.now().toString().slice(-4)}`;
+    const existing = (db.categories || []).find(c => c.id === catId);
+    if (existing) {
+      existing.name = body.name.trim();
+      existing.category_type = body.category_type || 'GROCERY';
+    } else {
+      if (!Array.isArray(db.categories)) db.categories = [];
+      db.categories.push({ id: catId, name: body.name.trim(), category_type: body.category_type || 'GROCERY' });
+    }
+    saveLocalDb(db);
+    return { success: true, catId, data: buildLocalBootstrap() };
+  },
+
+  deleteCategory(body) {
+    const db = loadLocalDb();
+    const cat = (db.categories || []).find(c => c.id === body.id);
+    const fallbackCat = cat && cat.category_type === 'FOOD' ? 'CAT-RICE' : 'CAT-DRINK';
+    for (const p of db.products || []) {
+      if (p.category_id === body.id) p.category_id = fallbackCat;
+    }
+    db.categories = (db.categories || []).filter(c => c.id !== body.id);
+    saveLocalDb(db);
+    return { success: true, data: buildLocalBootstrap() };
+  },
+
+  saveModifierGroup(body) {
+    const db = loadLocalDb();
+    const grpId = body.id || `GRP-${Date.now().toString().slice(-4)}`;
+    if (!Array.isArray(db.modifierGroups)) db.modifierGroups = [];
+    const existing = db.modifierGroups.find(g => g.id === grpId);
+    if (existing) {
+      existing.name = body.name.trim();
+      existing.selection_type = body.selection_type || 'MULTIPLE';
+      existing.is_required = Boolean(body.is_required);
+      existing.sort_order = Number(body.sort_order) || 0;
+    } else {
+      db.modifierGroups.push({
+        id: grpId,
+        name: body.name.trim(),
+        selection_type: body.selection_type || 'MULTIPLE',
+        is_required: Boolean(body.is_required),
+        sort_order: Number(body.sort_order) || 0
+      });
+    }
+    saveLocalDb(db);
+    return { success: true, grpId, data: buildLocalBootstrap() };
+  },
+
+  deleteModifierGroup(body) {
+    const db = loadLocalDb();
+    db.modifierGroups = (db.modifierGroups || []).filter(g => g.id !== body.id);
+    db.modifiers = (db.modifiers || []).filter(m => m.group_id !== body.id);
+    for (const p of db.products || []) {
+      if (Array.isArray(p.modifier_group_ids)) {
+        p.modifier_group_ids = p.modifier_group_ids.filter(gid => gid !== body.id);
+      }
+    }
+    saveLocalDb(db);
+    return { success: true, data: buildLocalBootstrap() };
+  },
+
+  saveModifier(body) {
+    const db = loadLocalDb();
+    const modId = body.id || `MOD-${Date.now().toString().slice(-4)}`;
+    if (!Array.isArray(db.modifiers)) db.modifiers = [];
+    const vKw = Array.isArray(body.voice_keywords) ? body.voice_keywords : String(body.voice_keywords || '').split(',').map(s => s.trim()).filter(Boolean);
+    const existing = db.modifiers.find(m => m.id === modId);
+    if (existing) {
+      existing.name = body.name.trim();
+      existing.group_id = body.group_id || null;
+      existing.extra_price = Number(body.extra_price) || 0;
+      existing.extra_cost = Number(body.extra_cost) || 0;
+      existing.voice_keywords = vKw;
+    } else {
+      db.modifiers.push({
+        id: modId,
+        group_id: body.group_id || null,
+        name: body.name.trim(),
+        extra_price: Number(body.extra_price) || 0,
+        extra_cost: Number(body.extra_cost) || 0,
+        voice_keywords: vKw
+      });
+    }
+    saveLocalDb(db);
+    return { success: true, modId, data: buildLocalBootstrap() };
+  },
+
+  deleteModifier(body) {
+    const db = loadLocalDb();
+    db.modifiers = (db.modifiers || []).filter(m => m.id !== body.id);
     saveLocalDb(db);
     return { success: true, data: buildLocalBootstrap() };
   }

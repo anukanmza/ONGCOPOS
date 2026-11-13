@@ -92,9 +92,14 @@ function getFullBootstrapData() {
   recalculateAllFoodCosts();
 
   const categories = db.prepare('SELECT * FROM categories ORDER BY id').all();
+  let modifierGroups = [];
+  try {
+    modifierGroups = db.prepare('SELECT * FROM modifier_groups ORDER BY sort_order ASC, id ASC').all();
+  } catch {}
   const rawProducts = db.prepare('SELECT * FROM products WHERE is_active = 1 ORDER BY item_type DESC, id ASC').all();
   const modifiers = db.prepare('SELECT * FROM product_modifiers ORDER BY id').all().map(m => ({
     ...m,
+    group_id: m.group_id || null,
     voice_keywords: JSON.parse(m.voice_keywords || '[]')
   }));
   const ingredients = db.prepare('SELECT * FROM ingredients ORDER BY id').all();
@@ -106,8 +111,11 @@ function getFullBootstrapData() {
 
   const products = rawProducts.map(p => {
     const prodRecipes = recipeItems.filter(r => r.product_id === p.id);
+    let modGrpIds = [];
+    try { modGrpIds = JSON.parse(p.modifier_group_ids || '[]'); } catch {}
     return {
       ...p,
+      modifier_group_ids: Array.isArray(modGrpIds) ? modGrpIds : [],
       voice_aliases: JSON.parse(p.voice_aliases || '[]'),
       track_stock: Boolean(p.track_stock),
       send_to_kitchen: Boolean(p.send_to_kitchen),
@@ -313,6 +321,7 @@ function getFullBootstrapData() {
     syncSig,
     categories,
     products,
+    modifierGroups,
     modifiers,
     ingredients,
     recipeItems,
@@ -1540,6 +1549,7 @@ const server = http.createServer(async (req, res) => {
       const sendToKitchen = item_type === 'FOOD' ? 1 : 0;
       const trackStock = item_type === 'GROCERY' ? 1 : 0;
       const aliasesJson = JSON.stringify(Array.isArray(voice_aliases) ? voice_aliases : String(voice_aliases || '').split(',').map(s => s.trim()).filter(Boolean));
+      const modGrpJson = JSON.stringify(Array.isArray(body.modifier_group_ids) ? body.modifier_group_ids : []);
 
       const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(prodId);
       if (existing) {
@@ -1547,23 +1557,23 @@ const server = http.createServer(async (req, res) => {
           UPDATE products
           SET category_id = ?, barcode = ?, name = ?, voice_aliases = ?, price = ?, cost = ?,
               unit = ?, purchase_unit = ?, conversion_rate = ?, item_type = ?, track_stock = ?,
-              stock_qty = ?, low_stock_threshold = ?, send_to_kitchen = ?
+              stock_qty = ?, low_stock_threshold = ?, modifier_group_ids = ?, send_to_kitchen = ?
           WHERE id = ?
         `).run(
           category_id || defaultCat, cleanBarcode, name, aliasesJson, Number(price), Number(cost),
           unit, purchase_unit, Number(conversion_rate) || 1, item_type, trackStock,
-          Number(stock_qty) || 0, Number(low_stock_threshold) || 5, sendToKitchen, prodId
+          Number(stock_qty) || 0, Number(low_stock_threshold) || 5, modGrpJson, sendToKitchen, prodId
         );
       } else {
         db.prepare(`
           INSERT INTO products (
             id, category_id, barcode, name, voice_aliases, price, cost, unit, purchase_unit, conversion_rate,
-            item_type, track_stock, stock_qty, low_stock_threshold, send_to_kitchen, is_active
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            item_type, track_stock, stock_qty, low_stock_threshold, modifier_group_ids, send_to_kitchen, is_active
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         `).run(
           prodId, category_id || defaultCat, cleanBarcode, name, aliasesJson, Number(price), Number(cost),
           unit, purchase_unit, Number(conversion_rate) || 1, item_type, trackStock,
-          Number(stock_qty) || 0, Number(low_stock_threshold) || 5, sendToKitchen
+          Number(stock_qty) || 0, Number(low_stock_threshold) || 5, modGrpJson, sendToKitchen
         );
       }
 
@@ -1693,6 +1703,85 @@ const server = http.createServer(async (req, res) => {
       const { id } = await parseJsonBody(req);
       db.prepare('UPDATE products SET is_active = 0 WHERE id = ?').run(id);
       db.prepare('DELETE FROM recipe_items WHERE product_id = ?').run(id);
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    // Categories Management
+    if (req.method === 'POST' && pathname === '/api/categories/save') {
+      const body = await parseJsonBody(req);
+      const { id, name, category_type = 'GROCERY' } = body;
+      if (!name || !name.trim()) return sendJson(res, 400, { error: 'กรุณาระบุชื่อหมวดหมู่' });
+      const catId = id || `CAT-${Date.now().toString().slice(-4)}`;
+      const existing = db.prepare('SELECT id FROM categories WHERE id = ?').get(catId);
+      if (existing) {
+        db.prepare('UPDATE categories SET name = ?, category_type = ? WHERE id = ?').run(name.trim(), category_type, catId);
+      } else {
+        db.prepare('INSERT INTO categories (id, name, category_type) VALUES (?, ?, ?)').run(catId, name.trim(), category_type);
+      }
+      broadcastUpdate('category_saved', { catId });
+      return sendJson(res, 200, { success: true, catId, data: getFullBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/categories/delete') {
+      const { id } = await parseJsonBody(req);
+      // Reassign products in this category to default
+      const cat = db.prepare('SELECT category_type FROM categories WHERE id = ?').get(id);
+      const fallbackCat = cat && cat.category_type === 'FOOD' ? 'CAT-RICE' : 'CAT-DRINK';
+      db.prepare('UPDATE products SET category_id = ? WHERE category_id = ?').run(fallbackCat, id);
+      db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+      broadcastUpdate('category_deleted', { id });
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    // Modifier Groups Management
+    if (req.method === 'POST' && pathname === '/api/modifier-groups/save') {
+      const body = await parseJsonBody(req);
+      const { id, name, selection_type = 'MULTIPLE', is_required = false, sort_order = 0 } = body;
+      if (!name || !name.trim()) return sendJson(res, 400, { error: 'กรุณาระบุชื่อกลุ่มตัวเลือกพิเศษ' });
+      const grpId = id || `GRP-${Date.now().toString().slice(-4)}`;
+      const existing = db.prepare('SELECT id FROM modifier_groups WHERE id = ?').get(grpId);
+      if (existing) {
+        db.prepare('UPDATE modifier_groups SET name = ?, selection_type = ?, is_required = ?, sort_order = ? WHERE id = ?')
+          .run(name.trim(), selection_type, is_required ? 1 : 0, Number(sort_order) || 0, grpId);
+      } else {
+        db.prepare('INSERT INTO modifier_groups (id, name, selection_type, is_required, sort_order) VALUES (?, ?, ?, ?, ?)')
+          .run(grpId, name.trim(), selection_type, is_required ? 1 : 0, Number(sort_order) || 0);
+      }
+      broadcastUpdate('modifier_group_saved', { grpId });
+      return sendJson(res, 200, { success: true, grpId, data: getFullBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/modifier-groups/delete') {
+      const { id } = await parseJsonBody(req);
+      db.prepare('DELETE FROM product_modifiers WHERE group_id = ?').run(id);
+      db.prepare('DELETE FROM modifier_groups WHERE id = ?').run(id);
+      broadcastUpdate('modifier_group_deleted', { id });
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    // Individual Modifiers Management
+    if (req.method === 'POST' && pathname === '/api/modifiers/save') {
+      const body = await parseJsonBody(req);
+      const { id, group_id, name, extra_price = 0, extra_cost = 0, voice_keywords = [] } = body;
+      if (!name || !name.trim()) return sendJson(res, 400, { error: 'กรุณาระบุชื่อตัวเลือกพิเศษ' });
+      const modId = id || `MOD-${Date.now().toString().slice(-4)}`;
+      const vKw = Array.isArray(voice_keywords) ? voice_keywords : String(voice_keywords || '').split(',').map(s => s.trim()).filter(Boolean);
+      const existing = db.prepare('SELECT id FROM product_modifiers WHERE id = ?').get(modId);
+      if (existing) {
+        db.prepare('UPDATE product_modifiers SET group_id = ?, name = ?, voice_keywords = ?, extra_price = ?, extra_cost = ? WHERE id = ?')
+          .run(group_id || null, name.trim(), JSON.stringify(vKw), Number(extra_price) || 0, Number(extra_cost) || 0, modId);
+      } else {
+        db.prepare('INSERT INTO product_modifiers (id, group_id, name, voice_keywords, extra_price, extra_cost) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(modId, group_id || null, name.trim(), JSON.stringify(vKw), Number(extra_price) || 0, Number(extra_cost) || 0);
+      }
+      broadcastUpdate('modifier_saved', { modId });
+      return sendJson(res, 200, { success: true, modId, data: getFullBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/modifiers/delete') {
+      const { id } = await parseJsonBody(req);
+      db.prepare('DELETE FROM product_modifiers WHERE id = ?').run(id);
+      broadcastUpdate('modifier_deleted', { id });
       return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
     }
 

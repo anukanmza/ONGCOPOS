@@ -26,13 +26,24 @@ CREATE TABLE IF NOT EXISTS products (
   track_stock BOOLEAN NOT NULL DEFAULT true,
   stock_qty NUMERIC(12,2) NOT NULL DEFAULT 0,
   low_stock_threshold NUMERIC(12,2) NOT NULL DEFAULT 5,
+  modifier_group_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
   send_to_kitchen BOOLEAN NOT NULL DEFAULT false,
   is_active BOOLEAN NOT NULL DEFAULT true
+);
+
+-- 2.1 ตารางกลุ่มตัวเลือกพิเศษ (Modifier Groups)
+CREATE TABLE IF NOT EXISTS modifier_groups (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  selection_type TEXT NOT NULL DEFAULT 'MULTIPLE' CHECK (selection_type IN ('SINGLE', 'MULTIPLE')),
+  is_required BOOLEAN NOT NULL DEFAULT false,
+  sort_order INTEGER NOT NULL DEFAULT 0
 );
 
 -- 3. ตารางตัวเลือกเสริมอาหาร (Product Modifiers)
 CREATE TABLE IF NOT EXISTS product_modifiers (
   id TEXT PRIMARY KEY,
+  group_id TEXT REFERENCES modifier_groups(id) ON DELETE SET NULL,
   product_id TEXT,
   name TEXT NOT NULL,
   voice_keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -196,6 +207,7 @@ CREATE TABLE IF NOT EXISTS expenses (
 -- ปิด RLS ชั่วคราวสำหรับการใช้งานภายในร้าน (หรือปรับ Policy ตามต้องการ)
 ALTER TABLE categories DISABLE ROW LEVEL SECURITY;
 ALTER TABLE products DISABLE ROW LEVEL SECURITY;
+ALTER TABLE modifier_groups DISABLE ROW LEVEL SECURITY;
 ALTER TABLE product_modifiers DISABLE ROW LEVEL SECURITY;
 ALTER TABLE ingredients DISABLE ROW LEVEL SECURITY;
 ALTER TABLE recipe_items DISABLE ROW LEVEL SECURITY;
@@ -207,9 +219,17 @@ ALTER TABLE stock_in_items DISABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_logs DISABLE ROW LEVEL SECURITY;
 ALTER TABLE expenses DISABLE ROW LEVEL SECURITY;
 
+ALTER TABLE products ADD COLUMN IF NOT EXISTS modifier_group_ids JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE product_modifiers ADD COLUMN IF NOT EXISTS group_id TEXT;
+
 -- ============================================================================
 -- ข้อมูลเริ่มต้น (Seed Data)
 -- ============================================================================
+
+INSERT INTO modifier_groups (id, name, selection_type, is_required, sort_order) VALUES
+  ('GRP-SPICY', 'ระดับความเผ็ด', 'SINGLE', false, 1),
+  ('GRP-TOPPING', 'ท็อปปิ้งไข่ & เพิ่มเติม', 'MULTIPLE', false, 2)
+ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO categories (id, name, category_type) VALUES
   ('CAT-DRINK', 'เครื่องดื่ม & น้ำแข็ง (ของชำ)', 'GROCERY'),
@@ -256,16 +276,18 @@ INSERT INTO products (id, category_id, barcode, name, voice_aliases, price, cost
   ('F-008', 'CAT-APPETIZER', NULL, 'หมูกรอบคั่วพริกเกลือ (กับข้าว)', '["หมูกรอบคั่วพริกเกลือ","คั่วพริกเกลือ"]'::jsonb, 85, 55.0, 'จาน', 'จาน', 1, 'FOOD', false, 0, 0, true, true)
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO product_modifiers (id, product_id, name, voice_keywords, extra_price, extra_cost) VALUES
-  ('MOD-FRIED-EGG', NULL, 'ไข่ดาว', '["ไข่ดาว"]'::jsonb, 10, 4.2),
-  ('MOD-OMELET', NULL, 'ไข่เจียว', '["โปะไข่เจียว","เพิ่มไข่เจียว"]'::jsonb, 15, 8.4),
-  ('MOD-SPECIAL', NULL, 'พิเศษ', '["พิเศษ","จานพิเศษ","เพิ่มหมู"]'::jsonb, 15, 9.0),
-  ('MOD-RUNNY', NULL, 'ไข่ดาวไม่สุก', '["ไม่สุก","ยางมะตูม","ไข่ดาวไม่สุก"]'::jsonb, 0, 0),
-  ('MOD-WELLDONE', NULL, 'ไข่ดาวสุกๆ', '["สุกๆ","ไข่สุก","กรอบๆ"]'::jsonb, 0, 0),
-  ('MOD-LESS-SPICY', NULL, 'เผ็ดน้อย', '["เผ็ดน้อย","พริกเม็ดเดียว"]'::jsonb, 0, 0),
-  ('MOD-VERY-SPICY', NULL, 'เผ็ดมาก', '["เผ็ดมาก","เผ็ดจัด"]'::jsonb, 0, 0),
-  ('MOD-NO-VEG', NULL, 'ไม่ใส่ผัก', '["ไม่ใส่ผัก","ไม่ผัก"]'::jsonb, 0, 0),
-  ('MOD-TAKEAWAY', NULL, 'ใส่กล่องกลับบ้าน', '["กลับบ้าน","ใส่ห่อ","ใส่กล่อง"]'::jsonb, 0, 0)
+INSERT INTO product_modifiers (id, group_id, product_id, name, voice_keywords, extra_price, extra_cost) VALUES
+  ('MOD-LESS-SPICY', 'GRP-SPICY', NULL, 'เผ็ดน้อย', '["เผ็ดน้อย","พริกเม็ดเดียว"]'::jsonb, 0, 0),
+  ('MOD-MED-SPICY', 'GRP-SPICY', NULL, 'เผ็ดกลาง', '["เผ็ดกลาง","เผ็ดปกติ"]'::jsonb, 0, 0),
+  ('MOD-VERY-SPICY', 'GRP-SPICY', NULL, 'เผ็ดมาก', '["เผ็ดมาก","เผ็ดจัด"]'::jsonb, 0, 0),
+  ('MOD-NO-SPICY', 'GRP-SPICY', NULL, 'ไม่เผ็ด', '["ไม่เผ็ด","ไม่ใส่พริก"]'::jsonb, 0, 0),
+  ('MOD-FRIED-EGG', 'GRP-TOPPING', NULL, 'ไข่ดาว', '["ไข่ดาว"]'::jsonb, 10, 4.2),
+  ('MOD-OMELET', 'GRP-TOPPING', NULL, 'ไข่เจียว', '["โปะไข่เจียว","เพิ่มไข่เจียว"]'::jsonb, 15, 8.4),
+  ('MOD-SPECIAL', 'GRP-TOPPING', NULL, 'พิเศษ', '["พิเศษ","จานพิเศษ","เพิ่มหมู"]'::jsonb, 15, 9.0),
+  ('MOD-RUNNY', 'GRP-TOPPING', NULL, 'ไข่ดาวไม่สุก', '["ไม่สุก","ยางมะตูม","ไข่ดาวไม่สุก"]'::jsonb, 0, 0),
+  ('MOD-WELLDONE', 'GRP-TOPPING', NULL, 'ไข่ดาวสุกๆ', '["สุกๆ","ไข่สุก","กรอบๆ"]'::jsonb, 0, 0),
+  ('MOD-NO-VEG', 'GRP-TOPPING', NULL, 'ไม่ใส่ผัก', '["ไม่ใส่ผัก","ไม่ผัก"]'::jsonb, 0, 0),
+  ('MOD-TAKEAWAY', 'GRP-TOPPING', NULL, 'ใส่กล่องกลับบ้าน', '["กลับบ้าน","ใส่ห่อ","ใส่กล่อง"]'::jsonb, 0, 0)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO recipe_items (id, product_id, modifier_id, ingredient_id, quantity_used) VALUES

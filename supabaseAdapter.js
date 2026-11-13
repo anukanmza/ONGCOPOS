@@ -177,6 +177,7 @@ async function getSupabaseBootstrapData() {
     categories,
     rawProducts,
     rawModifiers,
+    rawModifierGroups,
     ingredients,
     rawRecipes,
     rawTables,
@@ -190,6 +191,7 @@ async function getSupabaseBootstrapData() {
     sbRest('categories?select=*&order=id.asc'),
     sbRest('products?select=*&is_active=eq.true&order=item_type.desc,id.asc'),
     sbRest('product_modifiers?select=*&order=id.asc'),
+    sbRest('modifier_groups?select=*&order=sort_order.asc,id.asc').catch(() => []),
     sbRest('ingredients?select=*&order=id.asc'),
     sbRest('recipe_items?select=*'),
     sbRest('dining_tables?select=*&order=id.asc'),
@@ -227,6 +229,7 @@ async function getSupabaseBootstrapData() {
       conversion_rate: Number(p.conversion_rate || 1),
       stock_qty: Number(p.stock_qty || 0),
       low_stock_threshold: Number(p.low_stock_threshold || 5),
+      modifier_group_ids: ensureArray(p.modifier_group_ids),
       voice_aliases: ensureArray(p.voice_aliases),
       track_stock: Boolean(p.track_stock),
       send_to_kitchen: Boolean(p.send_to_kitchen),
@@ -234,8 +237,9 @@ async function getSupabaseBootstrapData() {
     };
   });
 
-  const modifiers = rawModifiers.map(m => ({
+  const modifiers = (rawModifiers || []).map(m => ({
     ...m,
+    group_id: m.group_id || null,
     extra_price: Number(m.extra_price || 0),
     extra_cost: Number(m.extra_cost || 0),
     voice_keywords: ensureArray(m.voice_keywords)
@@ -452,6 +456,7 @@ async function getSupabaseBootstrapData() {
     syncSig,
     categories,
     products,
+    modifierGroups: Array.isArray(rawModifierGroups) ? rawModifierGroups : [],
     modifiers,
     ingredients: normalizedIngredients,
     recipeItems,

@@ -35,6 +35,14 @@ function initSchema() {
       category_type TEXT NOT NULL CHECK (category_type IN ('GROCERY', 'FOOD'))
     );
 
+    CREATE TABLE IF NOT EXISTS modifier_groups (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      selection_type TEXT NOT NULL DEFAULT 'MULTIPLE' CHECK (selection_type IN ('SINGLE', 'MULTIPLE')),
+      is_required INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE TABLE IF NOT EXISTS products (
       id TEXT PRIMARY KEY,
       category_id TEXT NOT NULL,
@@ -208,6 +216,22 @@ function initSchema() {
   ensureColumn('orders', 'bill_note', "TEXT DEFAULT ''");
   ensureColumn('orders', 'customer_id', 'TEXT');
   ensureColumn('orders', 'customer_name', "TEXT DEFAULT ''");
+  ensureColumn('products', 'modifier_group_ids', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn('product_modifiers', 'group_id', 'TEXT');
+
+  // Seed default modifier groups if empty
+  try {
+    const grpCount = db.prepare('SELECT COUNT(*) as cnt FROM modifier_groups').get()?.cnt || 0;
+    if (grpCount === 0) {
+      const insGrp = db.prepare('INSERT OR IGNORE INTO modifier_groups (id, name, selection_type, is_required, sort_order) VALUES (?, ?, ?, ?, ?)');
+      insGrp.run('GRP-SPICY', 'ระดับความเผ็ด', 'SINGLE', 0, 1);
+      insGrp.run('GRP-TOPPING', 'ท็อปปิ้งไข่ & เพิ่มเติม', 'MULTIPLE', 0, 2);
+
+      db.prepare("UPDATE product_modifiers SET group_id = 'GRP-SPICY' WHERE id IN ('MOD-LESS-SPICY', 'MOD-VERY-SPICY') OR name LIKE '%เผ็ด%'").run();
+      db.prepare("UPDATE product_modifiers SET group_id = 'GRP-TOPPING' WHERE group_id IS NULL OR group_id = ''").run();
+      db.prepare("UPDATE products SET modifier_group_ids = '[\"GRP-SPICY\", \"GRP-TOPPING\"]' WHERE item_type = 'FOOD' AND (modifier_group_ids IS NULL OR modifier_group_ids = '[]')").run();
+    }
+  } catch {}
 
   // Migrate SQLite CHECK constraints on orders and order_items if created by older schema
   const ordSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").get()?.sql || '';

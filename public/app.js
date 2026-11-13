@@ -49,6 +49,12 @@ const state = {
   editingTable: null,
   showNewProductModal: false,
   editingProduct: null,
+  showCategoryModal: false,
+  editingCategory: null,
+  showModifierGroupModal: false,
+  editingModifierGroup: null,
+  editingModifierOption: null,
+  modalAddingOptionToGroupId: null,
   showNewIngredientModal: false,
   editingIngredient: null,
   showNewExpenseModal: false,
@@ -327,6 +333,12 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
   if (endpoint === '/api/customers/save') return eng.saveCustomer(bodyObj || {});
   if (endpoint === '/api/customers/delete') return eng.deleteCustomer(bodyObj || {});
   if (endpoint === '/api/loyalty-settings/save') return eng.saveLoyaltySettings(bodyObj || {});
+  if (endpoint === '/api/categories/save') return eng.saveCategory(bodyObj || {});
+  if (endpoint === '/api/categories/delete') return eng.deleteCategory(bodyObj || {});
+  if (endpoint === '/api/modifier-groups/save') return eng.saveModifierGroup(bodyObj || {});
+  if (endpoint === '/api/modifier-groups/delete') return eng.deleteModifierGroup(bodyObj || {});
+  if (endpoint === '/api/modifiers/save') return eng.saveModifier(bodyObj || {});
+  if (endpoint === '/api/modifiers/delete') return eng.deleteModifier(bodyObj || {});
   return eng.getBootstrap();
 }
 
@@ -338,6 +350,8 @@ function isUserBusyInteracting() {
     state.showNewCustomerModal ||
     state.showNewTableModal ||
     state.showNewProductModal ||
+    state.showCategoryModal ||
+    state.showModifierGroupModal ||
     state.showNewIngredientModal ||
     state.showNewExpenseModal ||
     state.invoiceModalOrder ||
@@ -584,6 +598,108 @@ async function saveBulkLowStockThresholds(formEl) {
   state.showBulkLowStockModal = false;
   render();
   showToast(`⚙️ บันทึกการตั้งค่าจำนวนสต็อกขั้นต่ำทั้งหมด ${items.length} รายการเรียบร้อยแล้ว`);
+}
+
+function handleModifierOptionClick(groupId, modName, isSingle) {
+  const allMods = (state.data && state.data.modifiers) || [];
+  const groupModNames = allMods.filter(m => m.group_id === groupId).map(m => m.name);
+  const idx = state.selectedModifiers.indexOf(modName);
+
+  if (idx >= 0) {
+    state.selectedModifiers.splice(idx, 1);
+  } else {
+    if (isSingle) {
+      state.selectedModifiers = state.selectedModifiers.filter(name => !groupModNames.includes(name));
+    }
+    state.selectedModifiers.push(modName);
+  }
+  render();
+}
+
+function toggleAllModifierGroupsInModal(checkAll) {
+  const checkboxes = document.querySelectorAll('input[name="modifier_group_ids"]');
+  checkboxes.forEach(cb => { cb.checked = Boolean(checkAll); });
+}
+
+async function saveCategoryForm(formEl) {
+  const f = formEl.elements;
+  const catId = f.cat_id.value || undefined;
+  const name = f.cat_name.value.trim();
+  const category_type = f.cat_type.value;
+
+  if (!name) return;
+  const out = await apiCall('/api/categories/save', 'POST', { id: catId, name, category_type });
+  if (out && out.data) state.data = out.data;
+  state.editingCategory = null;
+  render();
+  showToast(catId ? '✏️ บันทึกการแก้ไขหมวดหมู่เรียบร้อย' : '+ เพิ่มหมวดหมู่ใหม่เรียบร้อย');
+}
+
+async function deleteCategoryById(catId, catName) {
+  if (!confirm(`ต้องการลบหมวดหมู่ "${catName}" หรือไม่?\n(สินค้าที่อยู่ในหมวดหมู่นี้จะถูกย้ายไปยังหมวดหมู่เริ่มต้นโดยอัตโนมัติ)`)) return;
+  const out = await apiCall('/api/categories/delete', 'POST', { id: catId });
+  if (out && out.data) state.data = out.data;
+  if (state.editingCategory && state.editingCategory.id === catId) state.editingCategory = null;
+  render();
+  showToast(`🗑️ ลบหมวดหมู่ "${catName}" แล้ว`);
+}
+
+async function saveModifierGroupForm(formEl) {
+  const f = formEl.elements;
+  const grpId = f.grp_id.value || undefined;
+  const name = f.grp_name.value.trim();
+  const selection_type = f.grp_selection_type.value;
+  const sort_order = Number(f.grp_sort_order.value) || 0;
+
+  if (!name) return;
+  const out = await apiCall('/api/modifier-groups/save', 'POST', { id: grpId, name, selection_type, sort_order });
+  if (out && out.data) state.data = out.data;
+  state.editingModifierGroup = null;
+  render();
+  showToast(grpId ? '✏️ บันทึกการแก้ไขกลุ่มตัวเลือกเรียบร้อย' : '+ สร้างกลุ่มตัวเลือกใหม่เรียบร้อย');
+}
+
+async function deleteModifierGroupById(grpId, grpName) {
+  if (!confirm(`ต้องการลบกลุ่มตัวเลือก "${grpName}" และตัวเลือกย่อยทั้งหมดในกลุ่มนี้หรือไม่?`)) return;
+  const out = await apiCall('/api/modifier-groups/delete', 'POST', { id: grpId });
+  if (out && out.data) state.data = out.data;
+  if (state.editingModifierGroup && state.editingModifierGroup.id === grpId) state.editingModifierGroup = null;
+  if (state.modalAddingOptionToGroupId === grpId) state.modalAddingOptionToGroupId = null;
+  render();
+  showToast(`🗑️ ลบกลุ่มตัวเลือก "${grpName}" แล้ว`);
+}
+
+async function saveModifierOptionForm(formEl, grpId) {
+  const f = formEl.elements;
+  const modId = f.mod_id.value || undefined;
+  const name = f.mod_name.value.trim();
+  const extra_price = Number(f.mod_extra_price.value) || 0;
+  const extra_cost = Number(f.mod_extra_cost.value) || 0;
+  const voice_keywords = (f.mod_voice_keywords.value || '').split(',').map(s => s.trim()).filter(Boolean);
+
+  if (!name) return;
+  const out = await apiCall('/api/modifiers/save', 'POST', {
+    id: modId,
+    group_id: grpId,
+    name,
+    extra_price,
+    extra_cost,
+    voice_keywords
+  });
+  if (out && out.data) state.data = out.data;
+  state.editingModifierOption = null;
+  state.modalAddingOptionToGroupId = null;
+  render();
+  showToast(modId ? '✏️ บันทึกการแก้ไขตัวเลือกเรียบร้อย' : '+ เพิ่มตัวเลือกย่อยเรียบร้อย');
+}
+
+async function deleteModifierOptionById(modId, modName) {
+  if (!confirm(`ต้องการลบตัวเลือก "${modName}" หรือไม่?`)) return;
+  const out = await apiCall('/api/modifiers/delete', 'POST', { id: modId });
+  if (out && out.data) state.data = out.data;
+  if (state.editingModifierOption && state.editingModifierOption.id === modId) state.editingModifierOption = null;
+  render();
+  showToast(`🗑️ ลบตัวเลือก "${modName}" แล้ว`);
 }
 
 function getActiveContextOrder() {
@@ -858,6 +974,34 @@ function handleProductCardClick(productId) {
   if (!prod) return;
 
   if (prod.item_type === 'FOOD') {
+    let groupIds = [];
+    try {
+      groupIds = Array.isArray(prod.modifier_group_ids) ? prod.modifier_group_ids : JSON.parse(prod.modifier_group_ids || '[]');
+    } catch (e) {
+      groupIds = [];
+    }
+
+    const allMods = state.data.modifiers || [];
+    const hasOptions = groupIds.length > 0 && allMods.some(m => groupIds.includes(m.group_id));
+
+    // หากไม่มีกลุ่มตัวเลือกหรือไม่มีตัวเลือกย่อย ให้หยอดลงบิลทันทีไม่ต้องเปิด popup
+    if (!hasOptions) {
+      addToCartDirect({
+        product_id: prod.id,
+        name: prod.name,
+        item_type: prod.item_type,
+        unit: prod.unit,
+        unit_price: prod.price,
+        quantity: 1,
+        modifiers: [],
+        send_to_kitchen: prod.send_to_kitchen !== false,
+        input_source: 'TOUCH'
+      });
+      render();
+      showToast(`+ เพิ่ม "${prod.name}" เข้าบิลแล้ว`);
+      return;
+    }
+
     state.modifierModalProduct = prod;
     state.selectedModifiers = [];
     state.modifierQty = 1;
@@ -2850,7 +2994,7 @@ function renderKdsView() {
 // VIEW 5: INVENTORY & RECIPE BOM
 // ============================================================================
 function renderInventoryView() {
-  const { products, ingredients, stockInReceipts = [], inventoryLogs = [] } = state.data;
+  const { products, ingredients, categories = [], modifierGroups = [], modifiers = [], stockInReceipts = [], inventoryLogs = [] } = state.data;
   const groceryProducts = products.filter(p => p.item_type === 'GROCERY');
   const foodProducts = products.filter(p => p.item_type === 'FOOD');
 
@@ -3415,6 +3559,12 @@ function renderInventoryView() {
                 <button type="button" aria-selected="${state.invProductTypeFilter === 'GROCERY'}" onclick="state.invProductTypeFilter='GROCERY'; render();">📦 ของชำ</button>
                 <button type="button" aria-selected="${state.invProductTypeFilter === 'FOOD'}" onclick="state.invProductTypeFilter='FOOD'; render();">🍳 เมนูอาหาร</button>
               </div>
+              <button type="button" class="ttl-btn ttl-btn-ghost" style="border:1px solid var(--ttl-rule); font-weight:700;" onclick="state.showCategoryModal=true; render();">
+                🏷️ จัดการหมวดหมู่
+              </button>
+              <button type="button" class="ttl-btn ttl-btn-ghost" style="border:1px solid var(--ttl-rule); font-weight:700;" onclick="state.showModifierGroupModal=true; render();">
+                🎛️ จัดการตัวเลือกพิเศษ
+              </button>
               <button type="button" class="ttl-btn ttl-btn-gold" style="font-weight:700;" onclick="openBulkLowStockModal()">
                 ⚙️ ตั้งค่าสต็อกขั้นต่ำ
               </button>
@@ -3429,6 +3579,7 @@ function renderInventoryView() {
                 <tr>
                   <th>รหัส</th>
                   <th>ชื่อสินค้า / เมนู</th>
+                  <th>หมวดหมู่</th>
                   <th>ประเภท</th>
                   <th>ราคาขาย</th>
                   <th>ต้นทุนหลังร้าน</th>
@@ -3440,11 +3591,17 @@ function renderInventoryView() {
               <tbody>
                 ${filteredAllProducts.map(p => {
                   const sInfo = getProductStockInfo(p);
+                  let pGroupIds = [];
+                  try {
+                    pGroupIds = Array.isArray(p.modifier_group_ids) ? p.modifier_group_ids : JSON.parse(p.modifier_group_ids || '[]');
+                  } catch (e) { pGroupIds = []; }
+                  const catObj = categories.find(c => c.id === p.category_id);
                   const safeProdJson = JSON.stringify({
                     id: p.id,
                     name: p.name,
                     item_type: p.item_type,
-                    category_id: p.category_id,
+                    category_id: p.category_id || '',
+                    modifier_group_ids: pGroupIds,
                     barcode: p.barcode || '',
                     price: p.price,
                     cost: p.cost,
@@ -3462,7 +3619,17 @@ function renderInventoryView() {
                         <b>${p.name}</b>
                         ${sInfo.label ? `<br><span class="ttl-tag ${sInfo.badgeClass}" style="margin-top:2px;">${sInfo.label}</span>` : ''}
                       </td>
-                      <td><span class="ttl-tag ${p.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">${p.item_type === 'FOOD' ? '🍳 เมนูอาหาร' : '📦 ของชำ'}</span></td>
+                      <td>
+                        ${catObj ? `<span class="ttl-tag" style="background:var(--ttl-page); border:1px solid var(--ttl-rule);">🏷️ ${catObj.name}</span>` : '<span style="color:var(--ttl-muted); font-size:11px;">-</span>'}
+                      </td>
+                      <td>
+                        <span class="ttl-tag ${p.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">${p.item_type === 'FOOD' ? '🍳 เมนูอาหาร' : '📦 ของชำ'}</span>
+                        ${p.item_type === 'FOOD' ? `
+                          <br><span class="ttl-tag" style="background:${pGroupIds.length > 0 ? '#e0e7ff' : '#f1f5f9'}; color:${pGroupIds.length > 0 ? '#3730a3' : '#64748b'}; margin-top:3px; font-size:10px;">
+                            🎛️ ${pGroupIds.length > 0 ? `${pGroupIds.length} กลุ่มตัวเลือก` : 'ไม่มีตัวเลือก'}
+                          </span>
+                        ` : ''}
+                      </td>
                       <td style="font-weight:700;">${formatMoney(p.price)}/${p.unit}</td>
                       <td>${formatMoney(p.cost)}</td>
                       <td>
@@ -3950,41 +4117,76 @@ function renderModals() {
   // 1. Food Modifier Modal
   if (state.modifierModalProduct) {
     const p = state.modifierModalProduct;
-    const mods = state.data.modifiers || [];
+    let assignedGroupIds = [];
+    try {
+      assignedGroupIds = Array.isArray(p.modifier_group_ids) ? p.modifier_group_ids : JSON.parse(p.modifier_group_ids || '[]');
+    } catch (e) {
+      assignedGroupIds = [];
+    }
+
+    const allGroups = (state.data?.modifierGroups || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const allMods = state.data?.modifiers || [];
+
+    // Filter groups assigned to this product
+    let activeGroups = allGroups.filter(g => assignedGroupIds.includes(g.id));
+    if (activeGroups.length === 0 && assignedGroupIds.length === 0) {
+      activeGroups = allGroups.filter(g => allMods.some(m => m.group_id === g.id));
+    }
+
     const extraPrice = state.selectedModifiers.reduce((sum, mName) => {
-      const mObj = mods.find(x => x.name === mName);
-      return sum + (mObj ? mObj.extra_price : 0);
+      const mObj = allMods.find(x => x.name === mName);
+      return sum + (mObj ? (Number(mObj.extra_price) || 0) : 0);
     }, 0);
     const unitPrice = p.price + extraPrice;
 
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.modifierModalProduct=null; render();}">
-        <div class="ttl-modal">
-          <div class="ttl-k">เลือกตัวเลือกเสริม (FOOD MODIFIERS)</div>
-          <h3 style="margin:4px 0 12px; font-size:19px;">${p.name} (${formatMoney(p.price)})</h3>
+        <div class="ttl-modal" style="max-width:540px; max-height:90vh; display:flex; flex-direction:column;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+            <div>
+              <div class="ttl-k">เลือกตัวเลือกเสริม (FOOD MODIFIERS)</div>
+              <h3 style="margin:4px 0 0; font-size:19px;">${p.name} <span style="color:var(--ttl-gold); font-size:16px;">(${formatMoney(p.price)})</span></h3>
+            </div>
+            <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" onclick="state.modifierModalProduct=null; render();">✕</button>
+          </div>
 
-          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:16px;">
-            ${mods.map(m => {
-              const isSelected = state.selectedModifiers.includes(m.name);
+          <div style="flex:1; overflow-y:auto; padding-right:4px; margin-bottom:14px; display:flex; flex-direction:column; gap:12px;">
+            ${activeGroups.length === 0 ? `
+              <div style="text-align:center; padding:20px; color:var(--ttl-muted); font-size:13px;">
+                ไม่มีตัวเลือกสำหรับเมนูนี้ สามารถกดเพิ่มเข้าบิลได้ทันที
+              </div>
+            ` : activeGroups.map(grp => {
+              const grpMods = allMods.filter(m => m.group_id === grp.id);
+              if (grpMods.length === 0) return '';
+              const isSingle = grp.selection_type === 'SINGLE';
+
               return `
-                <button
-                  type="button"
-                  class="ttl-acc-card"
-                  style="padding:10px 12px; border-color:${isSelected ? 'var(--ttl-gold)' : 'var(--ttl-rule)'}; background:${isSelected ? 'color-mix(in srgb, var(--ttl-gold) 12%, var(--ttl-paper))' : 'var(--ttl-paper)'};"
-                  onclick="
-                    if(state.selectedModifiers.includes('${m.name}')){
-                      state.selectedModifiers = state.selectedModifiers.filter(x => x !== '${m.name}');
-                    } else {
-                      state.selectedModifiers.push('${m.name}');
-                    }
-                    render();
-                  "
-                >
-                  <div style="display:flex; justify-content:space-between; width:100%; font-size:13px;">
-                    <b>${isSelected ? '✓ ' : ''}${m.name}</b>
-                    <span style="color:var(--ttl-gold);">${m.extra_price > 0 ? `+฿${m.extra_price}` : 'ฟรี'}</span>
+                <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule);">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <span style="font-weight:700; font-size:13px; color:var(--ttl-accent);">📌 ${grp.name}</span>
+                    <span class="ttl-tag" style="background:${isSingle ? '#fef3c7' : '#e0e7ff'}; color:${isSingle ? '#92400e' : '#3730a3'}; font-size:11px;">
+                      ${isSingle ? '⚪ เลือก 1 อย่าง' : '☑️ เลือกได้หลายอย่าง'}
+                    </span>
                   </div>
-                </button>
+                  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(130px, 1fr)); gap:6px;">
+                    ${grpMods.map(m => {
+                      const isSelected = state.selectedModifiers.includes(m.name);
+                      return `
+                        <button
+                          type="button"
+                          class="ttl-acc-card"
+                          style="padding:8px 10px; border-color:${isSelected ? 'var(--ttl-gold)' : 'var(--ttl-rule)'}; background:${isSelected ? 'color-mix(in srgb, var(--ttl-gold) 15%, var(--ttl-paper))' : 'var(--ttl-paper)'}; font-weight:${isSelected ? '700' : '500'}; text-align:left; cursor:pointer;"
+                          onclick="handleModifierOptionClick('${grp.id}', '${m.name.replace(/'/g, "\\'")}', ${isSingle})"
+                        >
+                          <div style="display:flex; justify-content:space-between; align-items:center; width:100%; font-size:12px;">
+                            <span>${isSingle ? (isSelected ? '● ' : '○ ') : (isSelected ? '☑ ' : '☐ ')}${m.name}</span>
+                            <span style="color:var(--ttl-gold); font-size:11px; margin-left:4px;">${m.extra_price > 0 ? `+฿${m.extra_price}` : 'ฟรี'}</span>
+                          </div>
+                        </button>
+                      `;
+                    }).join('')}
+                  </div>
+                </div>
               `;
             }).join('')}
           </div>
@@ -4014,7 +4216,7 @@ function renderModals() {
                   });
                   state.modifierModalProduct = null;
                   render();
-                  showToast('+ เพิ่ม ${p.name} เข้าบิล (รายการใหม่) แล้ว');
+                  showToast('+ เพิ่ม ${p.name.replace(/'/g, "\\'")} เข้าบิลแล้ว');
                 "
               >
                 เพิ่มเข้าบิล (${formatMoney(unitPrice * state.modifierQty)})
@@ -4418,15 +4620,28 @@ function renderModals() {
   // 6. Product / Menu Modal (เพิ่ม / แก้ไขสินค้าของชำ หรือ เมนูอาหาร)
   if (state.showNewProductModal) {
     const ep = state.editingProduct;
+    let epGroupIds = [];
+    try {
+      epGroupIds = Array.isArray(ep?.modifier_group_ids) ? ep.modifier_group_ids : JSON.parse(ep?.modifier_group_ids || '[]');
+    } catch (e) {
+      epGroupIds = [];
+    }
+
+    const categoriesList = state.data?.categories || [];
+    const modifierGroupsList = (state.data?.modifierGroups || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showNewProductModal=false; state.editingProduct=null; render();}">
-        <form class="ttl-modal" onsubmit="
+        <form class="ttl-modal" style="max-width:680px; max-height:92vh; overflow-y:auto;" onsubmit="
           event.preventDefault();
           const f = this.elements;
+          const selectedGroupIds = Array.from(this.querySelectorAll('input[name=\\'modifier_group_ids\\']:checked')).map(el => el.value);
           apiCall('/api/products/save', 'POST', {
             id: '${ep ? ep.id : ''}' || undefined,
             name: f.pname.value,
             item_type: f.ptype.value,
+            category_id: f.pcategory.value || null,
+            modifier_group_ids: f.ptype.value === 'FOOD' ? selectedGroupIds : [],
             barcode: f.pbarcode.value,
             price: Number(f.pprice.value),
             cost: Number(f.pcost.value),
@@ -4448,13 +4663,27 @@ function renderModals() {
           <h3 style="margin:4px 0 12px;">${ep ? `✏️ แก้ไข "${ep.name}"` : '+ เพิ่มสินค้า / เมนูใหม่'}</h3>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
             <div>
-              <label style="font-size:12px; font-weight:600;">ประเภท</label>
-              <select name="ptype" class="ttl-select">
+              <label style="font-size:12px; font-weight:600;">ประเภทสินค้า/เมนู</label>
+              <select name="ptype" class="ttl-select" onchange="
+                const wrap = document.getElementById('food-mod-groups-wrap');
+                if (wrap) wrap.style.display = this.value === 'FOOD' ? 'block' : 'none';
+              ">
                 <option value="GROCERY" ${ep?.item_type === 'GROCERY' ? 'selected' : ''}>📦 สินค้าของชำ</option>
                 <option value="FOOD" ${ep?.item_type === 'FOOD' ? 'selected' : ''}>🍳 เมนูอาหารส่งครัว</option>
               </select>
             </div>
             <div>
+              <label style="font-size:12px; font-weight:600;">หมวดหมู่สินค้า / เมนู</label>
+              <select name="pcategory" class="ttl-select">
+                <option value="">-- ไม่ระบุหมวดหมู่ --</option>
+                ${categoriesList.map(c => `
+                  <option value="${c.id}" ${c.id === ep?.category_id ? 'selected' : ''}>
+                    [${c.category_type === 'FOOD' ? 'อาหาร' : 'ของชำ'}] ${c.name}
+                  </option>
+                `).join('')}
+              </select>
+            </div>
+            <div style="grid-column: span 2;">
               <label style="font-size:12px; font-weight:600;">ชื่อสินค้า / เมนู</label>
               <input name="pname" class="ttl-input" value="${(ep?.name || '').replace(/"/g, '&quot;')}" required />
             </div>
@@ -4494,12 +4723,265 @@ function renderModals() {
               <label style="font-size:12px; font-weight:600;">🔔 จำนวนขั้นต่ำแจ้งเตือนสต็อกต่ำ (แจ้งเตือนเมื่อสต็อกเหลือน้อยกว่าหรือเท่ากับค่านี้)</label>
               <input name="plowstock" type="number" step="any" class="ttl-input" value="${ep ? (ep.low_stock_threshold ?? 5) : 5}" />
             </div>
+
+            <!-- ส่วนติ๊กเลือกกลุ่มตัวเลือกพิเศษสำหรับเมนูอาหารส่งครัว -->
+            <div id="food-mod-groups-wrap" style="grid-column: span 2; display:${(!ep || ep.item_type === 'FOOD') ? 'block' : 'none'}; padding:12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-top:4px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+                <div>
+                  <b style="font-size:12.5px; color:var(--ttl-accent);">🎛️ ติ๊กเลือกกลุ่มตัวเลือกพิเศษที่ใช้กับเมนูนี้:</b>
+                  <div style="font-size:11px; color:var(--ttl-muted);">เมื่อพนักงานกดสั่งเมนูนี้ ระบบจะเปิดตัวเลือกตามกลุ่มที่ติ๊กเลือกไว้</div>
+                </div>
+                <div style="display:flex; gap:6px;">
+                  <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" onclick="toggleAllModifierGroupsInModal(true)">เลือกทั้งหมด</button>
+                  <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" onclick="toggleAllModifierGroupsInModal(false)">ล้างออก</button>
+                </div>
+              </div>
+              ${modifierGroupsList.length === 0 ? `
+                <div style="font-size:12px; color:var(--ttl-muted); padding:8px 0;">
+                  ยังไม่มีกลุ่มตัวเลือกพิเศษ สามารถสร้างได้ที่ปุ่ม <b>"🎛️ จัดการตัวเลือกพิเศษ"</b> ในแท็บสินค้า
+                </div>
+              ` : `
+                <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:8px;">
+                  ${modifierGroupsList.map(grp => {
+                    const isChecked = ep ? epGroupIds.includes(grp.id) : true;
+                    const grpModsCount = (state.data?.modifiers || []).filter(m => m.group_id === grp.id).length;
+                    return `
+                      <label style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:8px; background:var(--ttl-paper); border:1px solid var(--ttl-rule); cursor:pointer;">
+                        <input type="checkbox" name="modifier_group_ids" value="${grp.id}" ${isChecked ? 'checked' : ''} style="width:16px; height:16px; cursor:pointer;" />
+                        <div style="font-size:12px;">
+                          <b>${grp.name}</b>
+                          <div style="font-size:10.5px; color:var(--ttl-muted);">${grp.selection_type === 'SINGLE' ? '⚪ เลือก 1 อย่าง' : '☑️ เลือกได้หลายอย่าง'} (${grpModsCount} ตัวเลือก)</div>
+                        </div>
+                      </label>
+                    `;
+                  }).join('')}
+                </div>
+              `}
+            </div>
           </div>
           <div style="display:flex; justify-content:flex-end; gap:8px;">
             <button type="button" class="ttl-btn ttl-btn-ghost" onclick="state.showNewProductModal=false; state.editingProduct=null; render();">ยกเลิก</button>
             <button type="submit" class="ttl-btn ttl-btn-dark">บันทึกสินค้า/เมนู</button>
           </div>
         </form>
+      </div>
+    `;
+  }
+
+  // 6.1 Category Management Modal (จัดการหมวดหมู่สินค้า & เมนู)
+  if (state.showCategoryModal) {
+    const cats = state.data?.categories || [];
+    const ec = state.editingCategory;
+    html += `
+      <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showCategoryModal=false; state.editingCategory=null; render();}">
+        <div class="ttl-modal" style="max-width:620px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div>
+              <div class="ttl-k">CATEGORY MANAGEMENT</div>
+              <h3 style="margin:2px 0 0; font-size:18px;">🏷️ จัดการหมวดหมู่สินค้าและเมนู</h3>
+            </div>
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showCategoryModal=false; state.editingCategory=null; render();">✕ ปิด</button>
+          </div>
+
+          <!-- ฟอร์มเพิ่ม / แก้ไขหมวดหมู่ -->
+          <form style="padding:12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:16px;" onsubmit="event.preventDefault(); saveCategoryForm(this);">
+            <div style="font-weight:700; font-size:13px; margin-bottom:8px;">${ec ? `✏️ แก้ไขหมวดหมู่ "${ec.name}"` : '+ เพิ่มหมวดหมู่ใหม่'}</div>
+            <input type="hidden" name="cat_id" value="${ec ? ec.id : ''}" />
+            <div style="display:grid; grid-template-columns:2fr 1.5fr auto; gap:8px; align-items:end;">
+              <div>
+                <label style="font-size:11.5px; font-weight:600;">ชื่อหมวดหมู่</label>
+                <input name="cat_name" class="ttl-input" style="height:34px;" placeholder="เช่น เครื่องดื่ม, อาหารจานเดียว" value="${(ec?.name || '').replace(/"/g, '&quot;')}" required />
+              </div>
+              <div>
+                <label style="font-size:11.5px; font-weight:600;">ประเภทหมวดหมู่</label>
+                <select name="cat_type" class="ttl-select" style="height:34px;">
+                  <option value="GROCERY" ${ec?.category_type === 'GROCERY' ? 'selected' : ''}>📦 สินค้าของชำ</option>
+                  <option value="FOOD" ${ec?.category_type === 'FOOD' ? 'selected' : ''}>🍳 เมนูอาหาร</option>
+                </select>
+              </div>
+              <div style="display:flex; gap:6px;">
+                <button type="submit" class="ttl-btn ttl-btn-sm ttl-btn-dark" style="height:34px;">${ec ? 'บันทึก' : '+ เพิ่ม'}</button>
+                ${ec ? `<button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:34px;" onclick="state.editingCategory=null; render();">ยกเลิก</button>` : ''}
+              </div>
+            </div>
+          </form>
+
+          <!-- รายการหมวดหมู่ที่มีอยู่ -->
+          <div style="max-height:360px; overflow-y:auto; border:1px solid var(--ttl-rule); border-radius:10px;">
+            <table class="ttl-table" style="margin:0;">
+              <thead>
+                <tr>
+                  <th>ชื่อหมวดหมู่</th>
+                  <th>ประเภท</th>
+                  <th>จำนวนสินค้า</th>
+                  <th style="text-align:right;">จัดการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${cats.length === 0 ? `
+                  <tr><td colspan="4" style="text-align:center; color:var(--ttl-muted); padding:20px;">ยังไม่มีหมวดหมู่</td></tr>
+                ` : cats.map(c => {
+                  const prodCount = (state.data?.products || []).filter(p => p.category_id === c.id).length;
+                  return `
+                    <tr>
+                      <td style="font-weight:700;">🏷️ ${c.name}</td>
+                      <td>
+                        <span class="ttl-tag ${c.category_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">
+                          ${c.category_type === 'FOOD' ? '🍳 อาหาร' : '📦 ของชำ'}
+                        </span>
+                      </td>
+                      <td>${prodCount} รายการ</td>
+                      <td style="text-align:right;">
+                        <div style="display:inline-flex; gap:6px;">
+                          <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" onclick="state.editingCategory={ id:'${c.id}', name:'${c.name.replace(/'/g, "\\'")}', category_type:'${c.category_type || 'GROCERY'}' }; render();">✏️ แก้ไข</button>
+                          <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-danger-outline" onclick="deleteCategoryById('${c.id}', '${c.name.replace(/'/g, "\\'")}')">🗑️ ลบ</button>
+                        </div>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // 6.2 Food Modifier Groups & Options Modal (จัดการกลุ่มตัวเลือกพิเศษสำหรับเมนูอาหารส่งครัว)
+  if (state.showModifierGroupModal) {
+    const groups = (state.data?.modifierGroups || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const allMods = state.data?.modifiers || [];
+    const eg = state.editingModifierGroup;
+    const eo = state.editingModifierOption;
+
+    html += `
+      <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showModifierGroupModal=false; state.editingModifierGroup=null; state.editingModifierOption=null; state.modalAddingOptionToGroupId=null; render();}">
+        <div class="ttl-modal" style="max-width:760px; max-height:90vh; overflow-y:auto;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div>
+              <div class="ttl-k">FOOD MODIFIERS & GROUPS</div>
+              <h3 style="margin:2px 0 0; font-size:18px;">🎛️ จัดการกลุ่มตัวเลือกพิเศษสำหรับเมนูอาหารส่งครัว</h3>
+            </div>
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showModifierGroupModal=false; state.editingModifierGroup=null; state.editingModifierOption=null; state.modalAddingOptionToGroupId=null; render();">✕ ปิด</button>
+          </div>
+
+          <!-- ฟอร์มเพิ่ม / แก้ไขกลุ่มตัวเลือกพิเศษ -->
+          <form style="padding:14px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:16px;" onsubmit="event.preventDefault(); saveModifierGroupForm(this);">
+            <div style="font-weight:700; font-size:13px; margin-bottom:8px;">${eg ? `✏️ แก้ไขกลุ่ม "${eg.name}"` : '+ สร้างกลุ่มตัวเลือกพิเศษใหม่ (เช่น ระดับความเผ็ด, ท็อปปิ้ง & เพิ่มเติม)'}</div>
+            <input type="hidden" name="grp_id" value="${eg ? eg.id : ''}" />
+            <div style="display:grid; grid-template-columns:2fr 2fr 1fr auto; gap:8px; align-items:end;">
+              <div>
+                <label style="font-size:11.5px; font-weight:600;">ชื่อกลุ่มตัวเลือก</label>
+                <input name="grp_name" class="ttl-input" style="height:34px;" placeholder="เช่น ระดับความเผ็ด, ท็อปปิ้ง" value="${(eg?.name || '').replace(/"/g, '&quot;')}" required />
+              </div>
+              <div>
+                <label style="font-size:11.5px; font-weight:600;">การเลือก (Selection Type)</label>
+                <select name="grp_selection_type" class="ttl-select" style="height:34px;">
+                  <option value="SINGLE" ${eg?.selection_type === 'SINGLE' ? 'selected' : ''}>⚪ SINGLE (เลือกได้ 1 อย่าง เช่น เผ็ดน้อย/กลาง/มาก)</option>
+                  <option value="MULTIPLE" ${(!eg || eg.selection_type === 'MULTIPLE') ? 'selected' : ''}>☑️ MULTIPLE (เลือกได้หลายอย่าง เช่น +ไข่ดาว +หมูสับ)</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size:11.5px; font-weight:600;">ลำดับแสดง</label>
+                <input name="grp_sort_order" type="number" class="ttl-input" style="height:34px;" value="${eg ? (eg.sort_order || 0) : groups.length + 1}" />
+              </div>
+              <div style="display:flex; gap:6px;">
+                <button type="submit" class="ttl-btn ttl-btn-sm ttl-btn-dark" style="height:34px;">${eg ? 'บันทึก' : '+ สร้างกลุ่ม'}</button>
+                ${eg ? `<button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:34px;" onclick="state.editingModifierGroup=null; render();">ยกเลิก</button>` : ''}
+              </div>
+            </div>
+          </form>
+
+          <!-- รายการกลุ่มตัวเลือกพิเศษและตัวเลือกย่อยภายใน -->
+          <div style="display:flex; flex-direction:column; gap:12px;">
+            ${groups.length === 0 ? `
+              <div style="text-align:center; padding:30px; border:1px dashed var(--ttl-rule); border-radius:10px; color:var(--ttl-muted);">
+                ยังไม่มีกลุ่มตัวเลือกพิเศษ เริ่มต้นสร้างกลุ่มแรกด้านบนได้เลย เช่น "ระดับความเผ็ด" หรือ "ท็อปปิ้งไข่ & เพิ่มเติม"
+              </div>
+            ` : groups.map(grp => {
+              const options = allMods.filter(m => m.group_id === grp.id);
+              const isAddingOptionHere = state.modalAddingOptionToGroupId === grp.id;
+
+              return `
+                <div style="border:1px solid var(--ttl-rule); border-radius:12px; background:var(--ttl-paper); overflow:hidden;">
+                  <!-- Header ของกลุ่ม -->
+                  <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:var(--ttl-page); border-bottom:1px solid var(--ttl-rule); flex-wrap:wrap; gap:8px;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                      <span style="font-weight:700; font-size:14px;">🎛️ ${grp.name}</span>
+                      <span class="ttl-tag" style="background:${grp.selection_type === 'SINGLE' ? '#fef3c7' : '#e0e7ff'}; color:${grp.selection_type === 'SINGLE' ? '#92400e' : '#3730a3'}; font-size:11px;">
+                        ${grp.selection_type === 'SINGLE' ? '⚪ เลือกได้ 1 อย่าง (SINGLE)' : '☑️ เลือกได้หลายอย่าง (MULTIPLE)'}
+                      </span>
+                      <span style="font-size:11.5px; color:var(--ttl-muted);">(${options.length} ตัวเลือก)</span>
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                      <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" onclick="state.editingModifierGroup={ id:'${grp.id}', name:'${grp.name.replace(/'/g, "\\'")}', selection_type:'${grp.selection_type}', sort_order:${grp.sort_order || 0} }; render();">✏️ แก้ไขกลุ่ม</button>
+                      <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-danger-outline" onclick="deleteModifierGroupById('${grp.id}', '${grp.name.replace(/'/g, "\\'")}')">🗑️ ลบกลุ่ม</button>
+                      <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-gold" onclick="state.modalAddingOptionToGroupId='${grp.id}'; state.editingModifierOption=null; render();">+ เพิ่มตัวเลือก</button>
+                    </div>
+                  </div>
+
+                  <!-- ฟอร์มเพิ่ม / แก้ไขตัวเลือกย่อยในกลุ่มนี้ (Inline Sub-form) -->
+                  ${isAddingOptionHere ? `
+                    <form style="padding:12px 14px; background:#fffbeb; border-bottom:1px solid #fde68a;" onsubmit="event.preventDefault(); saveModifierOptionForm(this, '${grp.id}');">
+                      <div style="font-weight:700; font-size:12px; margin-bottom:8px; color:#92400e;">
+                        ${eo ? `✏️ แก้ไขตัวเลือก "${eo.name}" ในกลุ่ม "${grp.name}"` : `+ เพิ่มตัวเลือกใหม่ในกลุ่ม "${grp.name}"`}
+                      </div>
+                      <input type="hidden" name="mod_id" value="${eo ? eo.id : ''}" />
+                      <div style="display:grid; grid-template-columns:1.5fr 1fr 1fr 1.5fr auto; gap:8px; align-items:end;">
+                        <div>
+                          <label style="font-size:11px; font-weight:600;">ชื่อตัวเลือก</label>
+                          <input name="mod_name" class="ttl-input" style="height:32px; font-size:12px;" placeholder="เช่น เผ็ดน้อย, +ไข่ดาว" value="${(eo?.name || '').replace(/"/g, '&quot;')}" required />
+                        </div>
+                        <div>
+                          <label style="font-size:11px; font-weight:600;">บวกราคาเพิ่ม (฿)</label>
+                          <input name="mod_extra_price" type="number" step="any" class="ttl-input" style="height:32px; font-size:12px;" value="${eo ? eo.extra_price : 0}" />
+                        </div>
+                        <div>
+                          <label style="font-size:11px; font-weight:600;">ต้นทุนเพิ่ม (฿)</label>
+                          <input name="mod_extra_cost" type="number" step="any" class="ttl-input" style="height:32px; font-size:12px;" value="${eo ? (eo.extra_cost || 0) : 0}" />
+                        </div>
+                        <div>
+                          <label style="font-size:11px; font-weight:600;">คำสั่งเสียงพ้อง</label>
+                          <input name="mod_voice_keywords" class="ttl-input" style="height:32px; font-size:12px;" placeholder="คั่นด้วยจุลภาค ," value="${eo ? (Array.isArray(eo.voice_keywords) ? eo.voice_keywords.join(', ') : (eo.voice_keywords || '')) : ''}" />
+                        </div>
+                        <div style="display:flex; gap:4px;">
+                          <button type="submit" class="ttl-btn ttl-btn-xs ttl-btn-dark" style="height:32px;">${eo ? 'บันทึก' : '+ เพิ่ม'}</button>
+                          <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" style="height:32px;" onclick="state.modalAddingOptionToGroupId=null; state.editingModifierOption=null; render();">ยกเลิก</button>
+                        </div>
+                      </div>
+                    </form>
+                  ` : ''}
+
+                  <!-- รายการตัวเลือกย่อย -->
+                  <div style="padding:8px 14px;">
+                    ${options.length === 0 ? `
+                      <div style="font-size:12px; color:var(--ttl-muted); padding:8px 0;">ยังไม่มีตัวเลือกย่อยในกลุ่มนี้ กดปุ่ม <b>"+ เพิ่มตัวเลือก"</b> ด้านบนเพื่อเริ่มเพิ่ม</div>
+                    ` : `
+                      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:6px;">
+                        ${options.map(opt => `
+                          <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 10px; border-radius:8px; border:1px solid var(--ttl-rule); background:var(--ttl-page); font-size:12px;">
+                            <div>
+                              <b>${opt.name}</b>
+                              <div style="font-size:11px; color:var(--ttl-gold);">
+                                ${opt.extra_price > 0 ? `+฿${opt.extra_price}` : 'ฟรี'}
+                                ${opt.extra_cost > 0 ? `<small style="color:var(--ttl-muted); margin-left:4px;">(ทุน +฿${opt.extra_cost})</small>` : ''}
+                              </div>
+                            </div>
+                            <div style="display:flex; gap:4px;">
+                              <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" style="padding:2px 6px; font-size:10px;" onclick="state.editingModifierOption=${JSON.stringify(opt).replace(/"/g, '&quot;')}; state.modalAddingOptionToGroupId='${grp.id}'; render();">✏️</button>
+                              <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-danger-outline" style="padding:2px 6px; font-size:10px;" onclick="deleteModifierOptionById('${opt.id}', '${opt.name.replace(/'/g, "\\'")}')">🗑️</button>
+                            </div>
+                          </div>
+                        `).join('')}
+                      </div>
+                    `}
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
       </div>
     `;
   }
