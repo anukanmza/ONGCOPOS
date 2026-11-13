@@ -41,19 +41,35 @@ async function sbRevertStockInItem(receiptId, oldIt) {
   if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
     const prods = await sbRest(`products?select=*&id=eq.${encodeURIComponent(oldIt.product_id)}`);
     if (prods[0]) {
-      const patch = { stock_qty: Math.max(0, Math.round((Number(prods[0].stock_qty) - Number(oldIt.qty_added)) * 100) / 100) };
-      // คืนต้นทุนเฉพาะกรณีที่ต้นทุนปัจจุบันยังมาจากใบนี้ (ยังไม่มีใบใหม่กว่าหรือแก้ไขมือทับ)
-      if (costBefore !== null && purchaseCost > 0 && Math.abs(Number(prods[0].cost) - purchaseCost) < 0.011) {
+      const currentStock = Number(prods[0].stock_qty) || 0;
+      const reverted = Math.max(0, Math.round((currentStock - Number(oldIt.qty_added)) * 100) / 100);
+      const patch = { stock_qty: reverted };
+      // คืนต้นทุนเดิมก่อนรับของใบนี้ ถ้ามีค่า costBefore หรือคำนวณย้อนกลับจากถ่วงน้ำหนักเดิม
+      if (costBefore !== null && costBefore >= 0) {
         patch.cost = costBefore;
+      } else {
+        const lineCost = Number(oldIt.total_line_cost) || (Number(oldIt.qty_added) * purchaseCost) || 0;
+        if (reverted > 0 && lineCost > 0) {
+          const derivedOldCost = Math.round(((currentStock * Number(prods[0].cost) - lineCost) / reverted) * 100) / 100;
+          if (derivedOldCost > 0) patch.cost = derivedOldCost;
+        }
       }
       await sbRest(`products?id=eq.${encodeURIComponent(oldIt.product_id)}`, { method: 'PATCH', body: patch });
     }
   } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
     const ings = await sbRest(`ingredients?select=*&id=eq.${encodeURIComponent(oldIt.ingredient_id)}`);
     if (ings[0]) {
-      const patch = { current_qty: Math.max(0, Math.round((Number(ings[0].current_qty) - Number(oldIt.qty_added)) * 100) / 100) };
-      if (costBefore !== null && purchaseCost > 0 && Math.abs(Number(ings[0].cost_per_unit) - purchaseCost) < 0.0011) {
+      const currentStock = Number(ings[0].current_qty) || 0;
+      const reverted = Math.max(0, Math.round((currentStock - Number(oldIt.qty_added)) * 100) / 100);
+      const patch = { current_qty: reverted };
+      if (costBefore !== null && costBefore >= 0) {
         patch.cost_per_unit = costBefore;
+      } else {
+        const lineCost = Number(oldIt.total_line_cost) || (Number(oldIt.qty_added) * purchaseCost) || 0;
+        if (reverted > 0 && lineCost > 0) {
+          const derivedOldCost = Math.round(((currentStock * Number(ings[0].cost_per_unit) - lineCost) / reverted) * 10000) / 10000;
+          if (derivedOldCost > 0) patch.cost_per_unit = derivedOldCost;
+        }
       }
       await sbRest(`ingredients?id=eq.${encodeURIComponent(oldIt.ingredient_id)}`, { method: 'PATCH', body: patch });
     }
@@ -415,6 +431,19 @@ module.exports = async (req, res) => {
       let orderRound = 1;
       let contextLabel = bill_title ? `บิล: ${bill_title}` : 'ขายหน้าร้าน (Walk-in)';
 
+      if (settle_immediately) {
+        const oos = [];
+        for (const it of items) {
+          const p = data.products.find(x => x.id === it.product_id);
+          if (p && p.item_type === 'GROCERY' && p.track_stock && Number(p.stock_qty) <= 0) {
+            oos.push(p.name);
+          }
+        }
+        if (oos.length > 0) {
+          return send(400, { error: `ไม่สามารถเช็คบิลได้ เนื่องจากมีสินค้าสต็อกหมดในบิล: ${oos.join(', ')} กรุณานำออกจากบิลก่อนครับ` });
+        }
+      }
+
       if (existingOrderId) {
         try {
           await sbPatchOrderSafe(existingOrderId, {
@@ -656,6 +685,20 @@ module.exports = async (req, res) => {
         if (tbls[0]) targetOrderId = tbls[0].current_order_id;
       }
       if (!targetOrderId) return send(404, { error: 'ไม่พบบิลที่ต้องการชำระเงิน' });
+
+      // Check for out-of-stock items in this bill
+      const activeItems = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(targetOrderId)}&item_status=eq.ACTIVE`);
+      const bootData = await getSupabaseBootstrapData();
+      const oos = [];
+      for (const it of activeItems) {
+        const p = bootData.products.find(x => x.id === it.product_id);
+        if (p && p.item_type === 'GROCERY' && p.track_stock && Number(p.stock_qty) <= 0) {
+          oos.push(p.name);
+        }
+      }
+      if (oos.length > 0) {
+        return send(400, { error: `ไม่สามารถเช็คบิลได้ เนื่องจากมีสินค้าสต็อกหมดในบิล: ${oos.join(', ')} กรุณานำออกจากบิลก่อนครับ` });
+      }
 
       const patchDiscBody = { discount: Number(discount) || 0 };
       if (customer_id !== undefined) patchDiscBody.customer_id = customer_id;
@@ -921,6 +964,26 @@ module.exports = async (req, res) => {
       return send(200, { success: true, prodId, data: await getSupabaseBootstrapData() });
     }
 
+    if (req.method === 'POST' && pathname === '/api/products/threshold') {
+      const { product_id, threshold, items: batchItems } = body;
+      if (Array.isArray(batchItems)) {
+        for (const item of batchItems) {
+          if (item.id) {
+            await sbRest(`products?id=eq.${encodeURIComponent(item.id)}`, {
+              method: 'PATCH',
+              body: { low_stock_threshold: Math.max(0, Number(item.threshold) || 0) }
+            });
+          }
+        }
+      } else if (product_id) {
+        await sbRest(`products?id=eq.${encodeURIComponent(product_id)}`, {
+          method: 'PATCH',
+          body: { low_stock_threshold: Math.max(0, Number(threshold) || 0) }
+        });
+      }
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
     if (req.method === 'POST' && pathname === '/api/ingredients/save') {
       const { id, name, stock_unit = 'กรัม', purchase_unit = 'กิโลกรัม', conversion_rate = 1000, current_qty = 0, cost_per_unit = 0, low_stock_threshold = 500 } = body;
       const ingId = id || `ING-${Date.now().toString().slice(-4)}`;
@@ -1011,6 +1074,22 @@ module.exports = async (req, res) => {
           if (prods[0]) {
             const nextStock = Math.round((Number(prods[0].stock_qty) + Number(it.quantity)) * 100) / 100;
             await sbRest(`products?id=eq.${encodeURIComponent(prods[0].id)}`, { method: 'PATCH', body: { stock_qty: nextStock } });
+            await sbRest('inventory_logs', {
+              method: 'POST',
+              body: {
+                id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                target_type: 'GROCERY',
+                product_id: prods[0].id,
+                item_name: prods[0].name,
+                change_qty: Number(it.quantity),
+                balance_after: nextStock,
+                unit: prods[0].unit,
+                reason: 'ORDER_CANCEL_RESTOCK',
+                reference_id: order_id,
+                note: `ยกเลิกบิล #${order_id} คืนสินค้าเข้าสต็อก`,
+                created_at: new Date().toISOString()
+              }
+            });
           }
         }
       }
@@ -1385,8 +1464,45 @@ module.exports = async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/stock-in/delete') {
       const { receipt_id } = body;
       const oldItems = await sbRest(`stock_in_items?select=*&receipt_id=eq.${encodeURIComponent(receipt_id)}`);
+      const now = new Date().toISOString();
       for (const oldIt of oldItems) {
         await sbRevertStockInItem(receipt_id, oldIt);
+        const isGrocery = oldIt.item_target_type === 'GROCERY';
+        let currentStock = 0;
+        let unit = 'ชิ้น';
+        let name = isGrocery ? oldIt.product_name : oldIt.ingredient_name;
+        if (isGrocery && oldIt.product_id) {
+          const prods = await sbRest(`products?select=stock_qty,unit,name&id=eq.${encodeURIComponent(oldIt.product_id)}`);
+          if (prods[0]) {
+            currentStock = Number(prods[0].stock_qty);
+            unit = prods[0].unit || 'ชิ้น';
+            name = prods[0].name || name;
+          }
+        } else if (!isGrocery && oldIt.ingredient_id) {
+          const ings = await sbRest(`ingredients?select=current_qty,stock_unit,name&id=eq.${encodeURIComponent(oldIt.ingredient_id)}`);
+          if (ings[0]) {
+            currentStock = Number(ings[0].current_qty);
+            unit = ings[0].stock_unit || 'กรัม';
+            name = ings[0].name || name;
+          }
+        }
+        await sbRest('inventory_logs', {
+          method: 'POST',
+          body: {
+            id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            target_type: oldIt.item_target_type,
+            product_id: oldIt.product_id || null,
+            ingredient_id: oldIt.ingredient_id || null,
+            item_name: name || 'สินค้า',
+            change_qty: -Number(oldIt.qty_added),
+            balance_after: currentStock,
+            unit,
+            reason: 'CANCEL_STOCK_IN',
+            reference_id: receipt_id,
+            note: `ลบใบรับของ #${receipt_id} (หักคืนสต็อก -${oldIt.qty_added} ${unit})`,
+            created_at: now
+          }
+        });
       }
       await sbRest(`stock_in_items?receipt_id=eq.${encodeURIComponent(receipt_id)}`, { method: 'DELETE' });
       await sbRest(`stock_in_receipts?id=eq.${encodeURIComponent(receipt_id)}`, { method: 'DELETE' });

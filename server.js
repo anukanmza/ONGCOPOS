@@ -392,16 +392,36 @@ function revertLocalStockInItem(receiptId, oldIt) {
   if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
     const prod = db.prepare('SELECT stock_qty, cost FROM products WHERE id = ?').get(oldIt.product_id);
     if (prod) {
-      const reverted = Math.max(0, Math.round((prod.stock_qty - oldIt.qty_added) * 100) / 100);
-      const restoreCost = costBefore !== null && purchaseCost > 0 && Math.abs(Number(prod.cost) - purchaseCost) < 0.011;
-      db.prepare('UPDATE products SET stock_qty = ?, cost = ? WHERE id = ?').run(reverted, restoreCost ? costBefore : prod.cost, oldIt.product_id);
+      const currentStock = Number(prod.stock_qty) || 0;
+      const reverted = Math.max(0, Math.round((currentStock - oldIt.qty_added) * 100) / 100);
+      let targetCost = prod.cost;
+      if (costBefore !== null && costBefore >= 0) {
+        targetCost = costBefore;
+      } else {
+        const lineCost = Number(oldIt.total_line_cost) || (Number(oldIt.qty_added) * purchaseCost) || 0;
+        if (reverted > 0 && lineCost > 0) {
+          const derivedOldCost = Math.round(((currentStock * Number(prod.cost) - lineCost) / reverted) * 100) / 100;
+          if (derivedOldCost > 0) targetCost = derivedOldCost;
+        }
+      }
+      db.prepare('UPDATE products SET stock_qty = ?, cost = ? WHERE id = ?').run(reverted, targetCost, oldIt.product_id);
     }
   } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
     const ing = db.prepare('SELECT current_qty, cost_per_unit FROM ingredients WHERE id = ?').get(oldIt.ingredient_id);
     if (ing) {
-      const reverted = Math.max(0, Math.round((ing.current_qty - oldIt.qty_added) * 100) / 100);
-      const restoreCost = costBefore !== null && purchaseCost > 0 && Math.abs(Number(ing.cost_per_unit) - purchaseCost) < 0.0011;
-      db.prepare('UPDATE ingredients SET current_qty = ?, cost_per_unit = ? WHERE id = ?').run(reverted, restoreCost ? costBefore : ing.cost_per_unit, oldIt.ingredient_id);
+      const currentStock = Number(ing.current_qty) || 0;
+      const reverted = Math.max(0, Math.round((currentStock - oldIt.qty_added) * 100) / 100);
+      let targetCost = ing.cost_per_unit;
+      if (costBefore !== null && costBefore >= 0) {
+        targetCost = costBefore;
+      } else {
+        const lineCost = Number(oldIt.total_line_cost) || (Number(oldIt.qty_added) * purchaseCost) || 0;
+        if (reverted > 0 && lineCost > 0) {
+          const derivedOldCost = Math.round(((currentStock * Number(ing.cost_per_unit) - lineCost) / reverted) * 10000) / 10000;
+          if (derivedOldCost > 0) targetCost = derivedOldCost;
+        }
+      }
+      db.prepare('UPDATE ingredients SET current_qty = ?, cost_per_unit = ? WHERE id = ?').run(reverted, targetCost, oldIt.ingredient_id);
     }
   }
 }
@@ -1450,14 +1470,42 @@ const server = http.createServer(async (req, res) => {
       if (!existingRec) return sendJson(res, 404, { error: 'ไม่พบใบรับของที่ต้องการลบ' });
 
       const oldItems = db.prepare('SELECT * FROM stock_in_items WHERE receipt_id = ?').all(receipt_id);
+      const now = new Date().toISOString();
       for (const oldIt of oldItems) {
         revertLocalStockInItem(receipt_id, oldIt);
+        const isGrocery = oldIt.item_target_type === 'GROCERY';
+        let currentStock = 0;
+        let unit = 'ชิ้น';
+        let name = isGrocery ? oldIt.product_name : oldIt.ingredient_name;
+        if (isGrocery && oldIt.product_id) {
+          const p = db.prepare('SELECT stock_qty, unit, name FROM products WHERE id = ?').get(oldIt.product_id);
+          if (p) { currentStock = p.stock_qty; unit = p.unit; name = p.name; }
+        } else if (!isGrocery && oldIt.ingredient_id) {
+          const ing = db.prepare('SELECT current_qty, stock_unit, name FROM ingredients WHERE id = ?').get(oldIt.ingredient_id);
+          if (ing) { currentStock = ing.current_qty; unit = ing.stock_unit; name = ing.name; }
+        }
+        db.prepare(`
+          INSERT INTO inventory_logs (id, target_type, product_id, ingredient_id, item_name, change_qty, balance_after, unit, reason, reference_id, note, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          oldIt.item_target_type,
+          oldIt.product_id || null,
+          oldIt.ingredient_id || null,
+          name || 'สินค้า',
+          -oldIt.qty_added,
+          currentStock,
+          unit,
+          'CANCEL_STOCK_IN',
+          receipt_id,
+          `ลบใบรับของ #${receipt_id} (หักคืนสต็อก -${oldIt.qty_added} ${unit})`,
+          now
+        );
       }
 
       db.prepare('DELETE FROM stock_in_items WHERE receipt_id = ?').run(receipt_id);
       db.prepare('DELETE FROM stock_in_receipts WHERE id = ?').run(receipt_id);
       db.prepare('DELETE FROM expenses WHERE reference_id = ?').run(receipt_id);
-      db.prepare('DELETE FROM inventory_logs WHERE reference_id = ?').run(receipt_id);
 
       recalculateAllFoodCosts();
       broadcastUpdate('stock_in_deleted', { receipt_id });
@@ -1532,6 +1580,22 @@ const server = http.createServer(async (req, res) => {
 
       broadcastUpdate('product_saved', { prodId });
       return sendJson(res, 200, { success: true, prodId, data: getFullBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/products/threshold') {
+      const body = await parseJsonBody(req);
+      const { product_id, threshold, items: batchItems } = body;
+      if (Array.isArray(batchItems)) {
+        const stmt = db.prepare('UPDATE products SET low_stock_threshold = ? WHERE id = ?');
+        for (const item of batchItems) {
+          if (item.id) stmt.run(Math.max(0, Number(item.threshold) || 0), item.id);
+        }
+      } else if (product_id) {
+        db.prepare('UPDATE products SET low_stock_threshold = ? WHERE id = ?')
+          .run(Math.max(0, Number(threshold) || 0), product_id);
+      }
+      broadcastUpdate('product_saved', { product_id });
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
     }
 
     // Create / Update Kitchen Ingredient

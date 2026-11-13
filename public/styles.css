@@ -624,6 +624,18 @@ button {
   color: var(--ttl-bad);
 }
 
+.ttl-tag-danger {
+  background: #fee2e2;
+  color: #991b1b;
+  font-weight: 700;
+}
+
+.ttl-tag-good {
+  background: #dcfce7;
+  color: #15803d;
+  font-weight: 700;
+}
+
 /* ============================================================================
    FLOATING BILL BUTTON (.ttl-fab-bill) & SLIDE-OVER BILL DRAWER (.ttl-bill-drawer)
    ============================================================================ */

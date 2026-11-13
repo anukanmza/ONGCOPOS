@@ -1028,9 +1028,15 @@ window.LocalPosEngine = {
         const before = prod.stock_qty;
         const added = Math.round(inputQty * conv * 100) / 100;
         const after = Math.round((before + added) * 100) / 100;
+        const costBefore = Number(prod.cost) || 0;
+        let baseCost = costBefore;
+        if (added > 0 && lineCost > 0) {
+          baseCost = Math.round(((before * costBefore + lineCost) / (before + added)) * 100) / 100;
+        }
+        prod.cost = baseCost;
         prod.stock_qty = after;
-        lines.push({ id: `SRI-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, receipt_id: receiptId, item_target_type: 'GROCERY', product_id: prod.id, item_name: prod.name, unit_label: line.use_purchase_unit ? prod.purchase_unit : prod.unit, input_qty: inputQty, conversion_rate: conv, qty_before: before, qty_added: added, qty_after: after, total_line_cost: lineCost });
-        db.inventoryLogs.unshift({ id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, target_type: 'GROCERY', product_id: prod.id, item_name: prod.name, change_qty: added, balance_after: after, unit: prod.unit, reason: 'STOCK_IN_RECEIPT', reference_id: receiptId, note: `นำเข้า ${inputQty} ${line.use_purchase_unit ? prod.purchase_unit : prod.unit}`, created_at: now });
+        lines.push({ id: `SRI-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, receipt_id: receiptId, item_target_type: 'GROCERY', product_id: prod.id, item_name: prod.name, unit_label: line.use_purchase_unit ? prod.purchase_unit : prod.unit, input_qty: inputQty, conversion_rate: conv, qty_before: before, qty_added: added, qty_after: after, cost_before: costBefore, purchase_cost_per_base_unit: baseCost, total_line_cost: lineCost });
+        db.inventoryLogs.unshift({ id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, target_type: 'GROCERY', product_id: prod.id, item_name: prod.name, change_qty: added, balance_after: after, unit: prod.unit, reason: 'STOCK_IN_RECEIPT', reference_id: receiptId, note: `นำเข้า ${inputQty} ${line.use_purchase_unit ? prod.purchase_unit : prod.unit} [COST_BEFORE=${costBefore}]`, created_at: now });
       } else {
         const ing = db.ingredients.find(i => i.id === line.target_id);
         if (!ing) continue;
@@ -1038,9 +1044,15 @@ window.LocalPosEngine = {
         const before = ing.current_qty;
         const added = Math.round(inputQty * conv * 100) / 100;
         const after = Math.round((before + added) * 100) / 100;
+        const costBefore = Number(ing.cost_per_unit) || 0;
+        let baseCost = costBefore;
+        if (added > 0 && lineCost > 0) {
+          baseCost = Math.round(((before * costBefore + lineCost) / (before + added)) * 10000) / 10000;
+        }
+        ing.cost_per_unit = baseCost;
         ing.current_qty = after;
-        lines.push({ id: `SRI-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, receipt_id: receiptId, item_target_type: 'INGREDIENT', ingredient_id: ing.id, item_name: ing.name, unit_label: line.use_purchase_unit ? ing.purchase_unit : ing.stock_unit, input_qty: inputQty, conversion_rate: conv, qty_before: before, qty_added: added, qty_after: after, total_line_cost: lineCost });
-        db.inventoryLogs.unshift({ id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, target_type: 'INGREDIENT', ingredient_id: ing.id, item_name: ing.name, change_qty: added, balance_after: after, unit: ing.stock_unit, reason: 'STOCK_IN_RECEIPT', reference_id: receiptId, note: `นำเข้า ${inputQty} ${line.use_purchase_unit ? ing.purchase_unit : ing.stock_unit}`, created_at: now });
+        lines.push({ id: `SRI-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, receipt_id: receiptId, item_target_type: 'INGREDIENT', ingredient_id: ing.id, item_name: ing.name, unit_label: line.use_purchase_unit ? ing.purchase_unit : ing.stock_unit, input_qty: inputQty, conversion_rate: conv, qty_before: before, qty_added: added, qty_after: after, cost_before: costBefore, purchase_cost_per_base_unit: baseCost, total_line_cost: lineCost });
+        db.inventoryLogs.unshift({ id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, target_type: 'INGREDIENT', ingredient_id: ing.id, item_name: ing.name, change_qty: added, balance_after: after, unit: ing.stock_unit, reason: 'STOCK_IN_RECEIPT', reference_id: receiptId, note: `นำเข้า ${inputQty} ${line.use_purchase_unit ? ing.purchase_unit : ing.stock_unit} [COST_BEFORE=${costBefore}]`, created_at: now });
       }
     }
 
@@ -1103,21 +1115,88 @@ window.LocalPosEngine = {
   deleteStockInReceipt(body) {
     const db = loadLocalDb();
     const { receipt_id } = body;
+    const now = new Date().toISOString();
     const rec = (db.stockInReceipts || []).find(r => r.id === receipt_id);
     if (rec) {
+      if (!Array.isArray(db.inventoryLogs)) db.inventoryLogs = [];
       for (const oldIt of rec.items || []) {
+        let currentStock = 0;
+        let unit = 'ชิ้น';
+        let name = oldIt.product_name || oldIt.ingredient_name || 'สินค้า';
         if (oldIt.item_target_type === 'GROCERY' && oldIt.product_id) {
           const prod = db.products.find(p => p.id === oldIt.product_id);
-          if (prod) prod.stock_qty = Math.max(0, Math.round((prod.stock_qty - (oldIt.qty_added || 0)) * 100) / 100);
+          if (prod) {
+            const curStock = Number(prod.stock_qty) || 0;
+            const reverted = Math.max(0, Math.round((curStock - (oldIt.qty_added || 0)) * 100) / 100);
+            prod.stock_qty = reverted;
+            if (oldIt.cost_before !== undefined && oldIt.cost_before !== null && Number(oldIt.cost_before) >= 0) {
+              prod.cost = Number(oldIt.cost_before);
+            } else {
+              const lineCost = Number(oldIt.total_line_cost) || 0;
+              if (reverted > 0 && lineCost > 0) {
+                const derived = Math.round(((curStock * Number(prod.cost) - lineCost) / reverted) * 100) / 100;
+                if (derived > 0) prod.cost = derived;
+              }
+            }
+            currentStock = prod.stock_qty;
+            unit = prod.unit || 'ชิ้น';
+            name = prod.name || name;
+          }
         } else if (oldIt.item_target_type === 'INGREDIENT' && oldIt.ingredient_id) {
           const ing = db.ingredients.find(i => i.id === oldIt.ingredient_id);
-          if (ing) ing.current_qty = Math.max(0, Math.round((ing.current_qty - (oldIt.qty_added || 0)) * 100) / 100);
+          if (ing) {
+            const curStock = Number(ing.current_qty) || 0;
+            const reverted = Math.max(0, Math.round((curStock - (oldIt.qty_added || 0)) * 100) / 100);
+            ing.current_qty = reverted;
+            if (oldIt.cost_before !== undefined && oldIt.cost_before !== null && Number(oldIt.cost_before) >= 0) {
+              ing.cost_per_unit = Number(oldIt.cost_before);
+            } else {
+              const lineCost = Number(oldIt.total_line_cost) || 0;
+              if (reverted > 0 && lineCost > 0) {
+                const derived = Math.round(((curStock * Number(ing.cost_per_unit) - lineCost) / reverted) * 10000) / 10000;
+                if (derived > 0) ing.cost_per_unit = derived;
+              }
+            }
+            currentStock = ing.current_qty;
+            unit = ing.stock_unit || 'กรัม';
+            name = ing.name || name;
+          }
         }
+        db.inventoryLogs.unshift({
+          id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          target_type: oldIt.item_target_type,
+          product_id: oldIt.product_id || null,
+          ingredient_id: oldIt.ingredient_id || null,
+          item_name: name,
+          change_qty: -Number(oldIt.qty_added),
+          balance_after: currentStock,
+          unit,
+          reason: 'CANCEL_STOCK_IN',
+          reference_id: receipt_id,
+          note: `ลบใบรับของ #${receipt_id} (หักคืนสต็อก -${oldIt.qty_added} ${unit})`,
+          created_at: now
+        });
       }
       db.stockInReceipts = (db.stockInReceipts || []).filter(r => r.id !== receipt_id);
       db.expenses = (db.expenses || []).filter(e => e.reference_id !== receipt_id);
       saveLocalDb(db);
     }
+    return { success: true, data: buildLocalBootstrap() };
+  },
+
+  updateProductThreshold(body) {
+    const db = loadLocalDb();
+    const { product_id, threshold, items: batchItems } = body;
+    if (Array.isArray(batchItems)) {
+      for (const item of batchItems) {
+        const prod = (db.products || []).find(p => p.id === item.id);
+        if (prod) prod.low_stock_threshold = Math.max(0, Number(item.threshold) || 0);
+      }
+    } else if (product_id) {
+      const prod = (db.products || []).find(p => p.id === product_id);
+      if (prod) prod.low_stock_threshold = Math.max(0, Number(threshold) || 0);
+    }
+    saveLocalDb(db);
     return { success: true, data: buildLocalBootstrap() };
   },
 
@@ -1136,6 +1215,7 @@ window.LocalPosEngine = {
         purchase_unit: body.purchase_unit || existing.purchase_unit || 'แพ็ค',
         conversion_rate: Number(body.conversion_rate) || existing.conversion_rate || 1,
         stock_qty: body.stock_qty !== undefined ? Number(body.stock_qty) : existing.stock_qty,
+        low_stock_threshold: body.low_stock_threshold !== undefined ? Number(body.low_stock_threshold) : (existing.low_stock_threshold ?? 5),
         voice_aliases: aliases
       });
     } else {
@@ -1153,7 +1233,7 @@ window.LocalPosEngine = {
         item_type: body.item_type || 'GROCERY',
         track_stock: body.item_type === 'GROCERY',
         stock_qty: Number(body.stock_qty) || 0,
-        low_stock_threshold: 5,
+        low_stock_threshold: Number(body.low_stock_threshold) || 5,
         send_to_kitchen: body.item_type === 'FOOD'
       });
     }

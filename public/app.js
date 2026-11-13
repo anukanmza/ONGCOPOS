@@ -317,6 +317,7 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
   if (endpoint === '/api/stock-in/update') return eng.updateStockInReceipt(bodyObj || {});
   if (endpoint === '/api/stock-in/delete') return eng.deleteStockInReceipt(bodyObj || {});
   if (endpoint === '/api/products/save') return eng.saveProduct(bodyObj || {});
+  if (endpoint === '/api/products/threshold') return eng.updateProductThreshold(bodyObj || {});
   if (endpoint === '/api/products/delete') return eng.deleteProduct(bodyObj || {});
   if (endpoint === '/api/ingredients/save') return eng.saveIngredient(bodyObj || {});
   if (endpoint === '/api/ingredients/delete') return eng.deleteIngredient(bodyObj || {});
@@ -441,6 +442,148 @@ function switchMainView(nextView) {
   if (viewChanged && state.backendMode === 'CLOUD_API') {
     smartAutoSync(nextView === 'kds' ? 'kds' : 'all', true);
   }
+}
+
+// ============================================================================
+// STOCK MONITORING & LOW/OUT-OF-STOCK ALERTS
+// ============================================================================
+function getProductStockInfo(p) {
+  if (!p) return { isOutOfStock: false, isLowStock: false, label: '', badgeClass: '', rowStyle: '', cardStyle: '' };
+  const thresh = (p.low_stock_threshold !== undefined && p.low_stock_threshold !== null) ? Number(p.low_stock_threshold) : 5;
+  
+  if (p.item_type === 'GROCERY') {
+    const qty = Number(p.stock_qty) || 0;
+    if (qty <= 0) {
+      return {
+        isOutOfStock: true,
+        isLowStock: true,
+        label: `🚨 หมดสต็อก (${qty} ${p.unit})`,
+        badgeClass: 'ttl-tag-danger',
+        rowStyle: 'background:#fef2f2; border-left:4px solid #ef4444;',
+        cardStyle: 'border:1.5px solid #ef4444; background:#fef2f2;'
+      };
+    }
+    if (qty <= thresh) {
+      return {
+        isOutOfStock: false,
+        isLowStock: true,
+        label: `⚠️ สต็อกต่ำ (${qty}/${thresh} ${p.unit})`,
+        badgeClass: 'ttl-tag-low',
+        rowStyle: 'background:#fff8f8; border-left:4px solid #f87171;',
+        cardStyle: 'border:1.5px solid #f87171; background:#fffafa;'
+      };
+    }
+  } else if (p.item_type === 'FOOD') {
+    const { ingredients = [] } = state.data || {};
+    const recipes = p.recipe_items || [];
+    let outOfStockIng = null;
+    let lowStockIng = null;
+    for (const r of recipes) {
+      const ing = ingredients.find(i => i.id === r.ingredient_id);
+      if (ing) {
+        const ingQty = Number(ing.current_qty) || 0;
+        const ingThresh = Number(ing.low_stock_threshold) || 500;
+        if (ingQty <= 0) {
+          outOfStockIng = ing;
+          break;
+        } else if (ingQty <= ingThresh && !lowStockIng) {
+          lowStockIng = ing;
+        }
+      }
+    }
+    if (outOfStockIng) {
+      return {
+        isOutOfStock: true,
+        isLowStock: true,
+        label: `🚨 วัตถุดิบหมด (${outOfStockIng.name})`,
+        badgeClass: 'ttl-tag-danger',
+        rowStyle: 'background:#fef2f2; border-left:4px solid #ef4444;',
+        cardStyle: 'border:1.5px solid #ef4444; background:#fef2f2;'
+      };
+    }
+    if (lowStockIng) {
+      return {
+        isOutOfStock: false,
+        isLowStock: true,
+        label: `⚠️ วัตถุดิบต่ำ (${lowStockIng.name} เหลือ ${lowStockIng.current_qty} ${lowStockIng.stock_unit})`,
+        badgeClass: 'ttl-tag-low',
+        rowStyle: 'background:#fff8f8; border-left:4px solid #f87171;',
+        cardStyle: 'border:1.5px solid #f87171; background:#fffafa;'
+      };
+    }
+    if (p.track_stock) {
+      const qty = Number(p.stock_qty) || 0;
+      if (qty <= 0) {
+        return {
+          isOutOfStock: true,
+          isLowStock: true,
+          label: `🚨 หมดสต็อก (${qty} ${p.unit})`,
+          badgeClass: 'ttl-tag-danger',
+          rowStyle: 'background:#fef2f2; border-left:4px solid #ef4444;',
+          cardStyle: 'border:1.5px solid #ef4444; background:#fef2f2;'
+        };
+      }
+      if (qty <= thresh) {
+        return {
+          isOutOfStock: false,
+          isLowStock: true,
+          label: `⚠️ สต็อกต่ำ (${qty}/${thresh} ${p.unit})`,
+          badgeClass: 'ttl-tag-low',
+          rowStyle: 'background:#fff8f8; border-left:4px solid #f87171;',
+          cardStyle: 'border:1.5px solid #f87171; background:#fffafa;'
+        };
+      }
+    }
+  }
+  return { isOutOfStock: false, isLowStock: false, label: '', badgeClass: '', rowStyle: '', cardStyle: '' };
+}
+
+function getBillOutOfStockAlerts(cart = [], committedItems = []) {
+  if (!state.data || !Array.isArray(state.data.products)) return [];
+  const alerts = [];
+  for (const it of cart) {
+    const p = state.data.products.find(x => x.id === it.product_id);
+    const s = getProductStockInfo(p);
+    if (s.isOutOfStock) {
+      alerts.push({ product_id: it.product_id, name: it.name, label: s.label, inDraft: true });
+    }
+  }
+  for (const it of (committedItems || []).filter(i => i.item_status === 'ACTIVE')) {
+    const p = state.data.products.find(x => x.id === it.product_id);
+    const s = getProductStockInfo(p);
+    if (s.isOutOfStock && !alerts.some(a => a.product_id === it.product_id)) {
+      alerts.push({ product_id: it.product_id, name: it.product_name || it.name, label: s.label, inDraft: false });
+    }
+  }
+  return alerts;
+}
+
+async function quickPromptSetLowStock(productId, productName, currentVal) {
+  const input = window.prompt(`⚙️ ตั้งค่าจำนวนขั้นต่ำสำหรับแจ้งเตือนสต็อกต่ำ\nสินค้า: "${productName}"\n(ระบบจะแจ้งเตือนเมื่อสต็อกเหลือน้อยกว่าหรือเท่ากับค่านี้):`, String(currentVal !== undefined ? currentVal : 5));
+  if (input === null) return;
+  const num = Math.max(0, Number(input) || 0);
+  const out = await apiCall('/api/products/threshold', 'POST', { product_id: productId, threshold: num });
+  if (out && out.data) state.data = out.data;
+  render();
+  showToast(`⚙️ ปรับตั้งค่าเตือนสต็อกต่ำ "${productName}" เป็น ${num} เรียบร้อยแล้ว`);
+}
+
+function openBulkLowStockModal() {
+  state.showBulkLowStockModal = true;
+  render();
+}
+
+async function saveBulkLowStockThresholds(formEl) {
+  const inputs = formEl.querySelectorAll('input[data-prod-id]');
+  const items = [];
+  inputs.forEach(inp => {
+    items.push({ id: inp.getAttribute('data-prod-id'), threshold: Math.max(0, Number(inp.value) || 0) });
+  });
+  const out = await apiCall('/api/products/threshold', 'POST', { items });
+  if (out && out.data) state.data = out.data;
+  state.showBulkLowStockModal = false;
+  render();
+  showToast(`⚙️ บันทึกการตั้งค่าจำนวนสต็อกขั้นต่ำทั้งหมด ${items.length} รายการเรียบร้อยแล้ว`);
 }
 
 function getActiveContextOrder() {
@@ -1126,6 +1269,11 @@ function setCheckoutRedeemPoints(pts) {
 
 async function openCheckoutForCurrentBill() {
   const activeOrd = getActiveContextOrder();
+  const oos = getBillOutOfStockAlerts(state.cart, activeOrd ? activeOrd.items : []);
+  if (oos.length > 0) {
+    showToast(`🚨 ไม่สามารถเช็คบิลได้: ${oos.map(o => o.name).join(', ')} สต็อกหมด! กรุณาลบออกจากบิลก่อนครับ`);
+    return;
+  }
   const draftTotal = state.cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
 
   // If there is an open order AND new unsent draft items, commit the draft items into that order first
@@ -1176,6 +1324,11 @@ function openCheckoutModalByOrderId(orderId) {
   if (!state.data) return;
   const ord = (state.data.allBills || []).find(b => b.id === orderId);
   if (!ord) return;
+  const oos = getBillOutOfStockAlerts([], ord.items || []);
+  if (oos.length > 0) {
+    showToast(`🚨 ไม่สามารถเช็คบิลได้: ${oos.map(o => o.name).join(', ')} สต็อกหมด! กรุณาลบออกจากบิลก่อนครับ`);
+    return;
+  }
 
   const activeItems = (ord.items || []).filter(i => i.item_status === 'ACTIVE');
   state.checkoutModalOrder = {
@@ -1207,6 +1360,11 @@ function openCheckoutModalForTable(tableId) {
 async function confirmCheckoutPayment() {
   const co = state.checkoutModalOrder;
   if (!co) return;
+  const oos = getBillOutOfStockAlerts(co.mode === 'CART' ? state.cart : [], co.orderId ? (state.data?.allBills?.find(b => b.id === co.orderId)?.items || []) : []);
+  if (oos.length > 0) {
+    showToast(`🚨 ไม่สามารถเช็คบิลได้: ${oos.map(o => o.name).join(', ')} สต็อกหมด! กรุณาลบออกจากบิลก่อนครับ`);
+    return;
+  }
   const cus = getCheckoutCustomerObj();
   const cfg = getLoyaltySettings();
   const redeemPts = cus ? Math.max(0, Math.floor(Number(state.checkoutRedeemPoints) || 0)) : 0;
@@ -1731,11 +1889,18 @@ function renderPosView() {
   const activeOrd = getActiveContextOrder();
   const heldRetailBills = allBills.filter(b => b.status === 'OPEN' && !b.table_id);
 
+  const lowStockCount = products.filter(p => getProductStockInfo(p).isLowStock).length;
+
   const filteredProducts = products.filter(p => {
-    if (state.categoryFilter === 'GROCERY' && p.item_type !== 'GROCERY') return false;
-    if (state.categoryFilter === 'FOOD' && p.item_type !== 'FOOD') return false;
-    if (state.categoryFilter !== 'ALL' && state.categoryFilter !== 'GROCERY' && state.categoryFilter !== 'FOOD' && p.category_id !== state.categoryFilter) {
-      return false;
+    if (state.categoryFilter === 'LOW_STOCK') {
+      const s = getProductStockInfo(p);
+      if (!s.isLowStock) return false;
+    } else {
+      if (state.categoryFilter === 'GROCERY' && p.item_type !== 'GROCERY') return false;
+      if (state.categoryFilter === 'FOOD' && p.item_type !== 'FOOD') return false;
+      if (state.categoryFilter !== 'ALL' && state.categoryFilter !== 'GROCERY' && state.categoryFilter !== 'FOOD' && p.category_id !== state.categoryFilter) {
+        return false;
+      }
     }
     if (state.searchQuery.trim()) {
       const q = state.searchQuery.trim().toLowerCase();
@@ -1828,6 +1993,9 @@ function renderPosView() {
         <button type="button" class="cat-pill" data-active="${state.categoryFilter === 'ALL'}" onclick="state.categoryFilter='ALL'; render();">
           ทั้งหมด (${products.length})
         </button>
+        <button type="button" class="cat-pill" data-active="${state.categoryFilter === 'LOW_STOCK'}" style="${state.categoryFilter === 'LOW_STOCK' ? 'background:#ef4444; color:#fff; border-color:#ef4444;' : 'color:#b91c1c; font-weight:700; border-color:#fca5a5;'}" onclick="state.categoryFilter='LOW_STOCK'; render();">
+          ⚠️ สต็อกต่ำ (${lowStockCount})
+        </button>
         <button type="button" class="cat-pill" data-active="${state.categoryFilter === 'FOOD'}" onclick="state.categoryFilter='FOOD'; render();">
           🍳 เมนูอาหารส่งครัว
         </button>
@@ -1844,20 +2012,25 @@ function renderPosView() {
       <!-- Clean Product Cards Grid (NO cost shown on FOOD items!) -->
       <div class="product-cards">
         ${filteredProducts.map(p => {
-          const isLow = p.item_type === 'GROCERY' && p.track_stock && p.stock_qty <= p.low_stock_threshold;
+          const sInfo = getProductStockInfo(p);
+          const customStyle = sInfo.cardStyle ? `style="${sInfo.cardStyle}"` : '';
           return `
-            <button type="button" class="ttl-acc-card" onclick="handleProductCardClick('${p.id}')">
+            <button type="button" class="ttl-acc-card" ${customStyle} onclick="handleProductCardClick('${p.id}')">
               <div style="display:flex; justify-content:space-between; align-items:center; width:100%; gap:4px;">
                 <span class="ttl-tag ${p.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">
                   ${p.item_type === 'FOOD' ? '🍳 ส่งครัว' : '📦 ของชำ'}
                 </span>
-                ${p.item_type === 'GROCERY' ? `
-                  <span class="ttl-tag ${isLow ? 'ttl-tag-low' : ''}" style="font-variant-numeric:tabular-nums;">
+                ${sInfo.label ? `
+                  <span class="ttl-tag ${sInfo.badgeClass}" style="font-variant-numeric:tabular-nums; font-weight:700;">
+                    ${sInfo.label}
+                  </span>
+                ` : (p.item_type === 'GROCERY' ? `
+                  <span class="ttl-tag" style="font-variant-numeric:tabular-nums;">
                     เหลือ ${p.stock_qty} ${p.unit}
                   </span>
                 ` : `
                   <span style="font-size:11px; color:var(--ttl-muted);">เลือกตัวเลือกได้</span>
-                `}
+                `)}
               </div>
 
               <div style="font-weight:600; font-size:14.5px; color:var(--ttl-ink); line-height:1.35; margin-top:2px;">
@@ -1868,7 +2041,9 @@ function renderPosView() {
                 <span style="font-size:16.5px; font-weight:700; color:var(--ttl-ink); font-variant-numeric:tabular-nums;">
                   ${formatMoney(p.price)}<small style="font-weight:400; font-size:11px; color:var(--ttl-muted);">/${p.unit}</small>
                 </span>
-                <span style="font-size:11.5px; color:var(--ttl-gold); font-weight:700;">+ เพิ่ม</span>
+                <span style="font-size:11.5px; color:${sInfo.isOutOfStock ? '#dc2626' : 'var(--ttl-gold)'}; font-weight:700;">
+                  ${sInfo.isOutOfStock ? '⚠️ สั่ง' : '+ เพิ่ม'}
+                </span>
               </div>
             </button>
           `;
@@ -1896,6 +2071,9 @@ function renderFloatingBillAndDrawer() {
 
   const totalCount = draftCount + committedActiveCount;
   const grandTotal = draftTotal + committedTotal;
+
+  const billOosAlerts = getBillOutOfStockAlerts(state.cart, committedItems);
+  const hasOutOfStock = billOosAlerts.length > 0;
 
   const billLabel = state.billTitle.trim()
     || (activeOrd && activeOrd.bill_title)
@@ -2059,14 +2237,19 @@ function renderFloatingBillAndDrawer() {
                 <div style="padding:14px 12px; text-align:center; color:var(--ttl-muted); border:1px dashed var(--ttl-rule); border-radius:10px; font-size:12.5px; background:var(--ttl-paper);">
                   ยังไม่มีรายการใหม่ — กดเลือกเมนู หรือพูดสั่งด้วยเสียงได้เลย (รายการเสียงจะเข้ามาพักตรงนี้เพื่อให้ตรวจสอบก่อนเสมอ)
                 </div>
-              ` : state.cart.map((c, idx) => `
-                <div class="bill-item-row" style="border-color:var(--ttl-gold); background:#fffdf7;">
+              ` : state.cart.map((c, idx) => {
+                const pObj = (state.data?.products || []).find(x => x.id === c.product_id);
+                const sInfo = getProductStockInfo(pObj);
+                const isOos = sInfo.isOutOfStock;
+                return `
+                <div class="bill-item-row" style="${isOos ? 'border:1.5px solid #ef4444; background:#fef2f2;' : 'border-color:var(--ttl-gold); background:#fffdf7;'}">
                   <div class="bill-item-top">
                     <div class="bill-item-title">
                       <span class="ttl-tag ${c.send_to_kitchen ? 'ttl-tag-food' : 'ttl-tag-grocery'}" style="margin-right:4px;">
                         ${c.send_to_kitchen ? '🍳 ส่งครัว' : '📦 ของชำ'}
                       </span>
                       ${c.input_source === 'VOICE' ? '<span class="ttl-tag" style="background:var(--ttl-lilac); color:var(--ttl-lilac-ink); margin-right:4px;">🎙️ เสียง</span>' : ''}
+                      ${isOos ? `<span class="ttl-tag ttl-tag-danger" style="margin-right:4px;">🚨 สต็อกหมด (${pObj?.stock_qty ?? 0} ${c.unit})</span>` : ''}
                       ${c.name}
                     </div>
                     <div class="bill-item-price">${formatMoney(c.unit_price * c.quantity)}</div>
@@ -2090,7 +2273,7 @@ function renderFloatingBillAndDrawer() {
                     </div>
                   </div>
                 </div>
-              `).join('')}
+              `;}).join('')}
             </div>
 
             <!-- SECTION 2: COMMITTED ITEMS IN THIS OPEN BILL / TABLE -->
@@ -2101,13 +2284,18 @@ function renderFloatingBillAndDrawer() {
                   <span style="font-size:12px; font-weight:700;">${formatMoney(committedTotal)}</span>
                 </div>
 
-                ${committedItems.map(item => `
-                  <div class="bill-item-row" data-status="${item.item_status}">
+                ${committedItems.map(item => {
+                  const pObj = (state.data?.products || []).find(x => x.id === item.product_id);
+                  const sInfo = getProductStockInfo(pObj);
+                  const isOos = sInfo.isOutOfStock && item.item_status === 'ACTIVE';
+                  return `
+                  <div class="bill-item-row" data-status="${item.item_status}" style="${isOos ? 'border:1.5px solid #ef4444; background:#fef2f2;' : ''}">
                     <div class="bill-item-top">
                       <div class="bill-item-title">
                         <span class="ttl-tag ${item.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}" style="margin-right:4px;">
                           ${item.item_type === 'FOOD' ? `ครัว: ${item.kitchen_status}` : 'ของชำ'}
                         </span>
+                        ${isOos ? '<span class="ttl-tag ttl-tag-danger" style="margin-right:4px;">🚨 สต็อกหมด!</span>' : ''}
                         ${item.product_name} × ${item.quantity}
                       </div>
                       <div class="bill-item-price">
@@ -2147,7 +2335,7 @@ function renderFloatingBillAndDrawer() {
                       </div>
                     `}
                   </div>
-                `).join('')}
+                `;}).join('')}
               </div>
             ` : ''}
           </div>
@@ -2162,6 +2350,13 @@ function renderFloatingBillAndDrawer() {
                 ${formatMoney(grandTotal)}
               </span>
             </div>
+
+            ${hasOutOfStock ? `
+              <div style="padding:10px 12px; border-radius:10px; background:#fef2f2; border:1px solid #f87171; color:#991b1b; font-size:12px; font-weight:600; margin-bottom:10px; line-height:1.4;">
+                🚨 มีสินค้า/เมนูสต็อกหมดในบิล: <b>${billOosAlerts.map(a => a.name).join(', ')}</b><br>
+                <span style="font-weight:400; font-size:11px; color:#7f1d1d;">⚠️ ล็อกปุ่มเช็คบิล: กรุณาลบรายการที่หมดออกก่อนรับชำระเงิน</span>
+              </div>
+            ` : ''}
 
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
               ${state.posMode === 'DINE_IN' ? `
@@ -2187,8 +2382,9 @@ function renderFloatingBillAndDrawer() {
               <button
                 type="button"
                 class="ttl-btn ttl-btn-dark"
-                style="width:100%;"
-                ${grandTotal <= 0 ? 'disabled' : ''}
+                style="width:100%; ${hasOutOfStock ? 'opacity:0.4; cursor:not-allowed; background:#9ca3af; border-color:#9ca3af;' : ''}"
+                ${grandTotal <= 0 || hasOutOfStock ? 'disabled' : ''}
+                title="${hasOutOfStock ? 'ไม่สามารถเช็คบิลได้เนื่องจากมีสินค้าสต็อกหมดในบิล' : ''}"
                 onclick="openCheckoutForCurrentBill()"
               >
                 💰 เช็คบิล (${formatMoney(grandTotal)})
@@ -2729,10 +2925,17 @@ function renderInventoryView() {
     (fp.id || '').toLowerCase().includes(bomFoodSearchQ)
   );
 
+  const lowStockCount = products.filter(p => getProductStockInfo(p).isLowStock).length;
+
   // กรองสินค้า & เมนูทั้งหมดในแท็บ 3
   const prodSearchQ = (state.invProductSearch || '').trim().toLowerCase();
   const filteredAllProducts = products.filter(p => {
-    if (state.invProductTypeFilter !== 'ALL' && p.item_type !== state.invProductTypeFilter) return false;
+    if (state.invProductTypeFilter === 'LOW_STOCK') {
+      const s = getProductStockInfo(p);
+      if (!s.isLowStock) return false;
+    } else if (state.invProductTypeFilter !== 'ALL' && p.item_type !== state.invProductTypeFilter) {
+      return false;
+    }
     if (!prodSearchQ) return true;
     const aliasesStr = Array.isArray(p.voice_aliases) ? p.voice_aliases.join(' ') : String(p.voice_aliases || '');
     return (
@@ -2741,6 +2944,18 @@ function renderInventoryView() {
       (p.barcode || '').toLowerCase().includes(prodSearchQ) ||
       aliasesStr.toLowerCase().includes(prodSearchQ)
     );
+  });
+
+  // กรองประวัติความเคลื่อนไหวสต็อกในแท็บ 4
+  const auditFilter = state.invAuditFilter || 'ALL';
+  const filteredInventoryLogs = (inventoryLogs || []).filter(log => {
+    if (auditFilter === 'STOCK_IN') return log.reason === 'STOCK_IN_RECEIPT';
+    if (auditFilter === 'CANCEL_STOCK_IN') return log.reason === 'CANCEL_STOCK_IN';
+    if (auditFilter === 'RETURN') return log.reason === 'RETURN_FROM_TABLE' || log.reason === 'RETURN_ITEM' || log.reason === 'ORDER_CANCEL_RESTOCK' || log.reason === 'VOID_INVOICE_RESTOCK' || log.reason === 'CANCEL_BILL_RESTOCK';
+    if (auditFilter === 'SALE') return log.reason === 'SALE';
+    if (auditFilter === 'RECIPE') return log.reason === 'RECIPE_USAGE';
+    if (auditFilter === 'VOID') return log.reason === 'VOID_WASTE';
+    return true;
   });
 
   return `
@@ -3186,7 +3401,7 @@ function renderInventoryView() {
                 id="inv-prod-search-input"
                 type="text"
                 class="ttl-input"
-                style="width:250px; height:36px;"
+                style="width:230px; height:36px;"
                 placeholder="🔍 ค้นหาชื่อสินค้า / เมนู / บาร์โค้ด..."
                 value="${(state.invProductSearch || '').replace(/"/g, '&quot;')}"
                 oninput="state.invProductSearch=this.value; render();"
@@ -3196,9 +3411,13 @@ function renderInventoryView() {
               ` : ''}
               <div class="ttl-seg">
                 <button type="button" aria-selected="${state.invProductTypeFilter === 'ALL'}" onclick="state.invProductTypeFilter='ALL'; render();">ทั้งหมด</button>
+                <button type="button" aria-selected="${state.invProductTypeFilter === 'LOW_STOCK'}" style="${state.invProductTypeFilter === 'LOW_STOCK' ? 'background:#ef4444; color:#fff;' : 'color:#dc2626; font-weight:700;'}" onclick="state.invProductTypeFilter='LOW_STOCK'; render();">⚠️ สต็อกต่ำ (${lowStockCount})</button>
                 <button type="button" aria-selected="${state.invProductTypeFilter === 'GROCERY'}" onclick="state.invProductTypeFilter='GROCERY'; render();">📦 ของชำ</button>
                 <button type="button" aria-selected="${state.invProductTypeFilter === 'FOOD'}" onclick="state.invProductTypeFilter='FOOD'; render();">🍳 เมนูอาหาร</button>
               </div>
+              <button type="button" class="ttl-btn ttl-btn-gold" style="font-weight:700;" onclick="openBulkLowStockModal()">
+                ⚙️ ตั้งค่าสต็อกขั้นต่ำ
+              </button>
               <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.editingProduct=null; state.showNewProductModal=true; render();">
                 + เพิ่มสินค้า/เมนูใหม่
               </button>
@@ -3214,11 +3433,13 @@ function renderInventoryView() {
                   <th>ราคาขาย</th>
                   <th>ต้นทุนหลังร้าน</th>
                   <th>คงเหลือ</th>
+                  <th>เตือนเมื่อต่ำกว่า</th>
                   <th>จัดการ (แก้ไข/ลบ)</th>
                 </tr>
               </thead>
               <tbody>
                 ${filteredAllProducts.map(p => {
+                  const sInfo = getProductStockInfo(p);
                   const safeProdJson = JSON.stringify({
                     id: p.id,
                     name: p.name,
@@ -3231,16 +3452,39 @@ function renderInventoryView() {
                     purchase_unit: p.purchase_unit,
                     conversion_rate: p.conversion_rate,
                     stock_qty: p.stock_qty,
+                    low_stock_threshold: p.low_stock_threshold ?? 5,
                     voice_aliases: Array.isArray(p.voice_aliases) ? p.voice_aliases.join(', ') : (p.voice_aliases || '')
                   }).replace(/"/g, '&quot;');
                   return `
-                    <tr>
+                    <tr style="${sInfo.rowStyle}">
                       <td style="font-family:monospace; font-size:12px;">${p.id}</td>
-                      <td><b>${p.name}</b></td>
+                      <td>
+                        <b>${p.name}</b>
+                        ${sInfo.label ? `<br><span class="ttl-tag ${sInfo.badgeClass}" style="margin-top:2px;">${sInfo.label}</span>` : ''}
+                      </td>
                       <td><span class="ttl-tag ${p.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">${p.item_type === 'FOOD' ? '🍳 เมนูอาหาร' : '📦 ของชำ'}</span></td>
                       <td style="font-weight:700;">${formatMoney(p.price)}/${p.unit}</td>
                       <td>${formatMoney(p.cost)}</td>
-                      <td>${p.item_type === 'GROCERY' ? `<b>${p.stock_qty} ${p.unit}</b>` : 'ตัดตามสูตรครัว'}</td>
+                      <td>
+                        ${sInfo.isOutOfStock ? `
+                          <b style="color:#b91c1c;">${p.item_type === 'GROCERY' ? `${p.stock_qty} ${p.unit}` : 'วัตถุดิบหมด'}</b>
+                        ` : sInfo.isLowStock ? `
+                          <b style="color:#c2410c;">${p.item_type === 'GROCERY' ? `${p.stock_qty} ${p.unit}` : 'วัตถุดิบใกล้หมด'}</b>
+                        ` : `
+                          <b>${p.item_type === 'GROCERY' ? `${p.stock_qty} ${p.unit}` : 'ตัดตามสูตรครัว'}</b>
+                        `}
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+                          style="height:26px; padding:0 8px; font-size:11.5px; border:1px solid var(--ttl-rule); font-weight:700;"
+                          onclick="quickPromptSetLowStock('${p.id}', '${p.name.replace(/'/g, "\\'")}', ${p.low_stock_threshold ?? 5})"
+                          title="คลิกเพื่อแก้ไขจำนวนขั้นต่ำสำหรับแจ้งเตือน"
+                        >
+                          ⚙️ ${p.low_stock_threshold ?? 5} ${p.unit}
+                        </button>
+                      </td>
                       <td>
                         <div style="display:flex; gap:6px; flex-wrap:wrap;">
                           <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; padding:0 8px; font-size:11px;" onclick="state.editingProduct=${safeProdJson}; state.showNewProductModal=true; render();">✏️ แก้ไข</button>
@@ -3255,29 +3499,77 @@ function renderInventoryView() {
           </div>
         </div>
       ` : `
-        <div class="table-scroll-wrap">
-          <table class="ttl-table">
-            <thead>
-              <tr>
-                <th>เวลา</th>
-                <th>รายการ</th>
-                <th>เปลี่ยนแปลง</th>
-                <th>คงเหลือ</th>
-                <th>สาเหตุ</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${inventoryLogs.map(log => `
+        <div>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+            <div>
+              <div class="ttl-k">INVENTORY AUDIT & MOVEMENT LOGS</div>
+              <h4 style="margin:2px 0 0; font-size:16px;">📜 ประวัติความเคลื่อนไหวสต็อก (${filteredInventoryLogs.length} รายการ)</h4>
+            </div>
+            <div class="ttl-seg" style="flex-wrap:wrap;">
+              <button type="button" aria-selected="${(state.invAuditFilter || 'ALL') === 'ALL'}" onclick="state.invAuditFilter='ALL'; render();">ทั้งหมด</button>
+              <button type="button" aria-selected="${state.invAuditFilter === 'STOCK_IN'}" onclick="state.invAuditFilter='STOCK_IN'; render();">📦 รับของเข้า</button>
+              <button type="button" aria-selected="${state.invAuditFilter === 'CANCEL_STOCK_IN'}" onclick="state.invAuditFilter='CANCEL_STOCK_IN'; render();">❌ ลบใบรับของ (หักคืน)</button>
+              <button type="button" aria-selected="${state.invAuditFilter === 'RETURN'}" onclick="state.invAuditFilter='RETURN'; render();">↩️ คืนสินค้าเข้าสต็อก</button>
+              <button type="button" aria-selected="${state.invAuditFilter === 'SALE'}" onclick="state.invAuditFilter='SALE'; render();">🛒 ขายออก</button>
+              <button type="button" aria-selected="${state.invAuditFilter === 'RECIPE'}" onclick="state.invAuditFilter='RECIPE'; render();">🍳 ตัดสูตรครัว</button>
+              <button type="button" aria-selected="${state.invAuditFilter === 'VOID'}" onclick="state.invAuditFilter='VOID'; render();">🗑️ ตัดของเสีย</button>
+            </div>
+          </div>
+          <div class="table-scroll-wrap">
+            <table class="ttl-table">
+              <thead>
                 <tr>
-                  <td style="font-size:11.5px; color:var(--ttl-muted);">${formatDateTimeThai(log.created_at)}</td>
-                  <td><b>${log.item_name}</b></td>
-                  <td style="font-weight:700; color:${log.change_qty > 0 ? 'var(--ttl-good)' : 'var(--ttl-ink)'};">${log.change_qty > 0 ? `+${log.change_qty}` : log.change_qty} ${log.unit}</td>
-                  <td><b>${log.balance_after} ${log.unit}</b></td>
-                  <td style="font-size:12px;">${log.reason} (${log.note || '-'})</td>
+                  <th>เวลา</th>
+                  <th>รายการ</th>
+                  <th>เปลี่ยนแปลง</th>
+                  <th>คงเหลือหลังเปลี่ยน</th>
+                  <th>ประเภทความเคลื่อนไหว / รายละเอียด</th>
                 </tr>
-              `).join('')}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                ${filteredInventoryLogs.length === 0 ? `
+                  <tr><td colspan="5" style="text-align:center; padding:24px; color:var(--ttl-muted);">ไม่พบรายการเคลื่อนไหวตามฟิลเตอร์ที่เลือก</td></tr>
+                ` : filteredInventoryLogs.map(log => {
+                  let badge = { label: log.reason, cls: 'ttl-tag-grocery', icon: '📝' };
+                  if (log.reason === 'STOCK_IN_RECEIPT') {
+                    badge = { label: 'รับของเข้าสต็อก', cls: 'ttl-tag-good', icon: '📦' };
+                  } else if (log.reason === 'CANCEL_STOCK_IN') {
+                    badge = { label: 'ลบใบรับของ (หักคืนสต็อก)', cls: 'ttl-tag-danger', icon: '❌' };
+                  } else if (log.reason === 'RETURN_FROM_TABLE' || log.reason === 'RETURN_ITEM') {
+                    badge = { label: 'คืนสินค้าเข้าสต็อก', cls: 'ttl-tag-food', icon: '↩️' };
+                  } else if (log.reason === 'ORDER_CANCEL_RESTOCK' || log.reason === 'CANCEL_BILL_RESTOCK' || log.reason === 'VOID_INVOICE_RESTOCK') {
+                    badge = { label: 'ยกเลิกบิล คืนสต็อก', cls: 'ttl-tag-food', icon: '↩️' };
+                  } else if (log.reason === 'SALE') {
+                    badge = { label: 'ขายหน้าร้าน/สั่งโต๊ะ', cls: 'ttl-tag-grocery', icon: '🛒' };
+                  } else if (log.reason === 'RECIPE_USAGE') {
+                    badge = { label: 'ตัดสต็อกทำอาหาร', cls: 'ttl-tag-food', icon: '🍳' };
+                  } else if (log.reason === 'VOID_WASTE') {
+                    badge = { label: 'ตัดของเสีย/ชำรุด', cls: 'ttl-tag-danger', icon: '🗑️' };
+                  }
+
+                  const isPlus = Number(log.change_qty) > 0;
+                  const changeColor = isPlus ? '#15803d' : (Number(log.change_qty) < 0 ? '#b91c1c' : 'var(--ttl-ink)');
+                  const changeStr = isPlus ? `+${log.change_qty}` : `${log.change_qty}`;
+                  const isCancelOrReturn = log.reason === 'CANCEL_STOCK_IN' || log.reason === 'RETURN_FROM_TABLE' || log.reason === 'ORDER_CANCEL_RESTOCK';
+
+                  return `
+                    <tr style="${log.reason === 'CANCEL_STOCK_IN' ? 'background:#fff8f8;' : (log.reason.includes('RETURN') ? 'background:#fffdf0;' : '')}">
+                      <td style="font-size:11.5px; color:var(--ttl-muted); white-space:nowrap;">${formatDateTimeThai(log.created_at)}</td>
+                      <td><b>${log.item_name}</b></td>
+                      <td style="font-weight:700; color:${changeColor}; font-size:13.5px; font-variant-numeric:tabular-nums;">
+                        ${changeStr} ${log.unit}
+                      </td>
+                      <td><b>${log.balance_after} ${log.unit}</b></td>
+                      <td>
+                        <span class="ttl-tag ${badge.cls}">${badge.icon} ${badge.label}</span>
+                        ${log.note ? `<div style="font-size:11.5px; color:var(--ttl-muted); margin-top:2px;">${log.note}</div>` : ''}
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
         </div>
       `}
     </div>
@@ -4142,6 +4434,7 @@ function renderModals() {
             purchase_unit: f.ppurchase.value || 'แพ็ค',
             conversion_rate: Number(f.pconv.value) || 1,
             stock_qty: Number(f.pstock.value) || 0,
+            low_stock_threshold: Number(f.plowstock.value) || 5,
             voice_aliases: f.paliases.value
           }).then(out=>{
             if(out && out.data) state.data = out.data;
@@ -4197,12 +4490,84 @@ function renderModals() {
               <label style="font-size:12px; font-weight:600;">จำนวนชิ้นต่อแพ็ค</label>
               <input name="pconv" type="number" step="any" class="ttl-input" value="${ep ? ep.conversion_rate : 24}" />
             </div>
+            <div style="grid-column: span 2;">
+              <label style="font-size:12px; font-weight:600;">🔔 จำนวนขั้นต่ำแจ้งเตือนสต็อกต่ำ (แจ้งเตือนเมื่อสต็อกเหลือน้อยกว่าหรือเท่ากับค่านี้)</label>
+              <input name="plowstock" type="number" step="any" class="ttl-input" value="${ep ? (ep.low_stock_threshold ?? 5) : 5}" />
+            </div>
           </div>
           <div style="display:flex; justify-content:flex-end; gap:8px;">
             <button type="button" class="ttl-btn ttl-btn-ghost" onclick="state.showNewProductModal=false; state.editingProduct=null; render();">ยกเลิก</button>
             <button type="submit" class="ttl-btn ttl-btn-dark">บันทึกสินค้า/เมนู</button>
           </div>
         </form>
+      </div>
+    `;
+  }
+
+  // Bulk Low Stock Threshold Modal
+  if (state.showBulkLowStockModal) {
+    const prods = (state.data?.products || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'th'));
+    html += `
+      <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showBulkLowStockModal=false; render();}">
+        <div class="ttl-modal" style="max-width:680px; width:95%;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div>
+              <div class="ttl-k">ตั้งค่าสต็อกขั้นต่ำเพื่อแจ้งเตือน</div>
+              <h3 style="margin:2px 0 0; font-size:18px;">⚙️ กำหนดจำนวนขั้นต่ำแจ้งเตือนสต็อกต่ำ</h3>
+            </div>
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showBulkLowStockModal=false; render();">✕ ปิด</button>
+          </div>
+          <p style="font-size:12.5px; color:var(--ttl-muted); margin-bottom:14px;">
+            เมื่อสินค้าหรือเมนูอาหารมีจำนวนคงเหลือน้อยกว่าหรือเท่ากับค่าที่ตั้งไว้ ระบบจะไฮไลต์แถบเป็นสีแดงและแสดงในแท็บ "สต็อกต่ำ" อัตโนมัติ
+          </p>
+          <form onsubmit="event.preventDefault(); saveBulkLowStockThresholds(this);">
+            <div style="max-height:55vh; overflow-y:auto; border:1px solid var(--ttl-rule); border-radius:10px; margin-bottom:14px;">
+              <table class="ttl-table" style="margin:0;">
+                <thead>
+                  <tr>
+                    <th>สินค้า / เมนู</th>
+                    <th>ประเภท</th>
+                    <th>สต็อกปัจจุบัน</th>
+                    <th style="width:170px;">เตือนเมื่อเหลือต่ำกว่า</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${prods.map(p => {
+                    const s = getProductStockInfo(p);
+                    return `
+                      <tr style="${s.rowStyle}">
+                        <td>
+                          <b>${p.name}</b>
+                          ${s.label ? `<br><small style="color:#b91c1c; font-weight:600;">${s.label}</small>` : ''}
+                        </td>
+                        <td><span class="ttl-tag ${p.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}">${p.item_type === 'FOOD' ? 'อาหาร' : 'ของชำ'}</span></td>
+                        <td><b>${p.item_type === 'GROCERY' ? p.stock_qty + ' ' + p.unit : 'ตัดตามสูตร'}</b></td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:6px;">
+                            <input
+                              type="number"
+                              step="any"
+                              data-prod-id="${p.id}"
+                              class="ttl-input"
+                              style="width:85px; height:32px; font-weight:700; text-align:right;"
+                              value="${p.low_stock_threshold ?? 5}"
+                              min="0"
+                            />
+                            <span style="font-size:12px; color:var(--ttl-muted);">${p.unit}</span>
+                          </div>
+                        </td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:8px;">
+              <button type="button" class="ttl-btn ttl-btn-ghost" onclick="state.showBulkLowStockModal=false; render();">ยกเลิก</button>
+              <button type="submit" class="ttl-btn ttl-btn-dark">💾 บันทึกการตั้งค่าทั้งหมด</button>
+            </div>
+          </form>
+        </div>
       </div>
     `;
   }
