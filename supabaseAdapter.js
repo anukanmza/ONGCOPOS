@@ -205,6 +205,26 @@ async function getSupabaseBootstrapData() {
 
   const openOrders = allValidOrders.filter(o => o.status === 'OPEN');
 
+  // Resolve modifierGroups (from native table or fallback in customers table)
+  let modifierGroups = [];
+  if (Array.isArray(rawModifierGroups) && rawModifierGroups.length > 0) {
+    modifierGroups = rawModifierGroups;
+  } else {
+    const sysModRow = rawCustomers.find(c => c.id === 'SYS-MODIFIER-GROUPS');
+    if (sysModRow && sysModRow.note) {
+      try {
+        const parsed = JSON.parse(sysModRow.note);
+        if (Array.isArray(parsed) && parsed.length > 0) modifierGroups = parsed;
+      } catch {}
+    }
+    if (modifierGroups.length === 0) {
+      modifierGroups = [
+        { id: 'GRP-SPICY', name: 'ระดับความเผ็ด', selection_type: 'SINGLE', is_required: false, sort_order: 1 },
+        { id: 'GRP-TOPPING', name: 'ท็อปปิ้งไข่ & เพิ่มเติม', selection_type: 'MULTIPLE', is_required: false, sort_order: 2 }
+      ];
+    }
+  }
+
   const ingMap = new Map(ingredients.map(i => [i.id, i]));
   const recipeItems = rawRecipes.map(r => {
     const ing = ingMap.get(r.ingredient_id);
@@ -222,6 +242,10 @@ async function getSupabaseBootstrapData() {
     const calcCost = p.item_type === 'FOOD' && prodRecipes.length > 0
       ? Math.round(prodRecipes.reduce((s, r) => s + r.quantity_used * r.cost_per_unit, 0) * 100) / 100
       : Number(p.cost);
+    let modGrpIds = ensureArray(p.modifier_group_ids);
+    if ((!modGrpIds || modGrpIds.length === 0) && p.item_type === 'FOOD') {
+      modGrpIds = modifierGroups.map(g => g.id);
+    }
     return {
       ...p,
       price: Number(p.price),
@@ -229,7 +253,7 @@ async function getSupabaseBootstrapData() {
       conversion_rate: Number(p.conversion_rate || 1),
       stock_qty: Number(p.stock_qty || 0),
       low_stock_threshold: Number(p.low_stock_threshold || 5),
-      modifier_group_ids: ensureArray(p.modifier_group_ids),
+      modifier_group_ids: modGrpIds,
       voice_aliases: ensureArray(p.voice_aliases),
       track_stock: Boolean(p.track_stock),
       send_to_kitchen: Boolean(p.send_to_kitchen),
@@ -239,7 +263,7 @@ async function getSupabaseBootstrapData() {
 
   const modifiers = (rawModifiers || []).map(m => ({
     ...m,
-    group_id: m.group_id || null,
+    group_id: m.group_id || m.product_id || (m.name.includes('เผ็ด') ? 'GRP-SPICY' : 'GRP-TOPPING'),
     extra_price: Number(m.extra_price || 0),
     extra_cost: Number(m.extra_cost || 0),
     voice_keywords: ensureArray(m.voice_keywords)
@@ -422,7 +446,7 @@ async function getSupabaseBootstrapData() {
       loyaltySettings = { ...DEFAULT_LOYALTY_SETTINGS, ...parsed };
     } catch {}
   }
-  const customers = rawCustomers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG');
+  const customers = rawCustomers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG' && c.id !== 'SYS-MODIFIER-GROUPS');
 
   const allBills = allValidOrders.map(o => {
     const tbl = o.table_id ? tableMap.get(o.table_id) : null;
@@ -456,7 +480,7 @@ async function getSupabaseBootstrapData() {
     syncSig,
     categories,
     products,
-    modifierGroups: Array.isArray(rawModifierGroups) ? rawModifierGroups : [],
+    modifierGroups,
     modifiers,
     ingredients: normalizedIngredients,
     recipeItems,

@@ -629,7 +629,16 @@ async function saveCategoryForm(formEl) {
 
   if (!name) return;
   const out = await apiCall('/api/categories/save', 'POST', { id: catId, name, category_type });
-  if (out && out.data) state.data = out.data;
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (!state.data.categories) state.data.categories = [];
+    const newCatId = catId || `CAT-${Date.now().toString().slice(-4)}`;
+    const exIdx = state.data.categories.findIndex(c => c.id === newCatId);
+    const catObj = { id: newCatId, name, category_type };
+    if (exIdx >= 0) state.data.categories[exIdx] = catObj;
+    else state.data.categories.push(catObj);
+  }
   state.editingCategory = null;
   render();
   showToast(catId ? '✏️ บันทึกการแก้ไขหมวดหมู่เรียบร้อย' : '+ เพิ่มหมวดหมู่ใหม่เรียบร้อย');
@@ -638,7 +647,13 @@ async function saveCategoryForm(formEl) {
 async function deleteCategoryById(catId, catName) {
   if (!confirm(`ต้องการลบหมวดหมู่ "${catName}" หรือไม่?\n(สินค้าที่อยู่ในหมวดหมู่นี้จะถูกย้ายไปยังหมวดหมู่เริ่มต้นโดยอัตโนมัติ)`)) return;
   const out = await apiCall('/api/categories/delete', 'POST', { id: catId });
-  if (out && out.data) state.data = out.data;
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (state.data.categories) {
+      state.data.categories = state.data.categories.filter(c => c.id !== catId);
+    }
+  }
   if (state.editingCategory && state.editingCategory.id === catId) state.editingCategory = null;
   render();
   showToast(`🗑️ ลบหมวดหมู่ "${catName}" แล้ว`);
@@ -653,7 +668,16 @@ async function saveModifierGroupForm(formEl) {
 
   if (!name) return;
   const out = await apiCall('/api/modifier-groups/save', 'POST', { id: grpId, name, selection_type, sort_order });
-  if (out && out.data) state.data = out.data;
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (!state.data.modifierGroups) state.data.modifierGroups = [];
+    const newGrpId = grpId || `GRP-${Date.now().toString().slice(-4)}`;
+    const exIdx = state.data.modifierGroups.findIndex(g => g.id === newGrpId);
+    const grpObj = { id: newGrpId, name, selection_type, is_required: false, sort_order };
+    if (exIdx >= 0) state.data.modifierGroups[exIdx] = grpObj;
+    else state.data.modifierGroups.push(grpObj);
+  }
   state.editingModifierGroup = null;
   render();
   showToast(grpId ? '✏️ บันทึกการแก้ไขกลุ่มตัวเลือกเรียบร้อย' : '+ สร้างกลุ่มตัวเลือกใหม่เรียบร้อย');
@@ -662,7 +686,16 @@ async function saveModifierGroupForm(formEl) {
 async function deleteModifierGroupById(grpId, grpName) {
   if (!confirm(`ต้องการลบกลุ่มตัวเลือก "${grpName}" และตัวเลือกย่อยทั้งหมดในกลุ่มนี้หรือไม่?`)) return;
   const out = await apiCall('/api/modifier-groups/delete', 'POST', { id: grpId });
-  if (out && out.data) state.data = out.data;
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (state.data.modifierGroups) {
+      state.data.modifierGroups = state.data.modifierGroups.filter(g => g.id !== grpId);
+    }
+    if (state.data.modifiers) {
+      state.data.modifiers = state.data.modifiers.filter(m => m.group_id !== grpId);
+    }
+  }
   if (state.editingModifierGroup && state.editingModifierGroup.id === grpId) state.editingModifierGroup = null;
   if (state.modalAddingOptionToGroupId === grpId) state.modalAddingOptionToGroupId = null;
   render();
@@ -686,7 +719,16 @@ async function saveModifierOptionForm(formEl, grpId) {
     extra_cost,
     voice_keywords
   });
-  if (out && out.data) state.data = out.data;
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (!state.data.modifiers) state.data.modifiers = [];
+    const newModId = modId || `MOD-${Date.now().toString().slice(-4)}`;
+    const exIdx = state.data.modifiers.findIndex(m => m.id === newModId);
+    const modObj = { id: newModId, group_id: grpId, name, extra_price, extra_cost, voice_keywords };
+    if (exIdx >= 0) state.data.modifiers[exIdx] = modObj;
+    else state.data.modifiers.push(modObj);
+  }
   state.editingModifierOption = null;
   state.modalAddingOptionToGroupId = null;
   render();
@@ -696,7 +738,13 @@ async function saveModifierOptionForm(formEl, grpId) {
 async function deleteModifierOptionById(modId, modName) {
   if (!confirm(`ต้องการลบตัวเลือก "${modName}" หรือไม่?`)) return;
   const out = await apiCall('/api/modifiers/delete', 'POST', { id: modId });
-  if (out && out.data) state.data = out.data;
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (state.data.modifiers) {
+      state.data.modifiers = state.data.modifiers.filter(m => m.id !== modId);
+    }
+  }
   if (state.editingModifierOption && state.editingModifierOption.id === modId) state.editingModifierOption = null;
   render();
   showToast(`🗑️ ลบตัวเลือก "${modName}" แล้ว`);

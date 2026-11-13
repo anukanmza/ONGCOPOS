@@ -921,29 +921,56 @@ module.exports = async (req, res) => {
       const prodId = id || `${item_type === 'FOOD' ? 'F' : 'G'}-${Date.now().toString().slice(-4)}`;
       const aliases = Array.isArray(voice_aliases) ? voice_aliases : String(voice_aliases || '').split(',').map(s => s.trim()).filter(Boolean);
 
-      await sbRest('products', {
-        method: 'POST',
-        prefer: 'resolution=merge-duplicates,return=representation',
-        body: {
-          id: prodId,
-          category_id: category_id || (item_type === 'FOOD' ? 'CAT-RICE' : 'CAT-DRINK'),
-          barcode: barcode && String(barcode).trim() ? String(barcode).trim() : null,
-          name,
-          voice_aliases: aliases,
-          price: Number(price),
-          cost: Number(cost),
-          unit,
-          purchase_unit,
-          conversion_rate: Number(conversion_rate) || 1,
-          item_type,
-          track_stock: item_type === 'GROCERY',
-          stock_qty: Number(stock_qty) || 0,
-          low_stock_threshold: Number(low_stock_threshold) || 5,
-          modifier_group_ids: Array.isArray(body.modifier_group_ids) ? body.modifier_group_ids : [],
-          send_to_kitchen: item_type === 'FOOD',
-          is_active: true
-        }
-      });
+      try {
+        await sbRest('products', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: prodId,
+            category_id: category_id || (item_type === 'FOOD' ? 'CAT-RICE' : 'CAT-DRINK'),
+            barcode: barcode && String(barcode).trim() ? String(barcode).trim() : null,
+            name,
+            voice_aliases: aliases,
+            price: Number(price),
+            cost: Number(cost),
+            unit,
+            purchase_unit,
+            conversion_rate: Number(conversion_rate) || 1,
+            item_type,
+            track_stock: item_type === 'GROCERY',
+            stock_qty: Number(stock_qty) || 0,
+            low_stock_threshold: Number(low_stock_threshold) || 5,
+            modifier_group_ids: Array.isArray(body.modifier_group_ids) ? body.modifier_group_ids : [],
+            send_to_kitchen: item_type === 'FOOD',
+            is_active: true
+          }
+        });
+      } catch (err) {
+        // Fallback without modifier_group_ids if column is not yet migrated in Supabase
+        console.warn('Saving product without modifier_group_ids column fallback:', err.message);
+        await sbRest('products', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: prodId,
+            category_id: category_id || (item_type === 'FOOD' ? 'CAT-RICE' : 'CAT-DRINK'),
+            barcode: barcode && String(barcode).trim() ? String(barcode).trim() : null,
+            name,
+            voice_aliases: aliases,
+            price: Number(price),
+            cost: Number(cost),
+            unit,
+            purchase_unit,
+            conversion_rate: Number(conversion_rate) || 1,
+            item_type,
+            track_stock: item_type === 'GROCERY',
+            stock_qty: Number(stock_qty) || 0,
+            low_stock_threshold: Number(low_stock_threshold) || 5,
+            send_to_kitchen: item_type === 'FOOD',
+            is_active: true
+          }
+        });
+      }
 
       if (item_type === 'FOOD' && Array.isArray(recipe_items)) {
         await sbRest(`recipe_items?product_id=eq.${encodeURIComponent(prodId)}`, { method: 'DELETE' });
@@ -1089,17 +1116,57 @@ module.exports = async (req, res) => {
       const { id, name, selection_type = 'MULTIPLE', is_required = false, sort_order = 0 } = body;
       if (!name || !name.trim()) return send(400, { error: 'กรุณาระบุชื่อกลุ่มตัวเลือกพิเศษ' });
       const grpId = id || `GRP-${Date.now().toString().slice(-4)}`;
-      await sbRest('modifier_groups', {
-        method: 'POST',
-        prefer: 'resolution=merge-duplicates,return=representation',
-        body: {
-          id: grpId,
-          name: name.trim(),
-          selection_type,
-          is_required: Boolean(is_required),
-          sort_order: Number(sort_order) || 0
+      const grpObj = {
+        id: grpId,
+        name: name.trim(),
+        selection_type,
+        is_required: Boolean(is_required),
+        sort_order: Number(sort_order) || 0
+      };
+
+      try {
+        await sbRest('modifier_groups', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: grpObj
+        });
+      } catch (err) {
+        console.warn('Fallback modifier_groups to SYS-MODIFIER-GROUPS:', err.message);
+        let groups = [];
+        try {
+          const rows = await sbRest('customers?select=*&id=eq.SYS-MODIFIER-GROUPS');
+          if (rows && rows[0] && rows[0].note) {
+            groups = JSON.parse(rows[0].note);
+          }
+        } catch {}
+        if (!Array.isArray(groups) || groups.length === 0) {
+          groups = [
+            { id: 'GRP-SPICY', name: 'ระดับความเผ็ด', selection_type: 'SINGLE', is_required: false, sort_order: 1 },
+            { id: 'GRP-TOPPING', name: 'ท็อปปิ้งไข่ & เพิ่มเติม', selection_type: 'MULTIPLE', is_required: false, sort_order: 2 }
+          ];
         }
-      });
+        const idx = groups.findIndex(g => g.id === grpId);
+        if (idx >= 0) {
+          groups[idx] = grpObj;
+        } else {
+          groups.push(grpObj);
+        }
+        const now = new Date().toISOString();
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-MODIFIER-GROUPS',
+            name: '__MODIFIER_GROUPS__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(groups),
+            created_at: now
+          }
+        });
+      }
       return send(200, { success: true, grpId, data: await getSupabaseBootstrapData() });
     }
 
@@ -1108,7 +1175,38 @@ module.exports = async (req, res) => {
       try {
         await sbRest(`product_modifiers?group_id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
       } catch {}
-      await sbRest(`modifier_groups?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      try {
+        await sbRest(`product_modifiers?product_id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      } catch {}
+      try {
+        await sbRest(`modifier_groups?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      } catch {}
+
+      // Also clean from fallback SYS-MODIFIER-GROUPS
+      try {
+        const rows = await sbRest('customers?select=*&id=eq.SYS-MODIFIER-GROUPS');
+        if (rows && rows[0] && rows[0].note) {
+          const groups = JSON.parse(rows[0].note);
+          if (Array.isArray(groups)) {
+            const filtered = groups.filter(g => g.id !== id);
+            await sbRest('customers', {
+              method: 'POST',
+              prefer: 'resolution=merge-duplicates,return=representation',
+              body: {
+                id: 'SYS-MODIFIER-GROUPS',
+                name: '__MODIFIER_GROUPS__',
+                phone: '',
+                tier: 'SYSTEM',
+                points: 0,
+                total_spent: 0,
+                note: JSON.stringify(filtered),
+                created_at: new Date().toISOString()
+              }
+            });
+          }
+        }
+      } catch {}
+
       return send(200, { success: true, data: await getSupabaseBootstrapData() });
     }
 
@@ -1118,18 +1216,37 @@ module.exports = async (req, res) => {
       if (!name || !name.trim()) return send(400, { error: 'กรุณาระบุชื่อตัวเลือกพิเศษ' });
       const modId = id || `MOD-${Date.now().toString().slice(-4)}`;
       const vKw = Array.isArray(voice_keywords) ? voice_keywords : String(voice_keywords || '').split(',').map(s => s.trim()).filter(Boolean);
-      await sbRest('product_modifiers', {
-        method: 'POST',
-        prefer: 'resolution=merge-duplicates,return=representation',
-        body: {
-          id: modId,
-          group_id: group_id || null,
-          name: name.trim(),
-          voice_keywords: vKw,
-          extra_price: Number(extra_price) || 0,
-          extra_cost: Number(extra_cost) || 0
-        }
-      });
+
+      try {
+        await sbRest('product_modifiers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: modId,
+            group_id: group_id || null,
+            product_id: group_id || null,
+            name: name.trim(),
+            voice_keywords: vKw,
+            extra_price: Number(extra_price) || 0,
+            extra_cost: Number(extra_cost) || 0
+          }
+        });
+      } catch (err) {
+        // Fallback without group_id column if column does not exist
+        console.warn('Saving modifier with product_id fallback:', err.message);
+        await sbRest('product_modifiers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: modId,
+            product_id: group_id || null,
+            name: name.trim(),
+            voice_keywords: vKw,
+            extra_price: Number(extra_price) || 0,
+            extra_cost: Number(extra_cost) || 0
+          }
+        });
+      }
       return send(200, { success: true, modId, data: await getSupabaseBootstrapData() });
     }
 
