@@ -143,6 +143,66 @@ function getFullBootstrapData() {
       deliveryMapConfig = { ...deliveryMapConfig, ...JSON.parse(row.note) };
     }
   } catch {}
+
+  const DEFAULT_STORE_ZONES = [
+    {
+      id: 'ZONE-CHILLER-1',
+      name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)',
+      type: 'CHILLER',
+      icon: '❄️',
+      pixel_sprite: 'chiller',
+      custom_image_url: '',
+      category_ids: ['CAT-DRINK'],
+      description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น',
+      sort_order: 1,
+      is_active: true
+    },
+    {
+      id: 'ZONE-SHELF-1',
+      name: 'ชั้นวางขนม & ของชำทั่วไป',
+      type: 'SHELF',
+      icon: '🧺',
+      pixel_sprite: 'shelf',
+      custom_image_url: '',
+      category_ids: ['CAT-SNACK', 'CAT-PANTRY'],
+      description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน',
+      sort_order: 2,
+      is_active: true
+    },
+    {
+      id: 'ZONE-KITCHEN-1',
+      name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)',
+      type: 'KITCHEN',
+      icon: '🍳',
+      pixel_sprite: 'kitchen',
+      custom_image_url: '',
+      category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'],
+      description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน',
+      sort_order: 3,
+      is_active: true
+    },
+    {
+      id: 'ZONE-BAR-1',
+      name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ',
+      type: 'BAR',
+      icon: '🥤',
+      pixel_sprite: 'bar',
+      custom_image_url: '',
+      category_ids: [],
+      description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ',
+      sort_order: 4,
+      is_active: true
+    }
+  ];
+
+  let storeZones = [...DEFAULT_STORE_ZONES];
+  try {
+    const row = db.prepare("SELECT note FROM customers WHERE id = 'SYS-STORE-ZONES'").get();
+    if (row && row.note) {
+      const parsed = JSON.parse(row.note);
+      if (Array.isArray(parsed) && parsed.length > 0) storeZones = parsed;
+    }
+  } catch {}
   const openOrders = db.prepare("SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at DESC").all();
   const allRecentOrders = db.prepare("SELECT * FROM orders WHERE status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED') ORDER BY created_at DESC LIMIT 1000").all();
   const allOrderIds = allRecentOrders.map(o => o.id);
@@ -345,6 +405,7 @@ function getFullBootstrapData() {
     tables,
     deliveryPoints,
     deliveryMapConfig,
+    storeZones,
     customers,
     loyaltySettings,
     allBills,
@@ -1852,6 +1913,85 @@ const server = http.createServer(async (req, res) => {
 
       broadcastUpdate('delivery_map_config_saved', { config: cfgObj });
       return sendJson(res, 200, { success: true, deliveryMapConfig: cfgObj, data: getFullBootstrapData() });
+    }
+
+    // Store Zones Management (พื้นที่จัดวางสินค้าหน้าร้าน: ตู้แช่, ชั้นวาง, ครัว, บาร์น้ำ)
+    if (req.method === 'POST' && pathname === '/api/store-zones/save') {
+      const body = await parseJsonBody(req);
+      const { id, name, type = 'CHILLER', icon = '❄️', pixel_sprite = 'chiller', custom_image_url = '', category_ids = [], description = '', sort_order = 1, is_active = true } = body;
+      if (!name || !name.trim()) return sendJson(res, 400, { error: 'กรุณาระบุชื่อพื้นที่จัดวางสินค้า' });
+
+      let storeZones = [
+        { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', sort_order: 1, is_active: true },
+        { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', sort_order: 2, is_active: true },
+        { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', sort_order: 3, is_active: true },
+        { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', sort_order: 4, is_active: true }
+      ];
+
+      const row = db.prepare("SELECT note FROM customers WHERE id = 'SYS-STORE-ZONES'").get();
+      if (row && row.note) {
+        try {
+          const parsed = JSON.parse(row.note);
+          if (Array.isArray(parsed) && parsed.length > 0) storeZones = parsed;
+        } catch {}
+      }
+
+      const zoneId = id || `ZONE-${Date.now().toString().slice(-4)}`;
+      const existingIdx = storeZones.findIndex(z => z.id === zoneId);
+      const zoneObj = {
+        id: zoneId,
+        name: name.trim(),
+        type,
+        icon: icon || '❄️',
+        pixel_sprite: pixel_sprite || 'chiller',
+        custom_image_url: custom_image_url || '',
+        category_ids: Array.isArray(category_ids) ? category_ids : [],
+        description: description ? description.trim() : '',
+        sort_order: Number(sort_order) || 1,
+        is_active: Boolean(is_active)
+      };
+
+      if (existingIdx >= 0) {
+        storeZones[existingIdx] = zoneObj;
+      } else {
+        storeZones.push(zoneObj);
+      }
+      storeZones.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+
+      db.prepare(`
+        INSERT INTO customers (id, name, phone, tier, points, total_spent, note, created_at)
+        VALUES ('SYS-STORE-ZONES', '__STORE_ZONES__', '', 'SYSTEM', 0, 0, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET note = excluded.note
+      `).run(JSON.stringify(storeZones), new Date().toISOString());
+
+      broadcastUpdate('store_zones_saved', { zoneId });
+      return sendJson(res, 200, { success: true, zoneId, storeZones, data: getFullBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/store-zones/delete') {
+      const { id } = await parseJsonBody(req);
+      let storeZones = [
+        { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', sort_order: 1, is_active: true },
+        { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', sort_order: 2, is_active: true },
+        { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', sort_order: 3, is_active: true },
+        { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', sort_order: 4, is_active: true }
+      ];
+      const row = db.prepare("SELECT note FROM customers WHERE id = 'SYS-STORE-ZONES'").get();
+      if (row && row.note) {
+        try {
+          const parsed = JSON.parse(row.note);
+          if (Array.isArray(parsed) && parsed.length > 0) storeZones = parsed;
+        } catch {}
+      }
+      storeZones = storeZones.filter(z => z.id !== id);
+      db.prepare(`
+        INSERT INTO customers (id, name, phone, tier, points, total_spent, note, created_at)
+        VALUES ('SYS-STORE-ZONES', '__STORE_ZONES__', '', 'SYSTEM', 0, 0, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET note = excluded.note
+      `).run(JSON.stringify(storeZones), new Date().toISOString());
+
+      broadcastUpdate('store_zones_deleted', { id });
+      return sendJson(res, 200, { success: true, storeZones, data: getFullBootstrapData() });
     }
 
     // Add Daily Expense

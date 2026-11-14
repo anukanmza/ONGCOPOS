@@ -1,4 +1,4 @@
-const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, setRuntimeSupabaseConfig, getSupabaseConfig, sbRest, getSupabaseSyncCheck, getSupabaseBootstrapData } = require('../supabaseAdapter');
+const { DEFAULT_LOYALTY_SETTINGS, DEFAULT_STORE_ZONES, computeCustomerLoyaltyUpdate, setRuntimeSupabaseConfig, getSupabaseConfig, sbRest, getSupabaseSyncCheck, getSupabaseBootstrapData } = require('../supabaseAdapter');
 
 // ต้นทุนเฉลี่ยถ่วงน้ำหนักตามจำนวน: (ของเดิม × ทุนเดิม + ยอดซื้อล็อตใหม่) ÷ (จำนวนเดิม + จำนวนใหม่)
 // หมายเหตุ: ค่าที่ได้จะถูกเก็บใน stock_in_items.purchase_cost_per_base_unit (= ต้นทุนเฉลี่ยหลังรับของใบนี้)
@@ -1381,6 +1381,93 @@ module.exports = async (req, res) => {
         });
       } catch {}
       return send(200, { success: true, deliveryMapConfig: cfgObj, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/store-zones/save') {
+      const { id, name, type = 'CHILLER', icon = '❄️', pixel_sprite = 'chiller', custom_image_url = '', category_ids = [], description = '', sort_order = 1, is_active = true } = body;
+      if (!name || !name.trim()) return send(400, { error: 'กรุณาระบุชื่อพื้นที่จัดวางสินค้า' });
+
+      let storeZones = [...DEFAULT_STORE_ZONES];
+      try {
+        const rows = await sbRest("customers?select=note&id=eq.SYS-STORE-ZONES");
+        if (rows && rows[0] && rows[0].note) {
+          const parsed = JSON.parse(rows[0].note);
+          if (Array.isArray(parsed) && parsed.length > 0) storeZones = parsed;
+        }
+      } catch {}
+
+      const zoneId = id || `ZONE-${Date.now().toString().slice(-4)}`;
+      const existingIdx = storeZones.findIndex(z => z.id === zoneId);
+      const zoneObj = {
+        id: zoneId,
+        name: name.trim(),
+        type,
+        icon: icon || '❄️',
+        pixel_sprite: pixel_sprite || 'chiller',
+        custom_image_url: custom_image_url || '',
+        category_ids: Array.isArray(category_ids) ? category_ids : [],
+        description: description ? description.trim() : '',
+        sort_order: Number(sort_order) || 1,
+        is_active: Boolean(is_active)
+      };
+
+      if (existingIdx >= 0) {
+        storeZones[existingIdx] = zoneObj;
+      } else {
+        storeZones.push(zoneObj);
+      }
+      storeZones.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+
+      try {
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-STORE-ZONES',
+            name: '__STORE_ZONES__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(storeZones),
+            created_at: new Date().toISOString()
+          }
+        });
+      } catch {}
+
+      return send(200, { success: true, zoneId, storeZones, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/store-zones/delete') {
+      const { id } = body;
+      let storeZones = [...DEFAULT_STORE_ZONES];
+      try {
+        const rows = await sbRest("customers?select=note&id=eq.SYS-STORE-ZONES");
+        if (rows && rows[0] && rows[0].note) {
+          const parsed = JSON.parse(rows[0].note);
+          if (Array.isArray(parsed) && parsed.length > 0) storeZones = parsed;
+        }
+      } catch {}
+
+      storeZones = storeZones.filter(z => z.id !== id);
+      try {
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-STORE-ZONES',
+            name: '__STORE_ZONES__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(storeZones),
+            created_at: new Date().toISOString()
+          }
+        });
+      } catch {}
+
+      return send(200, { success: true, storeZones, data: await getSupabaseBootstrapData() });
     }
 
     if (req.method === 'POST' && pathname === '/api/orders/cancel') {

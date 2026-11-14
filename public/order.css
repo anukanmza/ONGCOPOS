@@ -956,3 +956,297 @@ body {
   50% { opacity: 0.75; transform: scale(0.97); }
 }
 
+/* ==========================================================================
+   MOBILE OPTIMIZATION (iPhone & Android) & STORE ZONES PIXEL ART
+   ========================================================================== */
+
+/* Prevent iOS Safari auto-zoom on input focus by ensuring 16px font */
+.co-input,
+.co-select,
+.co-search-input,
+input[type="text"],
+input[type="tel"],
+input[type="search"],
+select,
+textarea {
+  font-size: 16px !important;
+}
+
+/* Safe area insets for iPhone notch and home swipe indicator */
+body {
+  padding-bottom: calc(100px + env(safe-area-inset-bottom, 0px));
+}
+
+.co-header {
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
+}
+
+.co-sticky-cart {
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+}
+
+/* Store Zones Hall (หน้าร้านจำลองเลือกตู้/ชั้น/ครัว) */
+.co-pixel-hall-banner {
+  background: #1e293b;
+  border: 2px solid #334155;
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.co-pixel-hall-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #fde047;
+}
+
+.co-pixel-hall-subtitle {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+
+.co-pixel-hall-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.co-zone-card {
+  background: #ffffff;
+  border: 2px solid #cbd5e1;
+  border-radius: 14px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+  cursor: pointer;
+  position: relative;
+}
+
+.co-zone-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 20px rgba(13, 148, 136, 0.16);
+  border-color: #0d9488;
+}
+
+.co-zone-card:active {
+  transform: scale(0.985);
+}
+
+.co-zone-visual {
+  height: 150px;
+  background: #0f172a;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 2px solid #334155;
+}
+
+.co-zone-visual svg,
+.co-zone-visual img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  image-rendering: pixelated;
+}
+
+.co-zone-badge-type {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: rgba(15, 23, 42, 0.85);
+  color: #fde047;
+  font-size: 10.5px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid #fde047;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  backdrop-filter: blur(4px);
+}
+
+.co-zone-badge-count {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: #0d9488;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+
+.co-zone-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.co-zone-name {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--co-ink);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.co-zone-desc {
+  font-size: 12.5px;
+  color: var(--co-muted);
+  line-height: 1.4;
+  margin-bottom: 12px;
+  flex: 1;
+}
+
+.co-zone-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+
+.co-zone-cat-tag {
+  font-size: 11px;
+  background: #f1f5f9;
+  color: #475569;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.co-zone-btn {
+  width: 100%;
+  padding: 10px 14px;
+  background: #0f3238;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s;
+}
+
+.co-zone-card:hover .co-zone-btn {
+  background: #0d9488;
+}
+
+/* Zone Detail (หน้าเปิดดูของในตู้/ชั้นวาง) */
+.co-zone-detail-header {
+  background: #1e293b;
+  border: 2px solid #334155;
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  color: #fff;
+}
+
+.co-zone-back-btn {
+  background: rgba(255,255,255,0.12);
+  color: #fde047;
+  border: 1px solid rgba(253, 224, 71, 0.4);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  transition: background 0.15s;
+}
+
+.co-zone-back-btn:hover {
+  background: rgba(255,255,255,0.22);
+}
+
+.co-zone-detail-title {
+  font-size: 18px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.co-zone-cat-pills {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 6px 0;
+  margin-bottom: 14px;
+  scrollbar-width: none;
+}
+
+.co-zone-cat-pills::-webkit-scrollbar {
+  display: none;
+}
+
+/* Mobile Responsiveness for iPhones & Androids */
+@media (max-width: 640px) {
+  .co-container {
+    padding: 10px 12px;
+  }
+  .co-header {
+    padding: 8px 12px;
+  }
+  .co-pixel-title {
+    font-size: 11px;
+  }
+  .co-pixel-hall-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .co-cooler-shelf {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 10px !important;
+  }
+  .co-pixel-item {
+    padding: 10px 8px;
+  }
+  .co-item-name {
+    font-size: 12.5px;
+  }
+  .co-delivery-form {
+    grid-template-columns: 1fr !important;
+  }
+  .co-map-wrapper {
+    height: 220px;
+  }
+  .co-modal {
+    max-height: 92vh;
+    border-radius: 18px 18px 0 0;
+  }
+  .co-modal-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+}
+
+

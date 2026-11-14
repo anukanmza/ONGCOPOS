@@ -67,6 +67,8 @@ const state = {
   deliveryMapPreviewY: 36,
   deliveryMapActiveTab: 'POINTS', // 'POINTS' | 'CUSTOM_MAP' | 'LANDMARKS'
   editingCustomLandmark: null,
+  showStoreZonesModal: false,
+  editingStoreZone: null,
   // Stock-In Draft & Inventory Search / Voice / History Modal State
   stockInSupplier: 'แม็คโคร & ตลาดสด',
   stockInNote: '',
@@ -349,6 +351,8 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
   if (endpoint === '/api/delivery-points/save') return eng.saveDeliveryPoint(bodyObj || {});
   if (endpoint === '/api/delivery-points/delete') return eng.deleteDeliveryPoint(bodyObj || {});
   if (endpoint === '/api/delivery-map/save-config') return eng.saveDeliveryMapConfig(bodyObj || {});
+  if (endpoint === '/api/store-zones/save') return eng.saveStoreZone(bodyObj || {});
+  if (endpoint === '/api/store-zones/delete') return eng.deleteStoreZone(bodyObj || {});
   return eng.getBootstrap();
 }
 
@@ -363,6 +367,7 @@ function isUserBusyInteracting() {
     state.showCategoryModal ||
     state.showModifierGroupModal ||
     state.showDeliveryPointsModal ||
+    state.showStoreZonesModal ||
     state.showNewIngredientModal ||
     state.showNewExpenseModal ||
     state.invoiceModalOrder ||
@@ -981,6 +986,127 @@ async function deleteDeliveryPointById(ptId, ptName) {
   if (state.editingDeliveryPoint && state.editingDeliveryPoint.id === ptId) state.editingDeliveryPoint = null;
   render();
   showToast(`🗑️ ลบจุดรับของ "${ptName}" แล้ว`);
+}
+
+function openStoreZonesModal(zoneId = null) {
+  state.showStoreZonesModal = true;
+  if (zoneId) {
+    const zones = state.data?.storeZones || [];
+    state.editingStoreZone = zones.find(z => z.id === zoneId) || null;
+  } else {
+    state.editingStoreZone = null;
+  }
+  render();
+}
+
+async function uploadCustomZoneImage(fileInput) {
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) return;
+  if (!file.type.startsWith('image/')) {
+    alert('กรุณาเลือกไฟล์รูปภาพ (PNG, JPG, SVG, WebP)');
+    return;
+  }
+
+  showToast('⏳ กำลังประมวลผลรูปภาพ...');
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const img = new Image();
+    img.onload = function() {
+      const maxDim = 400;
+      let w = img.width;
+      let h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round((h * maxDim) / w);
+          w = maxDim;
+        } else {
+          w = Math.round((w * maxDim) / h);
+          h = maxDim;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/png');
+
+      const urlInput = document.getElementById('ttl-zone-custom-img-url');
+      if (urlInput) urlInput.value = dataUrl;
+      const previewEl = document.getElementById('ttl-zone-img-preview');
+      if (previewEl) {
+        previewEl.innerHTML = `<img src="${dataUrl}" style="max-height:36px; max-width:36px; object-fit:contain; image-rendering:pixelated;" />`;
+      }
+      showToast('🖼️ โหลดรูปภาพสำเร็จ (กด "บันทึก" เพื่อยืนยัน)');
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+async function saveStoreZoneForm(formEl) {
+  const f = formEl.elements;
+  const zoneId = f.zone_id.value || undefined;
+  const name = (f.zone_name.value || '').trim();
+  const zone_type = f.zone_type.value || 'OTHER';
+  const icon = (f.zone_icon.value || '🏪').trim();
+  const pixel_sprite = f.zone_pixel_sprite.value || 'chiller';
+  const custom_image_url = (f.zone_custom_image_url.value || '').trim();
+  const description = (f.zone_desc.value || '').trim();
+  const sort_order = Number(f.zone_sort_order.value) || 1;
+
+  if (!name) {
+    alert('กรุณาระบุชื่อพื้นที่จัดวางสินค้า');
+    return;
+  }
+
+  const catCheckboxes = formEl.querySelectorAll('input[name="zone_category_ids"]:checked');
+  const category_ids = Array.from(catCheckboxes).map(cb => cb.value);
+
+  const payload = {
+    id: zoneId,
+    name,
+    zone_type,
+    icon,
+    pixel_sprite,
+    custom_image_url,
+    category_ids,
+    description,
+    sort_order
+  };
+
+  const out = await apiCall('/api/store-zones/save', 'POST', payload);
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (!state.data.storeZones) state.data.storeZones = [];
+    const newId = zoneId || `ZONE-${Date.now().toString().slice(-4)}`;
+    const exIdx = state.data.storeZones.findIndex(z => z.id === newId);
+    const zObj = { ...payload, id: newId, is_active: 1 };
+    if (exIdx >= 0) state.data.storeZones[exIdx] = zObj;
+    else state.data.storeZones.push(zObj);
+  }
+
+  state.editingStoreZone = null;
+  render();
+  showToast(zoneId ? '✏️ บันทึกการแก้ไขพื้นที่จัดวางสินค้าเรียบร้อย' : '+ เพิ่มพื้นที่จัดวางสินค้าใหม่เรียบร้อย');
+}
+
+async function deleteStoreZoneById(zoneId, zoneName) {
+  if (!confirm(`ต้องการลบพื้นที่จัดวาง "${zoneName}" หรือไม่?`)) return;
+  const out = await apiCall('/api/store-zones/delete', 'POST', { id: zoneId });
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (state.data.storeZones) {
+      state.data.storeZones = state.data.storeZones.filter(z => z.id !== zoneId);
+    }
+  }
+  if (state.editingStoreZone && state.editingStoreZone.id === zoneId) state.editingStoreZone = null;
+  render();
+  showToast(`🗑️ ลบพื้นที่จัดวาง "${zoneName}" เรียบร้อยแล้ว`);
 }
 
 function getActiveContextOrder() {
@@ -3103,6 +3229,9 @@ function renderTablesView() {
           <button type="button" class="ttl-btn ttl-btn-outline" style="border-color:#0d9488; color:#0d9488; font-weight:600;" onclick="openDeliveryPointsModal();">
             🛵 จุดส่งตลาดอินโดจีน (${(state.data?.deliveryPoints || []).length})
           </button>
+          <button type="button" class="ttl-btn ttl-btn-outline" style="border-color:#7c3aed; color:#7c3aed; font-weight:600;" onclick="openStoreZonesModal();">
+            🏪 จัดการตู้/ชั้นวาง Pixel (${(state.data?.storeZones || []).length})
+          </button>
           <a href="/order" target="_blank" class="ttl-btn ttl-btn-ghost" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px; font-weight:600; color:#2563eb;">
             📱 หน้าเว็บสั่งเอง (/order) ↗
           </a>
@@ -3865,6 +3994,9 @@ function renderInventoryView() {
               </div>
               <button type="button" class="ttl-btn ttl-btn-ghost" style="border:1px solid var(--ttl-rule); font-weight:700;" onclick="state.showCategoryModal=true; render();">
                 🏷️ จัดการหมวดหมู่
+              </button>
+              <button type="button" class="ttl-btn ttl-btn-ghost" style="border:1px solid #7c3aed; color:#7c3aed; font-weight:700;" onclick="openStoreZonesModal();">
+                🏪 จัดการตู้/ชั้นวาง Pixel
               </button>
               <button type="button" class="ttl-btn ttl-btn-ghost" style="border:1px solid var(--ttl-rule); font-weight:700;" onclick="state.showModifierGroupModal=true; render();">
                 🎛️ จัดการตัวเลือกพิเศษ
@@ -6112,6 +6244,11 @@ function renderModals() {
     html += renderDeliveryPointsModal();
   }
 
+  // 11. Store Zones Management Modal (ตู้แช่, ชั้นวาง, ครัว, บาร์น้ำ)
+  if (state.showStoreZonesModal) {
+    html += renderStoreZonesModal();
+  }
+
   return html;
 }
 
@@ -6680,6 +6817,217 @@ function renderDeliveryPointsModal() {
             </div>
           </div>
         ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================================
+// 11. STORE ZONES MANAGEMENT MODAL (ตู้แช่, ชั้นวาง, ครัว, บาร์น้ำ)
+// ============================================================================
+function renderStoreZonesModal() {
+  const zones = (state.data?.storeZones || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const categories = state.data?.categories || [];
+  const ez = state.editingStoreZone;
+  const products = state.data?.products || [];
+
+  return `
+    <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showStoreZonesModal=false; state.editingStoreZone=null; render();}">
+      <div class="ttl-modal" style="max-width:850px; max-height:90vh; overflow-y:auto;">
+        <!-- Header -->
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--ttl-rule);">
+          <div>
+            <div class="ttl-k">STOREFRONT DISPLAY & FIXTURES</div>
+            <h3 style="margin:2px 0 0; font-size:18px;">🏪 จัดการพื้นที่จัดวางสินค้าหน้าร้าน (ตู้แช่ / ชั้นวาง / ครัว / บาร์น้ำ)</h3>
+            <div style="font-size:12px; color:var(--ttl-muted); margin-top:2px;">
+              สำหรับแสดงบนหน้าร้านเสมือนจริง Pixel Art (/order) โดยผูกกับหมวดหมู่สินค้าในสต็อกจริง (แบบ A)
+            </div>
+          </div>
+          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showStoreZonesModal=false; state.editingStoreZone=null; render();">✕ ปิด</button>
+        </div>
+
+        <!-- ฟอร์มเพิ่ม / แก้ไขพื้นที่จัดวาง -->
+        <div style="background:var(--ttl-page); border:1px solid var(--ttl-rule); border-radius:12px; padding:16px; margin-bottom:20px;">
+          <div style="font-weight:700; font-size:14px; margin-bottom:12px; color:var(--ttl-ink); display:flex; justify-content:space-between; align-items:center;">
+            <span>${ez ? `✏️ แก้ไขพื้นที่จัดวาง: ${ez.name}` : '+ เพิ่มพื้นที่จัดวางสินค้าใหม่'}</span>
+            ${ez ? `<button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.editingStoreZone=null; render();">ยกเลิกการแก้ไข</button>` : ''}
+          </div>
+
+          <form onsubmit="event.preventDefault(); saveStoreZoneForm(this);">
+            <input type="hidden" name="zone_id" value="${ez ? ez.id : ''}" />
+
+            <div style="display:grid; grid-template-columns:1.5fr 1fr 100px; gap:12px; margin-bottom:12px;">
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ชื่อพื้นที่จัดวาง *</label>
+                <input
+                  type="text"
+                  name="zone_name"
+                  class="ttl-input"
+                  placeholder="เช่น ตู้แช่ 1 (เครื่องดื่มเย็น), ชั้นวางขนม 1"
+                  value="${(ez ? ez.name : '').replace(/"/g, '&quot;')}"
+                  required
+                />
+              </div>
+
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ประเภทพื้นที่ (Type)</label>
+                <select name="zone_type" class="ttl-input">
+                  <option value="CHILLER" ${ez && ez.zone_type === 'CHILLER' ? 'selected' : ''}>🧊 ตู้แช่ (Chiller)</option>
+                  <option value="SHELF" ${ez && ez.zone_type === 'SHELF' ? 'selected' : ''}>🧺 ชั้นวางสินค้า (Shelf)</option>
+                  <option value="KITCHEN" ${ez && ez.zone_type === 'KITCHEN' ? 'selected' : ''}>🍳 ครัวอาหาร (Kitchen)</option>
+                  <option value="BAR" ${ez && ez.zone_type === 'BAR' ? 'selected' : ''}>☕ บาร์น้ำ/ชงดื่ม (Bar)</option>
+                  <option value="OTHER" ${ez && ez.zone_type === 'OTHER' ? 'selected' : ''}>📦 อื่นๆ (Other)</option>
+                </select>
+              </div>
+
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ไอคอน</label>
+                <input
+                  type="text"
+                  name="zone_icon"
+                  class="ttl-input"
+                  style="text-align:center; font-size:16px;"
+                  placeholder="🧊"
+                  value="${(ez ? ez.icon : '🏪').replace(/"/g, '&quot;')}"
+                />
+              </div>
+            </div>
+
+            <!-- Sprite / Pixel Art Image Selection -->
+            <div style="display:grid; grid-template-columns:1fr 1.2fr 80px; gap:12px; margin-bottom:12px; align-items:start;">
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">รูป Pixel Art เริ่มต้น (Sprite)</label>
+                <select name="zone_pixel_sprite" class="ttl-input">
+                  <option value="chiller" ${!ez || ez.pixel_sprite === 'chiller' ? 'selected' : ''}>🧊 ตู้แช่กระจกใส (Chiller)</option>
+                  <option value="shelf" ${ez && ez.pixel_sprite === 'shelf' ? 'selected' : ''}>🧺 ชั้นวางของไม้ 3 ชั้น (Shelf)</option>
+                  <option value="kitchen" ${ez && ez.pixel_sprite === 'kitchen' ? 'selected' : ''}>🍳 ครัวกระทะ & หม้อต้ม (Kitchen)</option>
+                  <option value="bar" ${ez && ez.pixel_sprite === 'bar' ? 'selected' : ''}>☕ เคาน์เตอร์บาร์น้ำชง (Bar)</option>
+                </select>
+              </div>
+
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">หรืออัปโหลดรูปภาพที่วาดเอง</label>
+                <div style="display:flex; gap:8px; align-items:center;">
+                  <input type="file" accept="image/*" class="ttl-input" style="padding:4px;" onchange="uploadCustomZoneImage(this)" />
+                  <input type="hidden" id="ttl-zone-custom-img-url" name="zone_custom_image_url" value="${(ez ? ez.custom_image_url || '' : '').replace(/"/g, '&quot;')}" />
+                  <div id="ttl-zone-img-preview" style="min-width:36px; min-height:36px; display:flex; align-items:center; justify-content:center;">
+                    ${ez && ez.custom_image_url ? `<img src="${ez.custom_image_url}" style="max-height:36px; max-width:36px; object-fit:contain; image-rendering:pixelated;" />` : ''}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ลำดับ</label>
+                <input
+                  type="number"
+                  name="zone_sort_order"
+                  class="ttl-input"
+                  style="text-align:center;"
+                  value="${ez ? ez.sort_order || 1 : zones.length + 1}"
+                />
+              </div>
+            </div>
+
+            <!-- Categories Binding (แบบ A) -->
+            <div style="margin-bottom:12px;">
+              <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:6px;">
+                🔗 ผูกกับหมวดหมู่สินค้าในสต็อก (แบบ A):
+                <span style="font-size:11px; font-weight:normal; color:var(--ttl-muted);">
+                  สินค้าที่อยู่ในหมวดหมู่ที่เลือกจะไปแสดงในพื้นที่จัดวางนี้ทันที
+                </span>
+              </label>
+              <div style="display:flex; flex-wrap:wrap; gap:8px; padding:10px; background:#fff; border:1px solid var(--ttl-rule); border-radius:8px; max-height:140px; overflow-y:auto;">
+                ${categories.length === 0 ? `<div style="font-size:12px; color:var(--ttl-muted);">ยังไม่มีหมวดหมู่สินค้า</div>` : ''}
+                ${categories.map(c => {
+                  const isChecked = ez && Array.isArray(ez.category_ids) && ez.category_ids.includes(c.id);
+                  const prodCount = products.filter(p => p.category_id === c.id).length;
+                  return `
+                    <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 8px; border-radius:6px; background:var(--ttl-page); border:1px solid var(--ttl-rule); cursor:pointer;">
+                      <input type="checkbox" name="zone_category_ids" value="${c.id}" ${isChecked ? 'checked' : ''} />
+                      <span>${c.name} (${prodCount})</span>
+                    </label>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+
+            <div style="margin-bottom:14px;">
+              <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">คำอธิบายย่อ</label>
+              <input
+                type="text"
+                name="zone_desc"
+                class="ttl-input"
+                placeholder="เช่น เครื่องดื่มเย็นชื่นใจ น้ำอัดลม ชา กาแฟกระป๋อง"
+                value="${(ez ? ez.description || '' : '').replace(/"/g, '&quot;')}"
+              />
+            </div>
+
+            <div style="display:flex; justify-content:flex-end; gap:8px;">
+              <button type="submit" class="ttl-btn ttl-btn-dark">
+                💾 ${ez ? 'บันทึกการแก้ไขพื้นที่' : '+ เพิ่มพื้นที่จัดวาง'}
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- รายการพื้นที่จัดวางทั้งหมด -->
+        <div class="ttl-k" style="margin-bottom:8px;">รายการพื้นที่จัดวางปัจจุบัน (${zones.length} พื้นที่)</div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:12px;">
+          ${zones.map(z => {
+            const boundCats = categories.filter(c => Array.isArray(z.category_ids) && z.category_ids.includes(c.id));
+            const boundCatIds = boundCats.map(c => c.id);
+            const prodCount = products.filter(p => boundCatIds.includes(p.category_id)).length;
+            const safeZJson = JSON.stringify(z).replace(/"/g, '&quot;');
+            return `
+              <div style="background:#fff; border:1px solid var(--ttl-rule); border-radius:10px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                <div>
+                  <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                      <span style="font-size:20px;">${z.icon || '🏪'}</span>
+                      <div>
+                        <div style="font-weight:700; font-size:13.5px; color:var(--ttl-ink);">${z.name}</div>
+                        <div style="font-size:10.5px; color:var(--ttl-muted);">${z.zone_type} • Sprite: ${z.pixel_sprite || 'chiller'}</div>
+                      </div>
+                    </div>
+                    <span style="font-size:11px; font-weight:700; color:#2563eb; background:#eff6ff; padding:2px 6px; border-radius:6px;">
+                      ${prodCount} สินค้า
+                    </span>
+                  </div>
+
+                  ${z.description ? `
+                    <div style="font-size:11.5px; color:var(--ttl-muted); margin-bottom:8px; line-height:1.4;">${z.description}</div>
+                  ` : ''}
+
+                  <div style="margin-bottom:8px;">
+                    <div style="font-size:10.5px; font-weight:600; color:var(--ttl-muted); margin-bottom:4px;">หมวดหมู่ที่ผูก (${boundCats.length}):</div>
+                    <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                      ${boundCats.length > 0 ? boundCats.map(c => `
+                        <span style="font-size:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); padding:2px 6px; border-radius:4px;">${c.name}</span>
+                      `).join('') : '<span style="font-size:10px; color:#f59e0b;">(ยังไม่ได้ผูกหมวดหมู่)</span>'}
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display:flex; justify-content:flex-end; gap:6px; border-top:1px solid var(--ttl-rule); padding-top:8px; margin-top:6px;">
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+                    onclick="state.editingStoreZone=${safeZJson}; render();"
+                  >
+                    ✏️ แก้ไข
+                  </button>
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
+                    onclick="deleteStoreZoneById('${z.id}', '${z.name.replace(/'/g, "\\'")}')"
+                  >
+                    🗑️ ลบ
+                  </button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
       </div>
     </div>
   `;

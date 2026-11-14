@@ -31,6 +31,57 @@ const DEFAULT_DELIVERY_MAP_CONFIG = {
   custom_landmarks: []
 };
 
+const DEFAULT_STORE_ZONES = [
+  {
+    id: 'ZONE-CHILLER-1',
+    name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)',
+    type: 'CHILLER',
+    icon: '❄️',
+    pixel_sprite: 'chiller',
+    custom_image_url: '',
+    category_ids: ['CAT-DRINK'],
+    description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น',
+    sort_order: 1,
+    is_active: true
+  },
+  {
+    id: 'ZONE-SHELF-1',
+    name: 'ชั้นวางขนม & ของชำทั่วไป',
+    type: 'SHELF',
+    icon: '🧺',
+    pixel_sprite: 'shelf',
+    custom_image_url: '',
+    category_ids: ['CAT-SNACK', 'CAT-PANTRY'],
+    description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน',
+    sort_order: 2,
+    is_active: true
+  },
+  {
+    id: 'ZONE-KITCHEN-1',
+    name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)',
+    type: 'KITCHEN',
+    icon: '🍳',
+    pixel_sprite: 'kitchen',
+    custom_image_url: '',
+    category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'],
+    description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน',
+    sort_order: 3,
+    is_active: true
+  },
+  {
+    id: 'ZONE-BAR-1',
+    name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ',
+    type: 'BAR',
+    icon: '🥤',
+    pixel_sprite: 'bar',
+    custom_image_url: '',
+    category_ids: [],
+    description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ',
+    sort_order: 4,
+    is_active: true
+  }
+];
+
 function computeCustomerLoyaltyUpdate(customer, netTotal, redeemPoints, loyaltySettings = DEFAULT_LOYALTY_SETTINGS) {
   const cfg = { ...DEFAULT_LOYALTY_SETTINGS, ...(loyaltySettings || {}) };
   const spendPerPt = Math.max(1, Number(cfg.spend_per_point) || 25);
@@ -496,7 +547,18 @@ async function getSupabaseBootstrapData() {
     } catch {}
   }
 
-  const customers = rawCustomers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG' && c.id !== 'SYS-MODIFIER-GROUPS' && c.id !== 'SYS-DELIVERY-POINTS' && c.id !== 'SYS-DELIVERY-MAP-CONFIG');
+  let storeZones = [...DEFAULT_STORE_ZONES];
+  const sysZoneRow = rawCustomers.find(c => c.id === 'SYS-STORE-ZONES');
+  if (sysZoneRow && sysZoneRow.note) {
+    try {
+      const parsed = JSON.parse(sysZoneRow.note);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        storeZones = parsed;
+      }
+    } catch {}
+  }
+
+  const customers = rawCustomers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG' && c.id !== 'SYS-MODIFIER-GROUPS' && c.id !== 'SYS-DELIVERY-POINTS' && c.id !== 'SYS-DELIVERY-MAP-CONFIG' && c.id !== 'SYS-STORE-ZONES');
 
   const allBills = allValidOrders.map(o => {
     const tbl = o.table_id ? tableMap.get(o.table_id) : null;
@@ -537,6 +599,7 @@ async function getSupabaseBootstrapData() {
     tables,
     deliveryPoints,
     deliveryMapConfig,
+    storeZones,
     customers: customers.map(c => ({ ...c, points: Number(c.points || 0), total_spent: Number(c.total_spent || 0) })),
     loyaltySettings,
     allBills,
@@ -577,6 +640,7 @@ module.exports = {
   DEFAULT_LOYALTY_SETTINGS,
   DEFAULT_DELIVERY_POINTS,
   DEFAULT_DELIVERY_MAP_CONFIG,
+  DEFAULT_STORE_ZONES,
   computeCustomerLoyaltyUpdate,
   setRuntimeSupabaseConfig,
   getSupabaseConfig,

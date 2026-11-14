@@ -74,6 +74,12 @@ function createInitialSeedState() {
       river_position: 'TOP',
       custom_landmarks: []
     },
+    storeZones: [
+      { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', sort_order: 1, is_active: true },
+      { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', sort_order: 2, is_active: true },
+      { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', sort_order: 3, is_active: true },
+      { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', sort_order: 4, is_active: true }
+    ],
     modifiers: [
       { id: 'MOD-LESS-SPICY', group_id: 'GRP-SPICY', name: 'เผ็ดน้อย', voice_keywords: ['เผ็ดน้อย', 'พริกเม็ดเดียว'], extra_price: 0, extra_cost: 0 },
       { id: 'MOD-MED-SPICY', group_id: 'GRP-SPICY', name: 'เผ็ดกลาง', voice_keywords: ['เผ็ดกลาง', 'เผ็ดปกติ'], extra_price: 0, extra_cost: 0 },
@@ -241,6 +247,15 @@ function loadLocalDb() {
             river_position: 'TOP',
             custom_landmarks: []
           };
+          changed = true;
+        }
+        if (!Array.isArray(parsed.storeZones)) {
+          parsed.storeZones = [
+            { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', sort_order: 1, is_active: true },
+            { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', sort_order: 2, is_active: true },
+            { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', sort_order: 3, is_active: true },
+            { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', sort_order: 4, is_active: true }
+          ];
           changed = true;
         }
         for (const p of (parsed.products || [])) {
@@ -425,6 +440,7 @@ function buildLocalBootstrap() {
       river_position: 'TOP',
       custom_landmarks: []
     },
+    storeZones: (db.storeZones || []).slice().sort((a,b) => (a.sort_order||0) - (b.sort_order||0)),
     ingredients: db.ingredients,
     recipeItems: enrichedRecipes,
     tables,
@@ -1594,6 +1610,41 @@ window.LocalPosEngine = {
     db.deliveryPoints = (db.deliveryPoints || []).filter(p => p.id !== body.id);
     saveLocalDb(db);
     return { success: true, data: buildLocalBootstrap() };
+  },
+
+  saveStoreZone(body) {
+    const db = loadLocalDb();
+    if (!Array.isArray(db.storeZones)) db.storeZones = [];
+    const zoneId = body.id || `ZONE-${Date.now().toString().slice(-4)}`;
+    const existingIdx = db.storeZones.findIndex(z => z.id === zoneId);
+    const zoneObj = {
+      id: zoneId,
+      name: (body.name || '').trim(),
+      type: body.type || 'CHILLER',
+      icon: body.icon || '❄️',
+      pixel_sprite: body.pixel_sprite || 'chiller',
+      custom_image_url: body.custom_image_url || '',
+      category_ids: Array.isArray(body.category_ids) ? body.category_ids : [],
+      description: (body.description || '').trim(),
+      sort_order: Number(body.sort_order) || 1,
+      is_active: body.is_active !== undefined ? Boolean(body.is_active) : true
+    };
+    if (existingIdx >= 0) {
+      db.storeZones[existingIdx] = zoneObj;
+    } else {
+      db.storeZones.push(zoneObj);
+    }
+    db.storeZones.sort((a,b) => (a.sort_order||0) - (b.sort_order||0));
+    saveLocalDb(db);
+    return { success: true, zoneId, storeZones: db.storeZones, data: buildLocalBootstrap() };
+  },
+
+  deleteStoreZone(body) {
+    const db = loadLocalDb();
+    if (!Array.isArray(db.storeZones)) db.storeZones = [];
+    db.storeZones = db.storeZones.filter(z => z.id !== body.id);
+    saveLocalDb(db);
+    return { success: true, storeZones: db.storeZones, data: buildLocalBootstrap() };
   }
 };
 

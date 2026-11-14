@@ -2,10 +2,19 @@
 // ONG CO POS - CUSTOMER SELF-ORDERING & PIXEL ART STOREFRONT JS
 // ==========================================================================
 
+const DEFAULT_STORE_ZONES = [
+  { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', sort_order: 1, is_active: true },
+  { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', sort_order: 2, is_active: true },
+  { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', sort_order: 3, is_active: true },
+  { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', sort_order: 4, is_active: true }
+];
+
 const orderState = {
   viewMode: 'PIXEL', // 'PIXEL' (แบบ C: Virtual Storefront) | 'LIST' (รายการเมนูด่วน)
   orderMode: 'DELIVERY', // 'DELIVERY' | 'DINE_IN' | 'TAKEAWAY'
   tableId: '',
+  selectedStoreZoneId: null, // null = หน้าโถงร้านจำลอง (เลือกตู้/ชั้น/ครัว) | string = ID ของตู้/พื้นที่ที่เลือก
+  activeZoneCategory: 'ALL', // กรองหมวดหมู่ย่อยในตู้นั้น
   activeCategory: 'ALL',
   searchQuery: '',
   selectedDeliveryPointId: 'DP-03', // Default: ศาลาขาว ตลาดอินโดจีน
@@ -100,9 +109,27 @@ function handlePhoneInput(phone) {
   orderState.member = m;
   if (m && !orderState.customerName) {
     orderState.customerName = m.name;
+    const nameEl = document.getElementById('co-input-name');
+    if (nameEl) nameEl.value = m.name;
   }
   orderState.redeemPoints = 0;
-  render();
+
+  // Directly update member badge in DOM without calling render() to preserve input focus!
+  const badgeEl = document.getElementById('co-member-badge');
+  if (badgeEl) {
+    if (m) {
+      badgeEl.innerHTML = `
+        <div style="margin-top:10px; padding:8px 12px; background:#fef3c7; border:1px solid #fde68a; border-radius:8px; display:flex; justify-content:space-between; align-items:center; font-size:12px;">
+          <span>⭐ สมาชิก: <b>${m.name}</b> (${m.tier})</span>
+          <span style="color:#b45309; font-weight:700;">แต้มสะสม: ${m.points} แต้ม</span>
+        </div>
+      `;
+      badgeEl.style.display = 'block';
+    } else {
+      badgeEl.innerHTML = '';
+      badgeEl.style.display = 'none';
+    }
+  }
 }
 
 // Calculate loyalty discount rate
@@ -385,13 +412,10 @@ function render() {
   }
 
   const products = orderState.data.products || [];
-  const drinks = products.filter(p => p.category_id === 'CAT-DRINK');
-  const snacks = products.filter(p => p.category_id === 'CAT-SNACK' || p.category_id === 'CAT-PANTRY');
-  const foods = products.filter(p => p.item_type === 'FOOD');
 
   let contentHtml = '';
   if (orderState.viewMode === 'PIXEL') {
-    contentHtml = renderPixelStorefront(drinks, snacks, foods);
+    contentHtml = renderPixelStorefront(products);
   } else {
     contentHtml = renderListView(products);
   }
@@ -698,6 +722,7 @@ function renderDeliverySection() {
         <div class="co-form-group">
           <label class="co-label">เบอร์โทรศัพท์ (จำเป็นสำหรับการโทรส่งของ & สะสมแต้ม)</label>
           <input
+            id="co-input-phone"
             type="tel"
             class="co-input"
             placeholder="เช่น 0812345678"
@@ -709,6 +734,7 @@ function renderDeliverySection() {
         <div class="co-form-group">
           <label class="co-label">ชื่อผู้รับ</label>
           <input
+            id="co-input-name"
             type="text"
             class="co-input"
             placeholder="เช่น คุณเอก / หน้าร้านขายเสื้อผ้า"
@@ -720,6 +746,7 @@ function renderDeliverySection() {
         <div class="co-form-group">
           <label class="co-label">จุดสังเกตเพิ่มเติม (เช่น เสื้อสีแดง, หน้าร้านเลขที่...)</label>
           <input
+            id="co-input-note"
             type="text"
             class="co-input"
             placeholder="รายละเอียดเพิ่มเติมให้คนส่งของ"
@@ -729,12 +756,14 @@ function renderDeliverySection() {
         </div>
       </div>
 
-      ${orderState.member ? `
-        <div style="margin-top:10px; padding:8px 12px; background:#fef3c7; border:1px solid #fde68a; border-radius:8px; display:flex; justify-content:space-between; align-items:center; font-size:12px;">
-          <span>⭐ สมาชิก: <b>${orderState.member.name}</b> (${orderState.member.tier})</span>
-          <span style="color:#b45309; font-weight:700;">แต้มสะสม: ${orderState.member.points} แต้ม</span>
-        </div>
-      ` : ''}
+      <div id="co-member-badge" style="${orderState.member ? 'display:block;' : 'display:none;'}">
+        ${orderState.member ? `
+          <div style="margin-top:10px; padding:8px 12px; background:#fef3c7; border:1px solid #fde68a; border-radius:8px; display:flex; justify-content:space-between; align-items:center; font-size:12px;">
+            <span>⭐ สมาชิก: <b>${orderState.member.name}</b> (${orderState.member.tier})</span>
+            <span style="color:#b45309; font-weight:700;">แต้มสะสม: ${orderState.member.points} แต้ม</span>
+          </div>
+        ` : ''}
+      </div>
     </div>
   `;
 }
@@ -767,9 +796,266 @@ function renderDineInSection() {
 }
 
 // ==========================================================================
-// PIXEL ART STOREFRONT (แบบ C: Hybrid Virtual Shop)
+// Render Store Zone Pixel Sprite Artwork (Chiller, Shelf, Kitchen, Bar, or Custom Image)
+function renderStoreZonePixelSprite(spriteType = 'chiller', customImageUrl = '') {
+  if (customImageUrl) {
+    return `<img src="${customImageUrl}" alt="Zone visual" style="width:100%; height:100%; object-fit:cover; display:block;" />`;
+  }
+
+  if (spriteType === 'shelf') {
+    return `
+      <svg viewBox="0 0 240 130" style="width:100%; height:100%;">
+        <rect x="18" y="10" width="204" height="110" fill="#78350f" rx="3" stroke="#451a03" stroke-width="2"/>
+        <rect x="22" y="44" width="196" height="8" fill="#92400e" stroke="#451a03" stroke-width="1"/>
+        <rect x="22" y="78" width="196" height="8" fill="#92400e" stroke="#451a03" stroke-width="1"/>
+        <rect x="22" y="112" width="196" height="6" fill="#92400e"/>
+        <rect x="36" y="16" width="168" height="14" fill="#fbbf24" rx="2"/>
+        <text x="120" y="27" fill="#78350f" font-size="8.5" font-family="'Press Start 2P', monospace" font-weight="bold" text-anchor="middle">SNACK & GROCERY 🧺</text>
+        <polygon points="36,44 48,28 60,44" fill="#ef4444"/>
+        <polygon points="66,44 78,28 90,44" fill="#f59e0b"/>
+        <polygon points="96,44 108,28 120,44" fill="#10b981"/>
+        <rect x="130" y="28" width="14" height="16" fill="#3b82f6" rx="1"/>
+        <rect x="148" y="28" width="14" height="16" fill="#8b5cf6" rx="1"/>
+        <rect x="168" y="28" width="14" height="16" fill="#ec4899" rx="1"/>
+        <polygon points="188,44 200,28 212,44" fill="#eab308"/>
+        <rect x="34" y="60" width="16" height="18" fill="#0284c7" rx="1"/>
+        <rect x="54" y="60" width="16" height="18" fill="#0284c7" rx="1"/>
+        <rect x="76" y="62" width="14" height="16" fill="#f97316" rx="1"/>
+        <rect x="94" y="62" width="14" height="16" fill="#f97316" rx="1"/>
+        <polygon points="118,78 130,62 142,78" fill="#84cc16"/>
+        <polygon points="148,78 160,62 172,78" fill="#ef4444"/>
+        <rect x="180" y="62" width="14" height="16" fill="#eab308" rx="1"/>
+      </svg>
+    `;
+  }
+
+  if (spriteType === 'kitchen') {
+    return `
+      <svg viewBox="0 0 240 130" style="width:100%; height:100%;">
+        <rect x="15" y="8" width="210" height="114" fill="#334155" rx="4" stroke="#1e293b" stroke-width="2"/>
+        <line x1="15" y1="36" x2="225" y2="36" stroke="#475569" stroke-width="1"/>
+        <line x1="15" y1="64" x2="225" y2="64" stroke="#475569" stroke-width="1"/>
+        <polygon points="50,8 190,8 175,34 65,34" fill="#64748b" stroke="#334155" stroke-width="1.5"/>
+        <text x="120" y="24" fill="#fef08a" font-size="8.5" font-family="'Press Start 2P', monospace" font-weight="bold" text-anchor="middle">LIVE KITCHEN 🍳</text>
+        <rect x="25" y="74" width="190" height="42" fill="#94a3b8" stroke="#475569" stroke-width="2" rx="2"/>
+        <ellipse cx="75" cy="74" rx="28" ry="8" fill="#1e293b"/>
+        <path d="M 52 72 Q 75 90 98 72 Z" fill="#0f172a"/>
+        <polygon points="68,76 75,64 82,76" fill="#f97316"/>
+        <polygon points="72,76 75,68 78,76" fill="#fde047"/>
+        <circle cx="68" cy="54" r="3" fill="#e2e8f0" opacity="0.7"/>
+        <circle cx="78" cy="46" r="4" fill="#e2e8f0" opacity="0.6"/>
+        <circle cx="72" cy="38" r="5" fill="#e2e8f0" opacity="0.5"/>
+        <ellipse cx="165" cy="74" rx="26" ry="7" fill="#1e293b"/>
+        <rect x="144" y="56" width="42" height="20" fill="#cbd5e1" stroke="#475569" stroke-width="1.5" rx="2"/>
+        <ellipse cx="165" cy="56" rx="21" ry="5" fill="#f87171"/>
+        <circle cx="160" cy="44" r="3" fill="#e2e8f0" opacity="0.7"/>
+        <circle cx="168" cy="38" r="4" fill="#e2e8f0" opacity="0.5"/>
+      </svg>
+    `;
+  }
+
+  if (spriteType === 'bar') {
+    return `
+      <svg viewBox="0 0 240 130" style="width:100%; height:100%;">
+        <rect x="18" y="10" width="204" height="110" fill="#1e1b4b" rx="4" stroke="#312e81" stroke-width="2"/>
+        <rect x="36" y="16" width="168" height="16" fill="#4338ca" rx="2"/>
+        <text x="120" y="28" fill="#fde047" font-size="8.5" font-family="'Press Start 2P', monospace" font-weight="bold" text-anchor="middle">DRINK & CAFE BAR 🥤</text>
+        <rect x="24" y="74" width="192" height="42" fill="#78350f" stroke="#451a03" stroke-width="2" rx="2"/>
+        <line x1="24" y1="84" x2="216" y2="84" stroke="#92400e" stroke-width="3"/>
+        <rect x="52" y="50" width="16" height="26" fill="#78350f" rx="2" stroke="#fde68a" stroke-width="1"/>
+        <line x1="60" y1="42" x2="68" y2="60" stroke="#f43f5e" stroke-width="2"/>
+        <rect x="80" y="48" width="18" height="28" fill="#15803d" rx="2" stroke="#bbf7d0" stroke-width="1"/>
+        <line x1="89" y1="40" x2="84" y2="58" stroke="#38bdf8" stroke-width="2"/>
+        <rect x="110" y="48" width="18" height="28" fill="#ea580c" rx="2" stroke="#fed7aa" stroke-width="1"/>
+        <line x1="120" y1="40" x2="116" y2="58" stroke="#facc15" stroke-width="2"/>
+        <rect x="150" y="38" width="56" height="38" fill="#334155" stroke="#1e293b" stroke-width="2" rx="2"/>
+        <rect x="156" y="44" width="10" height="10" fill="#ef4444" rx="1"/>
+        <rect x="172" y="44" width="10" height="10" fill="#f59e0b" rx="1"/>
+        <rect x="188" y="44" width="10" height="10" fill="#3b82f6" rx="1"/>
+        <rect x="160" y="60" width="36" height="6" fill="#64748b"/>
+      </svg>
+    `;
+  }
+
+  // Default: chiller (ตู้แช่เย็น)
+  return `
+    <svg viewBox="0 0 240 130" style="width:100%; height:100%;">
+      <rect x="20" y="8" width="200" height="114" fill="#1e293b" rx="4" stroke="#475569" stroke-width="3"/>
+      <rect x="28" y="14" width="184" height="18" fill="#38bdf8" rx="2"/>
+      <text x="120" y="27" fill="#0f172a" font-size="9" font-family="'Press Start 2P', monospace" font-weight="bold" text-anchor="middle">COLD DRINKS ❄</text>
+      <rect x="28" y="36" width="88" height="80" fill="#0284c7" opacity="0.35" stroke="#38bdf8" stroke-width="2"/>
+      <rect x="124" y="36" width="88" height="80" fill="#0284c7" opacity="0.35" stroke="#38bdf8" stroke-width="2"/>
+      <line x1="30" y1="62" x2="114" y2="62" stroke="#bae6fd" stroke-width="2"/>
+      <line x1="30" y1="88" x2="114" y2="88" stroke="#bae6fd" stroke-width="2"/>
+      <line x1="126" y1="62" x2="210" y2="62" stroke="#bae6fd" stroke-width="2"/>
+      <line x1="126" y1="88" x2="210" y2="88" stroke="#bae6fd" stroke-width="2"/>
+      <rect x="36" y="44" width="8" height="16" fill="#ef4444" rx="1"/>
+      <rect x="48" y="44" width="8" height="16" fill="#ef4444" rx="1"/>
+      <rect x="62" y="42" width="7" height="18" fill="#22c55e" rx="1"/>
+      <rect x="74" y="42" width="7" height="18" fill="#22c55e" rx="1"/>
+      <rect x="88" y="44" width="8" height="16" fill="#3b82f6" rx="1"/>
+      <rect x="36" y="70" width="8" height="16" fill="#f59e0b" rx="1"/>
+      <rect x="48" y="70" width="8" height="16" fill="#f59e0b" rx="1"/>
+      <rect x="62" y="70" width="8" height="16" fill="#ec4899" rx="1"/>
+      <rect x="76" y="70" width="8" height="16" fill="#06b6d4" rx="1"/>
+      <rect x="132" y="42" width="7" height="18" fill="#38bdf8" rx="1"/>
+      <rect x="144" y="42" width="7" height="18" fill="#38bdf8" rx="1"/>
+      <rect x="158" y="44" width="8" height="16" fill="#ca8a04" rx="1"/>
+      <rect x="172" y="44" width="8" height="16" fill="#ca8a04" rx="1"/>
+      <rect x="186" y="42" width="7" height="18" fill="#10b981" rx="1"/>
+      <rect x="134" y="70" width="8" height="16" fill="#a855f7" rx="1"/>
+      <rect x="148" y="70" width="8" height="16" fill="#ef4444" rx="1"/>
+      <rect x="162" y="70" width="8" height="16" fill="#3b82f6" rx="1"/>
+      <rect x="178" y="70" width="8" height="16" fill="#f59e0b" rx="1"/>
+      <rect x="108" y="66" width="4" height="18" fill="#f8fafc" rx="1"/>
+      <rect x="128" y="66" width="4" height="18" fill="#f8fafc" rx="1"/>
+    </svg>
+  `;
+}
+
+// PIXEL ART STOREFRONT (จำลองหน้าร้านจริง: เลือกพื้นที่จัดวาง ตู้แช่, ชั้นวาง, ครัว, บาร์น้ำ)
 // ==========================================================================
-function renderPixelStorefront(drinks, snacks, foods) {
+function renderPixelStorefront(products = []) {
+  const allZones = (orderState.data?.storeZones && orderState.data.storeZones.length > 0)
+    ? orderState.data.storeZones
+    : DEFAULT_STORE_ZONES;
+  const activeZones = allZones.filter(z => z.is_active !== false);
+  const categories = orderState.data?.categories || [];
+  const catMap = new Map(categories.map(c => [c.id, c.name]));
+
+  // Helper to get products in a zone based on category_ids (Approach A)
+  function getZoneProducts(zone) {
+    if (!zone || !Array.isArray(zone.category_ids) || zone.category_ids.length === 0) return [];
+    return products.filter(p => zone.category_ids.includes(p.category_id));
+  }
+
+  // ========================================================================
+  // VIEW A: STORE ZONE DETAIL VIEW (เปิดดูสินค้าข้างในตู้แช่ / ชั้นวาง / ครัว)
+  // ========================================================================
+  if (orderState.selectedStoreZoneId) {
+    const curZone = activeZones.find(z => z.id === orderState.selectedStoreZoneId) || activeZones[0];
+    if (!curZone) {
+      orderState.selectedStoreZoneId = null;
+      return renderPixelStorefront(products);
+    }
+
+    const zoneAllProds = getZoneProducts(curZone);
+    const assignedCats = (curZone.category_ids || []).map(cid => ({
+      id: cid,
+      name: catMap.get(cid) || cid,
+      count: zoneAllProds.filter(p => p.category_id === cid).length
+    }));
+
+    let displayedProds = zoneAllProds;
+    if (orderState.activeZoneCategory !== 'ALL') {
+      displayedProds = displayedProds.filter(p => p.category_id === orderState.activeZoneCategory);
+    }
+
+    return `
+      <div class="co-pixel-storefront">
+        <!-- Retro Awning Roof -->
+        <div class="co-storefront-roof"></div>
+
+        <!-- Zone Header & Back Button -->
+        <div class="co-zone-detail-header">
+          <button
+            type="button"
+            class="co-zone-back-btn"
+            onclick="orderState.selectedStoreZoneId=null; orderState.activeZoneCategory='ALL'; render();"
+          >
+            ◀ กลับหน้าร้าน (เลือกตู้/จุดอื่น)
+          </button>
+          
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+            <div>
+              <div class="co-zone-detail-title">
+                <span>${curZone.icon || '🏪'}</span>
+                <span>${curZone.name}</span>
+              </div>
+              <div style="font-size:12.5px; color:#cbd5e1; margin-top:3px;">
+                ${curZone.description || 'เลือกสินค้าที่ต้องการแล้วกดหยิบใส่ตะกร้า'}
+              </div>
+            </div>
+            <div style="background:#0d9488; color:#fff; font-size:11.5px; font-weight:700; padding:4px 10px; border-radius:8px;">
+              สินค้าในจุดนี้ ${zoneAllProds.length} รายการ
+            </div>
+          </div>
+        </div>
+
+        <!-- Sub-Category Filter Pills inside this Zone -->
+        ${assignedCats.length > 1 ? `
+          <div class="co-zone-cat-pills">
+            <button
+              type="button"
+              class="co-pill"
+              data-active="${orderState.activeZoneCategory === 'ALL'}"
+              onclick="orderState.activeZoneCategory='ALL'; render();"
+            >
+              ทั้งหมด (${zoneAllProds.length})
+            </button>
+            ${assignedCats.map(c => `
+              <button
+                type="button"
+                class="co-pill"
+                data-active="${orderState.activeZoneCategory === c.id}"
+                onclick="orderState.activeZoneCategory='${c.id}'; render();"
+              >
+                ${c.name.split('(')[0].trim()} (${c.count})
+              </button>
+            `).join('')}
+          </div>
+        ` : ''}
+
+        <!-- Zone Products Showcase (Pixel Shelves) -->
+        <div class="co-pixel-modules">
+          <div class="co-pixel-zone">
+            <div class="${curZone.type === 'CHILLER' ? 'co-cooler-case' : (curZone.type === 'KITCHEN' ? 'co-kitchen-case' : 'co-shelf-case')}">
+              <div class="co-cooler-shelf">
+                ${displayedProds.length === 0 ? `
+                  <div style="grid-column: 1 / -1; text-align:center; padding:40px 16px; color:#94a3b8;">
+                    <div style="font-size:32px; margin-bottom:8px;">📦</div>
+                    <div style="font-weight:700; font-size:14px;">ยังไม่มีสินค้าในหมวดหมู่นี้</div>
+                    <div style="font-size:11.5px; margin-top:2px;">สามารถตั้งค่าหมวดหมู่สินค้าของจุดนี้ได้จากระบบหลังบ้าน</div>
+                  </div>
+                ` : displayedProds.map(p => {
+                  const isFood = p.item_type === 'FOOD';
+                  const isOutOfStock = !isFood && p.track_stock && (p.stock_qty <= 0);
+
+                  return `
+                    <div
+                      class="co-pixel-item"
+                      style="${isOutOfStock ? 'opacity:0.65;' : ''}"
+                      onclick="${isOutOfStock ? `alert('สินค้านี้หมดชั่วคราว');` : `addToCartDirect(${JSON.stringify(p).replace(/"/g, '&quot;')})`}"
+                    >
+                      <div class="co-item-sprite">${getSpriteIcon(p)}</div>
+                      <div class="co-item-name">${p.name}</div>
+                      <div class="co-item-price">${formatMoney(p.price)}</div>
+                      
+                      <div class="co-item-stock-tag" style="${isFood ? 'color:#fca5a5;' : (isOutOfStock ? 'color:#ef4444; font-weight:800;' : '')}">
+                        ${isFood ? '🍳 สั่งปรุงสด' : (isOutOfStock ? '❌ สินค้าหมด' : `เหลือ ${p.stock_qty || 0} ${p.unit}`)}
+                      </div>
+
+                      <button
+                        type="button"
+                        class="co-item-add-btn"
+                        style="${isOutOfStock ? 'background:#64748b; cursor:not-allowed;' : ''}"
+                      >
+                        ${isOutOfStock ? 'สินค้าหมด' : (isFood ? '+ สั่งจานนี้' : '+ หยิบ')}
+                      </button>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ========================================================================
+  // VIEW B: VIRTUAL STOREFRONT HALL (หน้าโถงร้าน: แสดงตู้แช่ ชั้นวาง ครัว บาร์น้ำ ทั้งหมด)
+  // ========================================================================
   return `
     <div class="co-pixel-storefront">
       <!-- Retro Awning Roof -->
@@ -778,84 +1064,82 @@ function renderPixelStorefront(drinks, snacks, foods) {
       <!-- Store Sign -->
       <div class="co-storefront-sign">
         <div class="co-pixel-title">★ ONG CO PIXEL STOREFRONT ★</div>
-        <span class="co-open-sign">● OPEN</span>
+        <span class="co-open-sign">● OPEN พร้อมรับออเดอร์</span>
       </div>
 
-      <div class="co-pixel-modules">
-        <!-- 1. Cooler Case: เครื่องดื่มเย็นเจี๊ยบ & น้ำแข็ง -->
-        <div class="co-pixel-zone">
-          <div class="co-zone-header">
-            <div class="co-zone-label">
-              <span style="font-size:16px;">❄️</span>
-              <span>ตู้แช่เย็นเครื่องดื่ม (Cold Beverage Showcase)</span>
-            </div>
-            <span class="co-zone-sub">คลิกหยิบใส่ตะกร้า</span>
+      <!-- Notice Banner -->
+      <div class="co-pixel-hall-banner">
+        <div>
+          <div class="co-pixel-hall-title">
+            <span>🏪</span>
+            <span>ยินดีต้อนรับสู่ร้านค้าเสมือนจริง</span>
           </div>
-
-          <div class="co-cooler-case">
-            <div class="co-cooler-shelf">
-              ${drinks.map(p => `
-                <div class="co-pixel-item" onclick="addToCartDirect(${JSON.stringify(p).replace(/"/g, '&quot;')})">
-                  <div class="co-item-sprite">${getSpriteIcon(p)}</div>
-                  <div class="co-item-name">${p.name}</div>
-                  <div class="co-item-price">${formatMoney(p.price)}</div>
-                  <div class="co-item-stock-tag">เหลือ ${p.stock_qty || 0} ${p.unit}</div>
-                  <button type="button" class="co-item-add-btn">+ หยิบ</button>
-                </div>
-              `).join('')}
-            </div>
+          <div class="co-pixel-hall-subtitle">
+            แตะเลือก <b>ตู้แช่, ชั้นวางสินค้า, หรือครัวตามสั่ง</b> ด้านล่าง เพื่อเดินเลือกสินค้าและหยิบใส่ตะกร้า
           </div>
         </div>
+        <button
+          type="button"
+          class="co-view-btn"
+          style="background:#0d9488; color:#fff; border-color:#0d9488;"
+          onclick="orderState.viewMode='LIST'; render();"
+        >
+          🔍 ค้นหาด่วน (List View)
+        </button>
+      </div>
 
-        <!-- 2. Kitchen Station: ครัวตามสั่ง & อาหารปรุงสด -->
-        <div class="co-pixel-zone">
-          <div class="co-zone-header">
-            <div class="co-zone-label">
-              <span style="font-size:16px;">🍳</span>
-              <span>ครัวอาหารตามสั่ง (Live Cook Station)</span>
-            </div>
-            <span class="co-zone-sub">เลือกความเผ็ด & ท็อปปิ้งไข่ได้</span>
-          </div>
+      <!-- Grid of Store Zones (ตู้แช่ 1, ตู้แช่ 2, ชั้นวาง, ครัว, บาร์น้ำ) -->
+      <div class="co-pixel-hall-grid">
+        ${activeZones.map(zone => {
+          const zoneProds = getZoneProducts(zone);
+          const assignedCatNames = (zone.category_ids || []).map(cid => catMap.get(cid) || cid);
 
-          <div class="co-kitchen-case">
-            <div class="co-cooler-shelf">
-              ${foods.map(p => `
-                <div class="co-pixel-item" onclick="addToCartDirect(${JSON.stringify(p).replace(/"/g, '&quot;')})">
-                  <div class="co-item-sprite">${getSpriteIcon(p)}</div>
-                  <div class="co-item-name">${p.name}</div>
-                  <div class="co-item-price">${formatMoney(p.price)}</div>
-                  <div class="co-item-stock-tag" style="color:#fca5a5;">สั่งปรุงสด</div>
-                  <button type="button" class="co-item-add-btn">+ สั่งจานนี้</button>
+          return `
+            <div
+              class="co-zone-card"
+              onclick="orderState.selectedStoreZoneId='${zone.id}'; orderState.activeZoneCategory='ALL'; render(); window.scrollTo({ top: 380, behavior: 'smooth' });"
+            >
+              <!-- Zone Pixel Art Visual -->
+              <div class="co-zone-visual">
+                ${renderStoreZonePixelSprite(zone.pixel_sprite || 'chiller', zone.custom_image_url || '')}
+                
+                <div class="co-zone-badge-type">
+                  <span>${zone.icon || '🏪'}</span>
+                  <span>${zone.type === 'CHILLER' ? 'ตู้แช่เย็น' : (zone.type === 'KITCHEN' ? 'ครัวอาหาร' : (zone.type === 'BAR' ? 'บาร์เครื่องดื่ม' : 'ชั้นวางสินค้า'))}</span>
                 </div>
-              `).join('')}
-            </div>
-          </div>
-        </div>
 
-        <!-- 3. Grocery Shelf: ขนม & ของชำ -->
-        <div class="co-pixel-zone">
-          <div class="co-zone-header">
-            <div class="co-zone-label">
-              <span style="font-size:16px;">🥫</span>
-              <span>ชั้นวางของชำ & ขนมทานเล่น (Snack Shelf)</span>
-            </div>
-            <span class="co-zone-sub">คลิกหยิบใส่ตะกร้า</span>
-          </div>
-
-          <div class="co-shelf-case">
-            <div class="co-cooler-shelf">
-              ${snacks.map(p => `
-                <div class="co-pixel-item" onclick="addToCartDirect(${JSON.stringify(p).replace(/"/g, '&quot;')})">
-                  <div class="co-item-sprite">${getSpriteIcon(p)}</div>
-                  <div class="co-item-name">${p.name}</div>
-                  <div class="co-item-price">${formatMoney(p.price)}</div>
-                  <div class="co-item-stock-tag">เหลือ ${p.stock_qty || 0} ${p.unit}</div>
-                  <button type="button" class="co-item-add-btn">+ หยิบ</button>
+                <div class="co-zone-badge-count">
+                  ${zoneProds.length} รายการ
                 </div>
-              `).join('')}
+              </div>
+
+              <!-- Zone Information & Actions -->
+              <div class="co-zone-body">
+                <div class="co-zone-name">
+                  <span>${zone.name}</span>
+                </div>
+
+                <div class="co-zone-desc">
+                  ${zone.description || 'แตะเพื่อเปิดดูสินค้าภายในจุดนี้'}
+                </div>
+
+                ${assignedCatNames.length > 0 ? `
+                  <div class="co-zone-cats">
+                    ${assignedCatNames.slice(0, 3).map(cn => `
+                      <span class="co-zone-cat-tag">🏷️ ${cn.split('(')[0].trim()}</span>
+                    `).join('')}
+                    ${assignedCatNames.length > 3 ? `<span class="co-zone-cat-tag">+${assignedCatNames.length - 3}</span>` : ''}
+                  </div>
+                ` : ''}
+
+                <button type="button" class="co-zone-btn">
+                  <span>🛒 เดินไปดูที่จุดนี้</span>
+                  <span>▶</span>
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
+          `;
+        }).join('')}
       </div>
     </div>
   `;
