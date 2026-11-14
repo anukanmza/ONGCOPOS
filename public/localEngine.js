@@ -75,10 +75,12 @@ function createInitialSeedState() {
       custom_landmarks: []
     },
     storeZones: [
-      { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', sort_order: 1, is_active: true },
-      { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', sort_order: 2, is_active: true },
-      { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', sort_order: 3, is_active: true },
-      { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', sort_order: 4, is_active: true }
+      { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', grid_row: 1, grid_col: 1, col_span: 1, row_span: 1, sort_order: 1, is_active: true },
+      { id: 'ZONE-CHILLER-2', name: 'ตู้แช่ 2 (นมสด & เครื่องดื่มชูกำลัง)', type: 'CHILLER', icon: '🧊', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'นมพร้อมดื่ม ชา กาแฟกระป๋อง และเครื่องดื่มชูกำลัง', grid_row: 1, grid_col: 2, col_span: 1, row_span: 1, sort_order: 2, is_active: true },
+      { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', grid_row: 2, grid_col: 2, col_span: 2, row_span: 1, sort_order: 3, is_active: true },
+      { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', grid_row: 1, grid_col: 4, col_span: 1, row_span: 1, sort_order: 4, is_active: true },
+      { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', grid_row: 1, grid_col: 5, col_span: 2, row_span: 1, sort_order: 5, is_active: true },
+      { id: 'ZONE-FRUIT-1', name: 'กระบะผลไม้ & ของสด', type: 'FRUIT', icon: '🍉', pixel_sprite: 'fruit', custom_image_url: '', category_ids: [], description: 'แตงโม กล้วย แอปเปิ้ล ผลไม้สดตามฤดูกาล', grid_row: 3, grid_col: 5, col_span: 2, row_span: 1, sort_order: 6, is_active: true }
     ],
     modifiers: [
       { id: 'MOD-LESS-SPICY', group_id: 'GRP-SPICY', name: 'เผ็ดน้อย', voice_keywords: ['เผ็ดน้อย', 'พริกเม็ดเดียว'], extra_price: 0, extra_cost: 0 },
@@ -251,10 +253,12 @@ function loadLocalDb() {
         }
         if (!Array.isArray(parsed.storeZones)) {
           parsed.storeZones = [
-            { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', sort_order: 1, is_active: true },
-            { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', sort_order: 2, is_active: true },
-            { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', sort_order: 3, is_active: true },
-            { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', sort_order: 4, is_active: true }
+            { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', grid_row: 1, grid_col: 1, col_span: 1, row_span: 1, sort_order: 1, is_active: true },
+            { id: 'ZONE-CHILLER-2', name: 'ตู้แช่ 2 (นมสด & เครื่องดื่มชูกำลัง)', type: 'CHILLER', icon: '🧊', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'นมพร้อมดื่ม ชา กาแฟกระป๋อง และเครื่องดื่มชูกำลัง', grid_row: 1, grid_col: 2, col_span: 1, row_span: 1, sort_order: 2, is_active: true },
+            { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', grid_row: 2, grid_col: 2, col_span: 2, row_span: 1, sort_order: 3, is_active: true },
+            { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', grid_row: 1, grid_col: 4, col_span: 1, row_span: 1, sort_order: 4, is_active: true },
+            { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', grid_row: 1, grid_col: 5, col_span: 2, row_span: 1, sort_order: 5, is_active: true },
+            { id: 'ZONE-FRUIT-1', name: 'กระบะผลไม้ & ของสด', type: 'FRUIT', icon: '🍉', pixel_sprite: 'fruit', custom_image_url: '', category_ids: [], description: 'แตงโม กล้วย แอปเปิ้ล ผลไม้สดตามฤดูกาล', grid_row: 3, grid_col: 5, col_span: 2, row_span: 1, sort_order: 6, is_active: true }
           ];
           changed = true;
         }
@@ -1626,6 +1630,10 @@ window.LocalPosEngine = {
       custom_image_url: body.custom_image_url || '',
       category_ids: Array.isArray(body.category_ids) ? body.category_ids : [],
       description: (body.description || '').trim(),
+      grid_row: Number(body.grid_row) || 1,
+      grid_col: Number(body.grid_col) || 1,
+      col_span: Number(body.col_span) || 1,
+      row_span: Number(body.row_span) || 1,
       sort_order: Number(body.sort_order) || 1,
       is_active: body.is_active !== undefined ? Boolean(body.is_active) : true
     };

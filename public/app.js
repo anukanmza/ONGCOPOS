@@ -1055,6 +1055,10 @@ async function saveStoreZoneForm(formEl) {
   const pixel_sprite = f.zone_pixel_sprite.value || 'chiller';
   const custom_image_url = (f.zone_custom_image_url.value || '').trim();
   const description = (f.zone_desc.value || '').trim();
+  const grid_row = Number(f.zone_grid_row ? f.zone_grid_row.value : 1) || 1;
+  const grid_col = Number(f.zone_grid_col ? f.zone_grid_col.value : 1) || 1;
+  const col_span = Number(f.zone_col_span ? f.zone_col_span.value : 1) || 1;
+  const row_span = Number(f.zone_row_span ? f.zone_row_span.value : 1) || 1;
   const sort_order = Number(f.zone_sort_order.value) || 1;
 
   if (!name) {
@@ -1074,6 +1078,10 @@ async function saveStoreZoneForm(formEl) {
     custom_image_url,
     category_ids,
     description,
+    grid_row,
+    grid_col,
+    col_span,
+    row_span,
     sort_order
   };
 
@@ -6846,6 +6854,78 @@ function renderStoreZonesModal() {
           <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showStoreZonesModal=false; state.editingStoreZone=null; render();">✕ ปิด</button>
         </div>
 
+        <!-- ผังจัดวางพื้นที่ในร้าน (Floor Plan Grid Editor 6 คอลัมน์ x 4 แถว) -->
+        <div style="background:#0f172a; border:2px solid #334155; border-radius:12px; padding:14px; margin-bottom:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div style="color:#fde047; font-size:12.5px; font-weight:800; display:flex; align-items:center; gap:6px;">
+              <span>🗺️ ผังจัดวางหน้าร้านพิกเซล (Floor Plan Grid 6×4)</span>
+            </div>
+            <span style="font-size:11px; color:#94a3b8;">คลิกช่องว่างเพื่อย้าย/วางของที่นั่น หรือคลิกตู้เพื่อแก้ไข</span>
+          </div>
+
+          <div style="display:grid; grid-template-columns:repeat(6, 1fr); gap:8px;">
+            ${(function() {
+              const COLS = 6;
+              const ROWS = 4;
+              const adminCells = {};
+              zones.forEach(z => {
+                const r = Math.max(1, Math.min(ROWS, Number(z.grid_row) || 1));
+                const c = Math.max(1, Math.min(COLS, Number(z.grid_col) || 1));
+                const span = Math.max(1, Math.min(2, Number(z.col_span) || 1));
+                adminCells[`${r},${c}`] = { isStart: true, zone: z, span };
+                for (let s = 1; s < span; s++) {
+                  adminCells[`${r},${c + s}`] = { isCovered: true };
+                }
+              });
+
+              let adminGridHtml = '';
+              for (let r = 1; r <= ROWS; r++) {
+                for (let c = 1; c <= COLS; c++) {
+                  const cell = adminCells[`${r},${c}`];
+                  if (cell) {
+                    if (cell.isStart) {
+                      const z = cell.zone;
+                      const isCurrentEdit = ez && ez.id === z.id;
+                      const safeZ = JSON.stringify(z).replace(/"/g, '&quot;');
+                      adminGridHtml += `
+                        <div
+                          style="grid-column:${c} / span ${cell.span}; grid-row:${r}; background:${isCurrentEdit ? '#fef3c7' : '#fff'}; border:2px solid ${isCurrentEdit ? '#f59e0b' : '#38bdf8'}; border-radius:8px; padding:6px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer; box-shadow:0 2px 4px rgba(0,0,0,0.15);"
+                          onclick="state.editingStoreZone=${safeZ}; render();"
+                          title="คลิกเพื่อแก้ไข ${z.name}"
+                        >
+                          <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="font-size:14px;">${z.icon || '🏪'}</span>
+                            <span style="font-size:9.5px; background:#eff6ff; color:#2563eb; font-weight:700; padding:1px 4px; border-radius:4px;">R${r}:C${c}</span>
+                          </div>
+                          <div style="font-weight:700; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; color:#0f172a;">
+                            ${z.name}
+                          </div>
+                          <div style="font-size:9.5px; color:#64748b;">
+                            ${z.pixel_sprite || 'chiller'} ${cell.span > 1 ? '(2 ช่อง)' : ''}
+                          </div>
+                        </div>
+                      `;
+                    }
+                  } else {
+                    const isSelectedSlot = ez && ez.grid_row === r && ez.grid_col === c;
+                    adminGridHtml += `
+                      <div
+                        style="grid-column:${c}; grid-row:${r}; background:${isSelectedSlot ? '#1e3a8a' : '#1e293b'}; border:1.5px dashed ${isSelectedSlot ? '#60a5fa' : '#475569'}; border-radius:8px; min-height:55px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; padding:2px;"
+                        onclick="state.editingStoreZone = { ...(state.editingStoreZone || {}), grid_row:${r}, grid_col:${c} }; render();"
+                        title="คลิกเพื่อเลือกตำแหน่งนี้ (แถว ${r}, ช่อง ${c})"
+                      >
+                        <span style="font-size:10px; color:${isSelectedSlot ? '#93c5fd' : '#94a3b8'};">+ R${r}:C${c}</span>
+                        <span style="font-size:9px; color:#64748b;">(ว่าง)</span>
+                      </div>
+                    `;
+                  }
+                }
+              }
+              return adminGridHtml;
+            })()}
+          </div>
+        </div>
+
         <!-- ฟอร์มเพิ่ม / แก้ไขพื้นที่จัดวาง -->
         <div style="background:var(--ttl-page); border:1px solid var(--ttl-rule); border-radius:12px; padding:16px; margin-bottom:20px;">
           <div style="font-weight:700; font-size:14px; margin-bottom:12px; color:var(--ttl-ink); display:flex; justify-content:space-between; align-items:center;">
@@ -6876,6 +6956,8 @@ function renderStoreZonesModal() {
                   <option value="SHELF" ${ez && ez.zone_type === 'SHELF' ? 'selected' : ''}>🧺 ชั้นวางสินค้า (Shelf)</option>
                   <option value="KITCHEN" ${ez && ez.zone_type === 'KITCHEN' ? 'selected' : ''}>🍳 ครัวอาหาร (Kitchen)</option>
                   <option value="BAR" ${ez && ez.zone_type === 'BAR' ? 'selected' : ''}>☕ บาร์น้ำ/ชงดื่ม (Bar)</option>
+                  <option value="FRUIT" ${ez && ez.zone_type === 'FRUIT' ? 'selected' : ''}>🍉 กระบะผลไม้ & ของสด (Fruit)</option>
+                  <option value="CASHIER" ${ez && ez.zone_type === 'CASHIER' ? 'selected' : ''}>🏪 แคชเชียร์ (Cashier)</option>
                   <option value="OTHER" ${ez && ez.zone_type === 'OTHER' ? 'selected' : ''}>📦 อื่นๆ (Other)</option>
                 </select>
               </div>
@@ -6893,6 +6975,39 @@ function renderStoreZonesModal() {
               </div>
             </div>
 
+            <!-- ตำแหน่งบนผังห้อง (Grid Placement) -->
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:12px; background:#fff; border:1px solid var(--ttl-rule); padding:10px; border-radius:8px;">
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ตำแหน่งแถว (Row 1-4)</label>
+                <select name="zone_grid_row" class="ttl-input">
+                  <option value="1" ${ez && ez.grid_row === 1 ? 'selected' : ''}>แถว 1 (ผนังหลังร้าน: ตู้แช่/ครัว/บาร์)</option>
+                  <option value="2" ${ez && ez.grid_row === 2 ? 'selected' : ''}>แถว 2 (ทางเดินกลางร้าน: ชั้นวางกลาง)</option>
+                  <option value="3" ${ez && ez.grid_row === 3 ? 'selected' : ''}>แถว 3 (ทางเดินหน้าร้าน: ผลไม้/ของสด)</option>
+                  <option value="4" ${ez && ez.grid_row === 4 ? 'selected' : ''}>แถว 4 (โซนหน้าร้าน / ทางเข้า)</option>
+                </select>
+              </div>
+
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ตำแหน่งคอลัมน์ (Column 1-6)</label>
+                <select name="zone_grid_col" class="ttl-input">
+                  <option value="1" ${ez && ez.grid_col === 1 ? 'selected' : ''}>คอลัมน์ 1 (ซ้ายสุด)</option>
+                  <option value="2" ${ez && ez.grid_col === 2 ? 'selected' : ''}>คอลัมน์ 2</option>
+                  <option value="3" ${ez && ez.grid_col === 3 ? 'selected' : ''}>คอลัมน์ 3</option>
+                  <option value="4" ${ez && ez.grid_col === 4 ? 'selected' : ''}>คอลัมน์ 4</option>
+                  <option value="5" ${ez && ez.grid_col === 5 ? 'selected' : ''}>คอลัมน์ 5</option>
+                  <option value="6" ${ez && ez.grid_col === 6 ? 'selected' : ''}>คอลัมน์ 6 (ขวาสุด)</option>
+                </select>
+              </div>
+
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ความกว้าง (Span)</label>
+                <select name="zone_col_span" class="ttl-input">
+                  <option value="1" ${!ez || ez.col_span === 1 ? 'selected' : ''}>1 ช่องปกติ</option>
+                  <option value="2" ${ez && ez.col_span === 2 ? 'selected' : ''}>2 ช่องกว้าง (ตู้คู่ / เคาน์เตอร์ยาว)</option>
+                </select>
+              </div>
+            </div>
+
             <!-- Sprite / Pixel Art Image Selection -->
             <div style="display:grid; grid-template-columns:1fr 1.2fr 80px; gap:12px; margin-bottom:12px; align-items:start;">
               <div>
@@ -6902,6 +7017,9 @@ function renderStoreZonesModal() {
                   <option value="shelf" ${ez && ez.pixel_sprite === 'shelf' ? 'selected' : ''}>🧺 ชั้นวางของไม้ 3 ชั้น (Shelf)</option>
                   <option value="kitchen" ${ez && ez.pixel_sprite === 'kitchen' ? 'selected' : ''}>🍳 ครัวกระทะ & หม้อต้ม (Kitchen)</option>
                   <option value="bar" ${ez && ez.pixel_sprite === 'bar' ? 'selected' : ''}>☕ เคาน์เตอร์บาร์น้ำชง (Bar)</option>
+                  <option value="fruit" ${ez && ez.pixel_sprite === 'fruit' ? 'selected' : ''}>🍉 กระบะผลไม้ & ของสด (Fruit)</option>
+                  <option value="cashier" ${ez && ez.pixel_sprite === 'cashier' ? 'selected' : ''}>🏪 แคชเชียร์ Good Place (Cashier)</option>
+                  <option value="cooler" ${ez && ez.pixel_sprite === 'cooler' ? 'selected' : ''}>❄️ ตู้โชว์กระจกแบบนอน (Cooler)</option>
                 </select>
               </div>
 
@@ -6910,6 +7028,23 @@ function renderStoreZonesModal() {
                 <div style="display:flex; gap:8px; align-items:center;">
                   <input type="file" accept="image/*" class="ttl-input" style="padding:4px;" onchange="uploadCustomZoneImage(this)" />
                   <input type="hidden" id="ttl-zone-custom-img-url" name="zone_custom_image_url" value="${(ez ? ez.custom_image_url || '' : '').replace(/"/g, '&quot;')}" />
+                  <div id="ttl-zone-img-preview" style="min-width:36px; min-height:36px; display:flex; align-items:center; justify-content:center;">
+                    ${ez && ez.custom_image_url ? `<img src="${ez.custom_image_url}" style="max-height:36px; max-width:36px; object-fit:contain; image-rendering:pixelated;" />` : ''}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ลำดับ</label>
+                <input
+                  type="number"
+                  name="zone_sort_order"
+                  class="ttl-input"
+                  style="text-align:center;"
+                  value="${ez ? ez.sort_order || 1 : zones.length + 1}"
+                />
+              </div>
+            </div>
                   <div id="ttl-zone-img-preview" style="min-width:36px; min-height:36px; display:flex; align-items:center; justify-content:center;">
                     ${ez && ez.custom_image_url ? `<img src="${ez.custom_image_url}" style="max-height:36px; max-width:36px; object-fit:contain; image-rendering:pixelated;" />` : ''}
                   </div>
@@ -6986,7 +7121,7 @@ function renderStoreZonesModal() {
                       <span style="font-size:20px;">${z.icon || '🏪'}</span>
                       <div>
                         <div style="font-weight:700; font-size:13.5px; color:var(--ttl-ink);">${z.name}</div>
-                        <div style="font-size:10.5px; color:var(--ttl-muted);">${z.zone_type} • Sprite: ${z.pixel_sprite || 'chiller'}</div>
+                        <div style="font-size:10.5px; color:var(--ttl-muted);">${z.zone_type} • Sprite: ${z.pixel_sprite || 'chiller'} • 📍 แถว ${z.grid_row || 1}:C${z.grid_col || 1}</div>
                       </div>
                     </div>
                     <span style="font-size:11px; font-weight:700; color:#2563eb; background:#eff6ff; padding:2px 6px; border-radius:6px;">

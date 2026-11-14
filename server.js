@@ -1918,14 +1918,16 @@ const server = http.createServer(async (req, res) => {
     // Store Zones Management (พื้นที่จัดวางสินค้าหน้าร้าน: ตู้แช่, ชั้นวาง, ครัว, บาร์น้ำ)
     if (req.method === 'POST' && pathname === '/api/store-zones/save') {
       const body = await parseJsonBody(req);
-      const { id, name, type = 'CHILLER', icon = '❄️', pixel_sprite = 'chiller', custom_image_url = '', category_ids = [], description = '', sort_order = 1, is_active = true } = body;
+      const { id, name, type = 'CHILLER', icon = '❄️', pixel_sprite = 'chiller', custom_image_url = '', category_ids = [], description = '', grid_row = 1, grid_col = 1, col_span = 1, row_span = 1, sort_order = 1, is_active = true } = body;
       if (!name || !name.trim()) return sendJson(res, 400, { error: 'กรุณาระบุชื่อพื้นที่จัดวางสินค้า' });
 
       let storeZones = [
-        { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', sort_order: 1, is_active: true },
-        { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', sort_order: 2, is_active: true },
-        { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', sort_order: 3, is_active: true },
-        { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', sort_order: 4, is_active: true }
+        { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', grid_row: 1, grid_col: 1, col_span: 1, row_span: 1, sort_order: 1, is_active: true },
+        { id: 'ZONE-CHILLER-2', name: 'ตู้แช่ 2 (นมสด & เครื่องดื่มชูกำลัง)', type: 'CHILLER', icon: '🧊', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'นมพร้อมดื่ม ชา กาแฟกระป๋อง และเครื่องดื่มชูกำลัง', grid_row: 1, grid_col: 2, col_span: 1, row_span: 1, sort_order: 2, is_active: true },
+        { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', grid_row: 2, grid_col: 2, col_span: 2, row_span: 1, sort_order: 3, is_active: true },
+        { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', grid_row: 1, grid_col: 4, col_span: 1, row_span: 1, sort_order: 4, is_active: true },
+        { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', grid_row: 1, grid_col: 5, col_span: 2, row_span: 1, sort_order: 5, is_active: true },
+        { id: 'ZONE-FRUIT-1', name: 'กระบะผลไม้ & ของสด', type: 'FRUIT', icon: '🍉', pixel_sprite: 'fruit', custom_image_url: '', category_ids: [], description: 'แตงโม กล้วย แอปเปิ้ล ผลไม้สดตามฤดูกาล', grid_row: 3, grid_col: 5, col_span: 2, row_span: 1, sort_order: 6, is_active: true }
       ];
 
       const row = db.prepare("SELECT note FROM customers WHERE id = 'SYS-STORE-ZONES'").get();
@@ -1947,6 +1949,10 @@ const server = http.createServer(async (req, res) => {
         custom_image_url: custom_image_url || '',
         category_ids: Array.isArray(category_ids) ? category_ids : [],
         description: description ? description.trim() : '',
+        grid_row: Number(grid_row) || 1,
+        grid_col: Number(grid_col) || 1,
+        col_span: Number(col_span) || 1,
+        row_span: Number(row_span) || 1,
         sort_order: Number(sort_order) || 1,
         is_active: Boolean(is_active)
       };

@@ -14,6 +14,7 @@ const orderState = {
   orderMode: 'DELIVERY', // 'DELIVERY' | 'DINE_IN' | 'TAKEAWAY'
   tableId: '',
   selectedStoreZoneId: null, // null = หน้าโถงร้านจำลอง (เลือกตู้/ชั้น/ครัว) | string = ID ของตู้/พื้นที่ที่เลือก
+  storefrontView: 'ROOM', // 'ROOM' (ผังห้อง RPG เหมือนรูปที่ 2) | 'CARDS' (การ์ดแยกตู้)
   activeZoneCategory: 'ALL', // กรองหมวดหมู่ย่อยในตู้นั้น
   activeCategory: 'ALL',
   searchQuery: '',
@@ -877,6 +878,103 @@ function renderStoreZonePixelSprite(spriteType = 'chiller', customImageUrl = '')
     `;
   }
 
+  if (spriteType === 'fruit') {
+    return `
+      <svg viewBox="0 0 240 130" style="width:100%; height:100%;">
+        <!-- Wooden Produce Stand -->
+        <rect x="15" y="30" width="210" height="90" fill="#78350f" rx="3" stroke="#451a03" stroke-width="2"/>
+        <line x1="15" y1="72" x2="225" y2="72" stroke="#92400e" stroke-width="3"/>
+        
+        <!-- Crate 1: Apples -->
+        <rect x="22" y="36" width="58" height="32" fill="#92400e" stroke="#451a03" stroke-width="1.5" rx="2"/>
+        <circle cx="34" cy="50" r="6" fill="#ef4444"/>
+        <circle cx="48" cy="48" r="6" fill="#ef4444"/>
+        <circle cx="62" cy="50" r="6" fill="#ef4444"/>
+        <circle cx="41" cy="58" r="6" fill="#dc2626"/>
+        <circle cx="55" cy="58" r="6" fill="#dc2626"/>
+        
+        <!-- Crate 2: Watermelons -->
+        <rect x="86" y="36" width="68" height="32" fill="#92400e" stroke="#451a03" stroke-width="1.5" rx="2"/>
+        <ellipse cx="102" cy="52" rx="10" ry="8" fill="#16a34a" stroke="#14532d" stroke-width="1"/>
+        <line x1="97" y1="46" x2="107" y2="58" stroke="#15803d" stroke-width="1.5"/>
+        <ellipse cx="124" cy="52" rx="10" ry="8" fill="#16a34a" stroke="#14532d" stroke-width="1"/>
+        <line x1="119" y1="46" x2="129" y2="58" stroke="#15803d" stroke-width="1.5"/>
+        <ellipse cx="142" cy="52" rx="8" ry="7" fill="#16a34a"/>
+        
+        <!-- Crate 3: Bananas -->
+        <rect x="160" y="36" width="58" height="32" fill="#92400e" stroke="#451a03" stroke-width="1.5" rx="2"/>
+        <path d="M 168 56 Q 176 44 186 52" stroke="#facc15" stroke-width="4" fill="none" stroke-linecap="round"/>
+        <path d="M 174 60 Q 182 48 192 56" stroke="#eab308" stroke-width="4" fill="none" stroke-linecap="round"/>
+        <path d="M 188 56 Q 196 44 206 52" stroke="#facc15" stroke-width="4" fill="none" stroke-linecap="round"/>
+        
+        <!-- Bottom Row: Burlap Sack & Oranges -->
+        <ellipse cx="46" cy="98" rx="16" ry="14" fill="#d97706" stroke="#b45309" stroke-width="1.5"/>
+        <circle cx="42" cy="92" r="3" fill="#92400e"/>
+        <circle cx="50" cy="90" r="3" fill="#92400e"/>
+        <rect x="76" y="80" width="80" height="34" fill="#92400e" stroke="#451a03" stroke-width="1.5" rx="2"/>
+        <circle cx="92" cy="96" r="7" fill="#f97316"/>
+        <circle cx="108" cy="94" r="7" fill="#f97316"/>
+        <circle cx="124" cy="96" r="7" fill="#f97316"/>
+        <circle cx="140" cy="94" r="7" fill="#f97316"/>
+        <circle cx="100" cy="104" r="7" fill="#ea580c"/>
+        <circle cx="116" cy="104" r="7" fill="#ea580c"/>
+        
+        <rect x="166" y="78" width="52" height="36" fill="#92400e" stroke="#451a03" stroke-width="1.5" rx="2"/>
+        <circle cx="182" cy="96" r="7" fill="#22c55e"/>
+        <circle cx="198" cy="96" r="7" fill="#84cc16"/>
+        
+        <!-- Price Stand Sign -->
+        <rect x="95" y="10" width="50" height="18" fill="#fef08a" stroke="#ca8a04" stroke-width="1.5" rx="3"/>
+        <text x="120" y="22" fill="#854d0e" font-size="8.5" font-family="'Press Start 2P', monospace" font-weight="bold" text-anchor="middle">FRESH 🍉</text>
+      </svg>
+    `;
+  }
+
+  if (spriteType === 'cashier') {
+    return `
+      <svg viewBox="0 0 240 130" style="width:100%; height:100%;">
+        <!-- Counter Body -->
+        <rect x="20" y="44" width="200" height="76" fill="#78350f" rx="3" stroke="#451a03" stroke-width="2"/>
+        <rect x="50" y="74" width="140" height="24" fill="#92400e" rx="3" stroke="#451a03" stroke-width="1.5"/>
+        <text x="120" y="90" fill="#fef08a" font-size="9" font-family="'Press Start 2P', monospace" font-weight="bold" text-anchor="middle">Good Place</text>
+        
+        <!-- Classic Red Cash Register -->
+        <rect x="36" y="16" width="46" height="34" fill="#ef4444" stroke="#991b1b" stroke-width="2" rx="2"/>
+        <rect x="42" y="22" width="34" height="12" fill="#fee2e2"/>
+        <rect x="44" y="38" width="8" height="6" fill="#fef08a"/>
+        <rect x="56" y="38" width="8" height="6" fill="#fef08a"/>
+        <rect x="68" y="38" width="8" height="6" fill="#fef08a"/>
+        
+        <!-- Cookie / Candy Glass Jar with Blue Lid -->
+        <rect x="94" y="20" width="26" height="28" fill="#bae6fd" opacity="0.8" stroke="#0284c7" stroke-width="1.5" rx="3"/>
+        <rect x="96" y="16" width="22" height="6" fill="#0284c7" rx="1"/>
+        <circle cx="102" cy="30" r="3" fill="#ca8a04"/>
+        <circle cx="110" cy="32" r="3" fill="#92400e"/>
+        <circle cx="106" cy="40" r="3" fill="#ea580c"/>
+        
+        <!-- Receipt Pad & Box -->
+        <rect x="130" y="32" width="22" height="14" fill="#fef3c7" stroke="#d97706" stroke-width="1"/>
+        <rect x="162" y="24" width="38" height="24" fill="#b45309" stroke="#78350f" stroke-width="1.5" rx="2"/>
+        <line x1="162" y1="34" x2="200" y2="34" stroke="#fde047" stroke-width="2"/>
+      </svg>
+    `;
+  }
+
+  if (spriteType === 'cooler') {
+    return `
+      <svg viewBox="0 0 240 130" style="width:100%; height:100%;">
+        <rect x="20" y="30" width="200" height="90" fill="#334155" rx="4" stroke="#1e293b" stroke-width="2"/>
+        <polygon points="25,36 215,36 205,74 35,74" fill="#38bdf8" opacity="0.4" stroke="#0284c7" stroke-width="2"/>
+        <rect x="40" y="44" width="30" height="16" fill="#f87171" rx="2"/>
+        <rect x="80" y="44" width="30" height="16" fill="#fbbf24" rx="2"/>
+        <rect x="120" y="44" width="30" height="16" fill="#34d399" rx="2"/>
+        <rect x="160" y="44" width="30" height="16" fill="#60a5fa" rx="2"/>
+        <rect x="25" y="78" width="190" height="38" fill="#1e293b" rx="2"/>
+        <text x="120" y="102" fill="#93c5fd" font-size="9" font-family="'Press Start 2P', monospace" font-weight="bold" text-anchor="middle">FRESH COOLER ❄</text>
+      </svg>
+    `;
+  }
+
   // Default: chiller (ตู้แช่เย็น)
   return `
     <svg viewBox="0 0 240 130" style="width:100%; height:100%;">
@@ -1054,8 +1152,68 @@ function renderPixelStorefront(products = []) {
   }
 
   // ========================================================================
-  // VIEW B: VIRTUAL STOREFRONT HALL (หน้าโถงร้าน: แสดงตู้แช่ ชั้นวาง ครัว บาร์น้ำ ทั้งหมด)
+  // VIEW B: VIRTUAL STOREFRONT HALL & RPG PIXEL ROOM (หน้าโถงร้านเสมือนจริงแบบรูปที่ 2)
   // ========================================================================
+  const COLS = 6;
+  const ROWS = 4;
+  const cellOccupancy = {};
+
+  activeZones.forEach((zone, idx) => {
+    let r = Number(zone.grid_row);
+    let c = Number(zone.grid_col);
+    if (!r || r < 1 || r > ROWS) {
+      r = Math.min(ROWS, Math.floor(idx / 3) + 1);
+    }
+    if (!c || c < 1 || c > COLS) {
+      c = ((idx % 3) * 2) + 1;
+    }
+    const span = Math.max(1, Math.min(2, Number(zone.col_span) || 1));
+    cellOccupancy[`${r},${c}`] = { isStart: true, zone, span };
+    for (let s = 1; s < span; s++) {
+      cellOccupancy[`${r},${c + s}`] = { isCovered: true };
+    }
+  });
+
+  let roomCellsHtml = '';
+  for (let r = 1; r <= ROWS; r++) {
+    for (let c = 1; c <= COLS; c++) {
+      const occ = cellOccupancy[`${r},${c}`];
+      if (occ) {
+        if (occ.isStart) {
+          const z = occ.zone;
+          const zProds = getZoneProducts(z);
+          roomCellsHtml += `
+            <div
+              class="co-room-slot co-room-fixture"
+              style="grid-column:${c} / span ${occ.span}; grid-row:${r};"
+              onclick="orderState.selectedStoreZoneId='${z.id}'; orderState.activeZoneCategory='ALL'; render(); window.scrollTo({ top: 380, behavior: 'smooth' });"
+              title="คลิกเพื่อเดินไปดูสินค้าที่ ${z.name}"
+            >
+              <!-- Floating Retro Name Plate with Icon & Item Count -->
+              <div class="co-fixture-plate">
+                <span class="co-plate-icon">${z.icon || '🏪'}</span>
+                <span class="co-plate-name">${z.name.split('(')[0].trim()}</span>
+                <span class="co-plate-count">${zProds.length} ชิ้น</span>
+              </div>
+
+              <!-- Pixel Sprite Artwork -->
+              <div class="co-fixture-sprite">
+                ${renderStoreZonePixelSprite(z.pixel_sprite || 'chiller', z.custom_image_url || '')}
+              </div>
+
+              <!-- Floor Shadow -->
+              <div class="co-fixture-shadow"></div>
+            </div>
+          `;
+        }
+      } else {
+        roomCellsHtml += `
+          <div class="co-room-slot co-room-empty" style="grid-column:${c}; grid-row:${r};"></div>
+        `;
+      }
+    }
+  }
+
   return `
     <div class="co-pixel-storefront">
       <!-- Retro Awning Roof -->
@@ -1067,80 +1225,122 @@ function renderPixelStorefront(products = []) {
         <span class="co-open-sign">● OPEN พร้อมรับออเดอร์</span>
       </div>
 
-      <!-- Notice Banner -->
+      <!-- Notice Banner & View Switcher -->
       <div class="co-pixel-hall-banner">
         <div>
           <div class="co-pixel-hall-title">
             <span>🏪</span>
-            <span>ยินดีต้อนรับสู่ร้านค้าเสมือนจริง</span>
+            <span>ผังห้องร้านค้าเสมือนจริง (Interactive Pixel Store)</span>
           </div>
           <div class="co-pixel-hall-subtitle">
-            แตะเลือก <b>ตู้แช่, ชั้นวางสินค้า, หรือครัวตามสั่ง</b> ด้านล่าง เพื่อเดินเลือกสินค้าและหยิบใส่ตะกร้า
+            แตะเลือก <b>ตู้แช่, ชั้นวางสินค้า, บาร์น้ำ หรือครัว</b> ในผังห้องเพื่อเดินดูสินค้าภายในจุดนั้นๆ
           </div>
         </div>
-        <button
-          type="button"
-          class="co-view-btn"
-          style="background:#0d9488; color:#fff; border-color:#0d9488;"
-          onclick="orderState.viewMode='LIST'; render();"
-        >
-          🔍 ค้นหาด่วน (List View)
-        </button>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+          <button
+            type="button"
+            class="co-view-btn"
+            style="${orderState.storefrontView !== 'CARDS' ? 'background:#f59e0b; color:#0f172a; font-weight:800; border-color:#f59e0b;' : 'background:#334155; color:#fff;'}"
+            onclick="orderState.storefrontView='ROOM'; render();"
+          >
+            🏪 ผังห้องร้าน
+          </button>
+          <button
+            type="button"
+            class="co-view-btn"
+            style="${orderState.storefrontView === 'CARDS' ? 'background:#f59e0b; color:#0f172a; font-weight:800; border-color:#f59e0b;' : 'background:#334155; color:#fff;'}"
+            onclick="orderState.storefrontView='CARDS'; render();"
+          >
+            🗂️ การ์ดตู้
+          </button>
+          <button
+            type="button"
+            class="co-view-btn"
+            style="background:#0d9488; color:#fff; border-color:#0d9488;"
+            onclick="orderState.viewMode='LIST'; render();"
+          >
+            🔍 ค้นหาด่วน
+          </button>
+        </div>
       </div>
 
-      <!-- Grid of Store Zones (ตู้แช่ 1, ตู้แช่ 2, ชั้นวาง, ครัว, บาร์น้ำ) -->
-      <div class="co-pixel-hall-grid">
-        ${activeZones.map(zone => {
-          const zoneProds = getZoneProducts(zone);
-          const assignedCatNames = (zone.category_ids || []).map(cid => catMap.get(cid) || cid);
-
-          return `
-            <div
-              class="co-zone-card"
-              onclick="orderState.selectedStoreZoneId='${zone.id}'; orderState.activeZoneCategory='ALL'; render(); window.scrollTo({ top: 380, behavior: 'smooth' });"
-            >
-              <!-- Zone Pixel Art Visual -->
-              <div class="co-zone-visual">
-                ${renderStoreZonePixelSprite(zone.pixel_sprite || 'chiller', zone.custom_image_url || '')}
-                
-                <div class="co-zone-badge-type">
-                  <span>${zone.icon || '🏪'}</span>
-                  <span>${zone.type === 'CHILLER' ? 'ตู้แช่เย็น' : (zone.type === 'KITCHEN' ? 'ครัวอาหาร' : (zone.type === 'BAR' ? 'บาร์เครื่องดื่ม' : 'ชั้นวางสินค้า'))}</span>
-                </div>
-
-                <div class="co-zone-badge-count">
-                  ${zoneProds.length} รายการ
-                </div>
-              </div>
-
-              <!-- Zone Information & Actions -->
-              <div class="co-zone-body">
-                <div class="co-zone-name">
-                  <span>${zone.name}</span>
-                </div>
-
-                <div class="co-zone-desc">
-                  ${zone.description || 'แตะเพื่อเปิดดูสินค้าภายในจุดนี้'}
-                </div>
-
-                ${assignedCatNames.length > 0 ? `
-                  <div class="co-zone-cats">
-                    ${assignedCatNames.slice(0, 3).map(cn => `
-                      <span class="co-zone-cat-tag">🏷️ ${cn.split('(')[0].trim()}</span>
-                    `).join('')}
-                    ${assignedCatNames.length > 3 ? `<span class="co-zone-cat-tag">+${assignedCatNames.length - 3}</span>` : ''}
-                  </div>
-                ` : ''}
-
-                <button type="button" class="co-zone-btn">
-                  <span>🛒 เดินไปดูที่จุดนี้</span>
-                  <span>▶</span>
-                </button>
-              </div>
+      ${orderState.storefrontView !== 'CARDS' ? `
+        <!-- VIEW 1: RPG PIXEL STORE ROOM FLOOR PLAN (แบบรูปที่ 2) -->
+        <div class="co-pixel-room-wrap">
+          <!-- Upper Wood Wall with Clock & Staff Door -->
+          <div class="co-room-wall">
+            <div class="co-room-wall-title">
+              <span>🏠</span>
+              <span>ONG CO CONVENIENCE & KITCHEN</span>
             </div>
-          `;
-        }).join('')}
-      </div>
+            <div class="co-room-wall-decor">
+              <div class="co-room-clock" title="เปิดบริการทุกวัน">🕒</div>
+              <div class="co-room-staff-door" title="ห้องสต็อกสินค้าหลังร้าน">STAFF 🚪</div>
+            </div>
+          </div>
+
+          <!-- Checkerboard Tiled Floor Grid (6 cols x 4 rows) -->
+          <div class="co-room-floor">
+            <div class="co-room-grid">
+              ${roomCellsHtml}
+            </div>
+          </div>
+        </div>
+      ` : `
+        <!-- VIEW 2: Grid of Store Zone Cards -->
+        <div class="co-pixel-hall-grid">
+          ${activeZones.map(zone => {
+            const zoneProds = getZoneProducts(zone);
+            const assignedCatNames = (zone.category_ids || []).map(cid => catMap.get(cid) || cid);
+
+            return `
+              <div
+                class="co-zone-card"
+                onclick="orderState.selectedStoreZoneId='${zone.id}'; orderState.activeZoneCategory='ALL'; render(); window.scrollTo({ top: 380, behavior: 'smooth' });"
+              >
+                <!-- Zone Pixel Art Visual -->
+                <div class="co-zone-visual">
+                  ${renderStoreZonePixelSprite(zone.pixel_sprite || 'chiller', zone.custom_image_url || '')}
+                  
+                  <div class="co-zone-badge-type">
+                    <span>${zone.icon || '🏪'}</span>
+                    <span>${zone.type === 'CHILLER' ? 'ตู้แช่เย็น' : (zone.type === 'KITCHEN' ? 'ครัวอาหาร' : (zone.type === 'BAR' ? 'บาร์เครื่องดื่ม' : (zone.type === 'FRUIT' ? 'ของสด' : 'ชั้นวางสินค้า')))}</span>
+                  </div>
+
+                  <div class="co-zone-badge-count">
+                    ${zoneProds.length} รายการ
+                  </div>
+                </div>
+
+                <!-- Zone Information & Actions -->
+                <div class="co-zone-body">
+                  <div class="co-zone-name">
+                    <span>${zone.name}</span>
+                  </div>
+
+                  <div class="co-zone-desc">
+                    ${zone.description || 'แตะเพื่อเปิดดูสินค้าภายในจุดนี้'}
+                  </div>
+
+                  ${assignedCatNames.length > 0 ? `
+                    <div class="co-zone-cats">
+                      ${assignedCatNames.slice(0, 3).map(cn => `
+                        <span class="co-zone-cat-tag">🏷️ ${cn.split('(')[0].trim()}</span>
+                      `).join('')}
+                      ${assignedCatNames.length > 3 ? `<span class="co-zone-cat-tag">+${assignedCatNames.length - 3}</span>` : ''}
+                    </div>
+                  ` : ''}
+
+                  <button type="button" class="co-zone-btn">
+                    <span>🛒 เดินไปดูที่จุดนี้</span>
+                    <span>▶</span>
+                  </button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `}
     </div>
   `;
 }

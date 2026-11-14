@@ -27,6 +27,12 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+html, body {
+  overflow-x: hidden;
+  width: 100%;
+  max-width: 100vw;
+}
+
 body {
   font-family: 'Noto Sans Thai', 'Inter Tight', sans-serif;
   background: var(--co-bg);
@@ -506,13 +512,16 @@ body {
 .co-delivery-form {
   margin-top: 12px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 @media (max-width: 640px) {
   .co-delivery-form {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) !important;
   }
 }
 
@@ -520,19 +529,30 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .co-label {
   font-size: 11.5px;
   font-weight: 700;
   color: var(--co-ink);
+  white-space: normal;
+  word-break: break-word;
 }
 
 .co-input, .co-select {
-  padding: 8px 12px;
+  display: block;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid var(--co-border);
-  font-size: 13px;
+  font-size: 16px !important; /* Prevents iOS Safari auto-zoom */
   background: #fff;
   color: var(--co-ink);
   outline: none;
@@ -1014,6 +1034,199 @@ body {
   font-size: 12px;
   color: #94a3b8;
   margin-top: 2px;
+}
+
+/* ==========================================================================
+   RPG PIXEL STORE ROOM FLOOR PLAN (ผังห้องร้านค้าเสมือนจริงแบบรูปที่ 2)
+   ========================================================================== */
+.co-pixel-room-wrap {
+  background: #0f172a;
+  border: 3px solid #1e293b;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  margin-bottom: 24px;
+  position: relative;
+}
+
+/* Upper Wall of Room (ไม้กระดานคลาสสิก พร้อมนาฬิกา & ประตู STAFF) */
+.co-room-wall {
+  background: linear-gradient(180deg, #451a03 0%, #78350f 75%, #381a08 100%);
+  border-bottom: 4px solid #1c0d02;
+  padding: 10px 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+  box-shadow: inset 0 -3px 6px rgba(0,0,0,0.4);
+}
+
+.co-room-wall-decor {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.co-room-wall-title {
+  color: #fef08a;
+  font-family: var(--co-pixel-font);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-shadow: 1px 1px 0 #000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.co-room-staff-door {
+  background: #f1f5f9;
+  border: 1.5px solid #334155;
+  border-radius: 4px 4px 0 0;
+  padding: 2px 6px;
+  font-size: 8.5px;
+  font-weight: 800;
+  color: #1e293b;
+  font-family: monospace;
+  box-shadow: 1px 1px 0 #000;
+}
+
+.co-room-clock {
+  background: #f8fafc;
+  border: 2px solid #0f172a;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+
+/* Interactive Room Floor Grid (พื้นกระเบื้องสลับลายหมากรุกแบบเกม RPG) */
+.co-room-floor {
+  background-color: #94a3b8;
+  background-image: 
+    linear-gradient(45deg, #64748b 25%, transparent 25%), 
+    linear-gradient(-45deg, #64748b 25%, transparent 25%), 
+    linear-gradient(45deg, transparent 75%, #64748b 75%), 
+    linear-gradient(-45deg, transparent 75%, #64748b 75%);
+  background-size: 40px 40px;
+  background-position: 0 0, 0 20px, 20px -20px, -20px 0px;
+  padding: 24px 14px 18px;
+  position: relative;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.co-room-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(95px, 1fr));
+  grid-auto-rows: minmax(130px, auto);
+  gap: 14px 10px;
+  min-width: 600px;
+}
+
+/* Each Grid Slot */
+.co-room-slot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.co-room-empty {
+  opacity: 0.12;
+  border: 1px dashed #334155;
+  border-radius: 8px;
+  min-height: 120px;
+  pointer-events: none;
+}
+
+.co-room-fixture {
+  cursor: pointer;
+  transition: transform 0.18s, filter 0.18s;
+  user-select: none;
+  min-height: 120px;
+}
+
+.co-room-fixture:hover {
+  transform: translateY(-4px) scale(1.02);
+  filter: drop-shadow(0 6px 14px rgba(0,0,0,0.45));
+}
+
+.co-room-fixture:active {
+  transform: scale(0.97);
+}
+
+/* Floating Retro Name Tag above fixture */
+.co-fixture-plate {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #0f172a;
+  border: 2px solid #fde047;
+  border-radius: 20px;
+  padding: 3px 8px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  box-shadow: 0 3px 8px rgba(0,0,0,0.6);
+  z-index: 10;
+  pointer-events: none;
+}
+
+.co-plate-icon {
+  font-size: 13px;
+}
+
+.co-plate-name {
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.co-plate-count {
+  background: #2563eb;
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 10px;
+}
+
+/* Sprite Container */
+.co-fixture-sprite {
+  width: 100%;
+  height: 110px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  position: relative;
+  z-index: 5;
+}
+
+.co-fixture-sprite svg,
+.co-fixture-sprite img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));
+}
+
+.co-fixture-shadow {
+  position: absolute;
+  bottom: 0;
+  left: 10%;
+  width: 80%;
+  height: 12px;
+  background: radial-gradient(ellipse at center, rgba(15,23,42,0.5) 0%, transparent 75%);
+  z-index: 2;
+  pointer-events: none;
 }
 
 .co-pixel-hall-grid {

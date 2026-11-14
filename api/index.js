@@ -1384,7 +1384,7 @@ module.exports = async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/store-zones/save') {
-      const { id, name, type = 'CHILLER', icon = '❄️', pixel_sprite = 'chiller', custom_image_url = '', category_ids = [], description = '', sort_order = 1, is_active = true } = body;
+      const { id, name, type = 'CHILLER', icon = '❄️', pixel_sprite = 'chiller', custom_image_url = '', category_ids = [], description = '', grid_row = 1, grid_col = 1, col_span = 1, row_span = 1, sort_order = 1, is_active = true } = body;
       if (!name || !name.trim()) return send(400, { error: 'กรุณาระบุชื่อพื้นที่จัดวางสินค้า' });
 
       let storeZones = [...DEFAULT_STORE_ZONES];
@@ -1407,6 +1407,10 @@ module.exports = async (req, res) => {
         custom_image_url: custom_image_url || '',
         category_ids: Array.isArray(category_ids) ? category_ids : [],
         description: description ? description.trim() : '',
+        grid_row: Number(grid_row) || 1,
+        grid_col: Number(grid_col) || 1,
+        col_span: Number(col_span) || 1,
+        row_span: Number(row_span) || 1,
         sort_order: Number(sort_order) || 1,
         is_active: Boolean(is_active)
       };

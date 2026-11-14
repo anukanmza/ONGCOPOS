@@ -41,7 +41,27 @@ const DEFAULT_STORE_ZONES = [
     custom_image_url: '',
     category_ids: ['CAT-DRINK'],
     description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น',
+    grid_row: 1,
+    grid_col: 1,
+    col_span: 1,
+    row_span: 1,
     sort_order: 1,
+    is_active: true
+  },
+  {
+    id: 'ZONE-CHILLER-2',
+    name: 'ตู้แช่ 2 (นมสด & เครื่องดื่มชูกำลัง)',
+    type: 'CHILLER',
+    icon: '🧊',
+    pixel_sprite: 'chiller',
+    custom_image_url: '',
+    category_ids: ['CAT-DRINK'],
+    description: 'นมพร้อมดื่ม ชา กาแฟกระป๋อง และเครื่องดื่มชูกำลัง',
+    grid_row: 1,
+    grid_col: 2,
+    col_span: 1,
+    row_span: 1,
+    sort_order: 2,
     is_active: true
   },
   {
@@ -53,7 +73,11 @@ const DEFAULT_STORE_ZONES = [
     custom_image_url: '',
     category_ids: ['CAT-SNACK', 'CAT-PANTRY'],
     description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน',
-    sort_order: 2,
+    grid_row: 2,
+    grid_col: 2,
+    col_span: 2,
+    row_span: 1,
+    sort_order: 3,
     is_active: true
   },
   {
@@ -65,7 +89,11 @@ const DEFAULT_STORE_ZONES = [
     custom_image_url: '',
     category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'],
     description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน',
-    sort_order: 3,
+    grid_row: 1,
+    grid_col: 4,
+    col_span: 1,
+    row_span: 1,
+    sort_order: 4,
     is_active: true
   },
   {
@@ -77,7 +105,27 @@ const DEFAULT_STORE_ZONES = [
     custom_image_url: '',
     category_ids: [],
     description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ',
-    sort_order: 4,
+    grid_row: 1,
+    grid_col: 5,
+    col_span: 2,
+    row_span: 1,
+    sort_order: 5,
+    is_active: true
+  },
+  {
+    id: 'ZONE-FRUIT-1',
+    name: 'กระบะผลไม้ & ของสด',
+    type: 'FRUIT',
+    icon: '🍉',
+    pixel_sprite: 'fruit',
+    custom_image_url: '',
+    category_ids: [],
+    description: 'แตงโม กล้วย แอปเปิ้ล ผลไม้สดตามฤดูกาล',
+    grid_row: 3,
+    grid_col: 5,
+    col_span: 2,
+    row_span: 1,
+    sort_order: 6,
     is_active: true
   }
 ];
