@@ -4921,7 +4921,7 @@ function renderModals() {
 
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showModifierGroupModal=false; state.editingModifierGroup=null; state.editingModifierOption=null; state.modalAddingOptionToGroupId=null; render();}">
-        <div class="ttl-modal" style="max-width:760px; max-height:90vh; overflow-y:auto;">
+        <div class="ttl-modal" style="width:min(880px, 96vw); max-width:880px; max-height:90vh; overflow-y:auto; padding:20px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
             <div>
               <div class="ttl-k">FOOD MODIFIERS & GROUPS</div>
@@ -4931,28 +4931,30 @@ function renderModals() {
           </div>
 
           <!-- ฟอร์มเพิ่ม / แก้ไขกลุ่มตัวเลือกพิเศษ -->
-          <form style="padding:14px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:16px;" onsubmit="event.preventDefault(); saveModifierGroupForm(this);">
-            <div style="font-weight:700; font-size:13px; margin-bottom:8px;">${eg ? `✏️ แก้ไขกลุ่ม "${eg.name}"` : '+ สร้างกลุ่มตัวเลือกพิเศษใหม่ (เช่น ระดับความเผ็ด, ท็อปปิ้ง & เพิ่มเติม)'}</div>
+          <form style="padding:14px; border-radius:12px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:16px;" onsubmit="event.preventDefault(); saveModifierGroupForm(this);">
+            <div style="font-weight:700; font-size:13px; margin-bottom:10px; color:var(--ttl-ink);">
+              ${eg ? `✏️ แก้ไขกลุ่ม "${eg.name}"` : '+ สร้างกลุ่มตัวเลือกพิเศษใหม่ (เช่น ระดับความเผ็ด, ท็อปปิ้ง & เพิ่มเติม)'}
+            </div>
             <input type="hidden" name="grp_id" value="${eg ? eg.id : ''}" />
-            <div style="display:grid; grid-template-columns:2fr 2fr 1fr auto; gap:8px; align-items:end;">
-              <div>
-                <label style="font-size:11.5px; font-weight:600;">ชื่อกลุ่มตัวเลือก</label>
-                <input name="grp_name" class="ttl-input" style="height:34px;" placeholder="เช่น ระดับความเผ็ด, ท็อปปิ้ง" value="${(eg?.name || '').replace(/"/g, '&quot;')}" required />
+            <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">
+              <div style="flex:2; min-width:180px;">
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ชื่อกลุ่มตัวเลือก</label>
+                <input name="grp_name" class="ttl-input" style="height:36px; width:100%; box-sizing:border-box;" placeholder="เช่น ระดับความเผ็ด, ท็อปปิ้ง" value="${(eg?.name || '').replace(/"/g, '&quot;')}" required />
               </div>
-              <div>
-                <label style="font-size:11.5px; font-weight:600;">การเลือก (Selection Type)</label>
-                <select name="grp_selection_type" class="ttl-select" style="height:34px;">
+              <div style="flex:2; min-width:220px;">
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">การเลือก (Selection Type)</label>
+                <select name="grp_selection_type" class="ttl-select" style="height:36px; width:100%; box-sizing:border-box;">
                   <option value="SINGLE" ${eg?.selection_type === 'SINGLE' ? 'selected' : ''}>⚪ SINGLE (เลือกได้ 1 อย่าง เช่น เผ็ดน้อย/กลาง/มาก)</option>
                   <option value="MULTIPLE" ${(!eg || eg.selection_type === 'MULTIPLE') ? 'selected' : ''}>☑️ MULTIPLE (เลือกได้หลายอย่าง เช่น +ไข่ดาว +หมูสับ)</option>
                 </select>
               </div>
-              <div>
-                <label style="font-size:11.5px; font-weight:600;">ลำดับแสดง</label>
-                <input name="grp_sort_order" type="number" class="ttl-input" style="height:34px;" value="${eg ? (eg.sort_order || 0) : groups.length + 1}" />
+              <div style="width:90px;">
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ลำดับแสดง</label>
+                <input name="grp_sort_order" type="number" class="ttl-input" style="height:36px; width:100%; box-sizing:border-box;" value="${eg ? (eg.sort_order || 0) : groups.length + 1}" />
               </div>
               <div style="display:flex; gap:6px;">
-                <button type="submit" class="ttl-btn ttl-btn-sm ttl-btn-dark" style="height:34px;">${eg ? 'บันทึก' : '+ สร้างกลุ่ม'}</button>
-                ${eg ? `<button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:34px;" onclick="state.editingModifierGroup=null; render();">ยกเลิก</button>` : ''}
+                <button type="submit" class="ttl-btn ttl-btn-sm ttl-btn-dark" style="height:36px; white-space:nowrap; padding:0 14px;">${eg ? '💾 บันทึกกลุ่ม' : '+ สร้างกลุ่ม'}</button>
+                ${eg ? `<button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:36px; white-space:nowrap;" onclick="state.editingModifierGroup=null; render();">ยกเลิก</button>` : ''}
               </div>
             </div>
           </form>
@@ -4987,31 +4989,33 @@ function renderModals() {
               return `
                 <div style="border:1px solid var(--ttl-rule); border-radius:12px; background:var(--ttl-paper); overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.03);">
                   <!-- Header ของกลุ่ม: คลิกเพื่อ พับ/กาง ตัวเลือกในกลุ่ม -->
-                  <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:var(--ttl-page); border-bottom:${isCollapsed && !isAddingOptionHere ? 'none' : '1px solid var(--ttl-rule)'}; flex-wrap:wrap; gap:8px;">
+                  <div style="padding:10px 14px; background:var(--ttl-page); border-bottom:${isCollapsed && !isAddingOptionHere ? 'none' : '1px solid var(--ttl-rule)'}; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
                     <div 
-                      style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; flex:1; min-width:220px;"
+                      style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; flex-wrap:wrap; flex:1; min-width:260px;"
                       onclick="toggleModifierGroupCollapse('${grp.id}')"
                       title="คลิกเพื่อ${isCollapsed ? 'ขยายดูตัวเลือกในกลุ่มนี้' : 'พับเก็บตัวเลือก'}"
                     >
-                      <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:6px; background:var(--ttl-paper); border:1px solid var(--ttl-rule); font-size:10px; color:var(--ttl-accent); transition:transform 0.2s ease; transform:${isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)'};">
+                      <span style="display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:6px; background:var(--ttl-paper); border:1px solid var(--ttl-rule); font-size:11px; color:var(--ttl-accent); flex-shrink:0; transition:transform 0.2s ease; transform:${isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)'};">
                         ▼
                       </span>
-                      <span style="font-weight:700; font-size:14px; color:var(--ttl-ink);">🎛️ ${grp.name}</span>
-                      <span class="ttl-tag" style="background:${grp.selection_type === 'SINGLE' ? '#fef3c7' : '#e0e7ff'}; color:${grp.selection_type === 'SINGLE' ? '#92400e' : '#3730a3'}; font-size:11px;">
+                      <span style="font-weight:700; font-size:15px; color:var(--ttl-ink); white-space:nowrap;">
+                        🎛️ ${grp.name}
+                      </span>
+                      <span class="ttl-tag" style="background:${grp.selection_type === 'SINGLE' ? '#fef3c7' : '#e0e7ff'}; color:${grp.selection_type === 'SINGLE' ? '#92400e' : '#3730a3'}; font-size:11px; padding:3px 8px; white-space:nowrap; flex-shrink:0;">
                         ${grp.selection_type === 'SINGLE' ? '⚪ เลือกได้ 1 อย่าง (SINGLE)' : '☑️ เลือกได้หลายอย่าง (MULTIPLE)'}
                       </span>
-                      <span style="font-size:11.5px; color:var(--ttl-muted); font-weight:600;">
-                        (${options.length} ตัวเลือก)
+                      <span style="font-size:12px; color:var(--ttl-muted); font-weight:600; white-space:nowrap; flex-shrink:0;">
+                        • ${options.length} ตัวเลือก
                       </span>
-                      <span style="font-size:11px; color:var(--ttl-accent); opacity:0.85; margin-left:2px;">
+                      <span style="font-size:11px; color:var(--ttl-accent); font-weight:600; white-space:nowrap; flex-shrink:0; background:rgba(15,118,110,0.08); padding:2px 7px; border-radius:4px;">
                         ${isCollapsed ? '▶ ดูตัวเลือก' : '▲ พับเก็บ'}
                       </span>
                     </div>
 
-                    <div style="display:flex; gap:6px; align-items:center;">
-                      <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" onclick="state.editingModifierGroup={ id:'${grp.id}', name:'${grp.name.replace(/'/g, "\\'")}', selection_type:'${grp.selection_type}', sort_order:${grp.sort_order || 0} }; render();">✏️ แก้ไขกลุ่ม</button>
-                      <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-danger-outline" onclick="deleteModifierGroupById('${grp.id}', '${grp.name.replace(/'/g, "\\'")}')">🗑️ ลบกลุ่ม</button>
-                      <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-gold" onclick="if(state.collapsedModifierGroupIds) state.collapsedModifierGroupIds['${grp.id}']=false; state.modalAddingOptionToGroupId='${grp.id}'; state.editingModifierOption=null; render();">+ เพิ่มตัวเลือก</button>
+                    <div style="display:flex; gap:6px; align-items:center; flex-shrink:0;">
+                      <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" style="white-space:nowrap;" onclick="state.editingModifierGroup={ id:'${grp.id}', name:'${grp.name.replace(/'/g, "\\'")}', selection_type:'${grp.selection_type}', sort_order:${grp.sort_order || 0} }; render();">✏️ แก้ไขกลุ่ม</button>
+                      <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-danger-outline" style="white-space:nowrap;" onclick="deleteModifierGroupById('${grp.id}', '${grp.name.replace(/'/g, "\\'")}')">🗑️ ลบกลุ่ม</button>
+                      <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-gold" style="font-weight:600; white-space:nowrap;" onclick="if(state.collapsedModifierGroupIds) state.collapsedModifierGroupIds['${grp.id}']=false; state.modalAddingOptionToGroupId='${grp.id}'; state.editingModifierOption=null; render();">+ เพิ่มตัวเลือก</button>
                     </div>
                   </div>
 
@@ -5019,18 +5023,18 @@ function renderModals() {
                   ${isCollapsed && !isAddingOptionHere ? (
                     options.length > 0 ? `
                       <div 
-                        style="padding:8px 14px; font-size:11.5px; color:var(--ttl-muted); background:var(--ttl-paper); cursor:pointer; display:flex; align-items:center; gap:6px; border-top:1px dashed var(--ttl-rule);"
+                        style="padding:10px 14px; font-size:12px; color:var(--ttl-muted); background:var(--ttl-paper); cursor:pointer; display:flex; align-items:flex-start; gap:8px; border-top:1px dashed var(--ttl-rule); line-height:1.5;"
                         onclick="toggleModifierGroupCollapse('${grp.id}')"
                         title="คลิกเพื่อขยายดูตัวเลือกทั้งหมดในกลุ่มนี้"
                       >
-                        <span style="font-weight:600; color:var(--ttl-ink);">ตัวเลือกในกลุ่ม:</span>
-                        <span style="color:var(--ttl-accent);">${options.map(o => `${o.name}${o.extra_price > 0 ? ` (+฿${o.extra_price})` : ''}`).join(' • ')}</span>
+                        <span style="font-weight:700; color:var(--ttl-ink); white-space:nowrap; flex-shrink:0;">ตัวเลือกในกลุ่ม:</span>
+                        <span style="color:var(--ttl-accent); word-break:break-word;">${options.map(o => `<b>${o.name}</b>${o.extra_price > 0 ? ` (+฿${o.extra_price})` : ''}`).join(' <span style="color:var(--ttl-muted); margin:0 4px;">•</span> ')}</span>
                       </div>
                     ` : `
                       <div 
-                        style="padding:6px 14px; font-size:11px; color:var(--ttl-muted); background:var(--ttl-paper); font-style:italic;"
+                        style="padding:8px 14px; font-size:11.5px; color:var(--ttl-muted); background:var(--ttl-paper); font-style:italic;"
                       >
-                        (ยังไม่มีตัวเลือกย่อยในกลุ่มนี้ กด "+ เพิ่มตัวเลือก" เพื่อเพิ่ม)
+                        (ยังไม่มีตัวเลือกย่อยในกลุ่มนี้ กด "+ เพิ่มตัวเลือก" เพื่อเริ่มเพิ่ม)
                       </div>
                     `
                   ) : `
@@ -5041,26 +5045,26 @@ function renderModals() {
                           ${eo ? `✏️ แก้ไขตัวเลือก "${eo.name}" ในกลุ่ม "${grp.name}"` : `+ เพิ่มตัวเลือกใหม่ในกลุ่ม "${grp.name}"`}
                         </div>
                         <input type="hidden" name="mod_id" value="${eo ? eo.id : ''}" />
-                        <div style="display:grid; grid-template-columns:1.5fr 1fr 1fr 1.5fr auto; gap:8px; align-items:end;">
-                          <div>
-                            <label style="font-size:11px; font-weight:600;">ชื่อตัวเลือก</label>
-                            <input name="mod_name" class="ttl-input" style="height:32px; font-size:12px;" placeholder="เช่น เผ็ดน้อย, +ไข่ดาว" value="${(eo?.name || '').replace(/"/g, '&quot;')}" required />
+                        <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
+                          <div style="flex:2; min-width:140px;">
+                            <label style="font-size:11px; font-weight:600; display:block; margin-bottom:3px;">ชื่อตัวเลือก</label>
+                            <input name="mod_name" class="ttl-input" style="height:32px; font-size:12px; width:100%; box-sizing:border-box;" placeholder="เช่น เผ็ดน้อย, +ไข่ดาว" value="${(eo?.name || '').replace(/"/g, '&quot;')}" required />
                           </div>
-                          <div>
-                            <label style="font-size:11px; font-weight:600;">บวกราคาเพิ่ม (฿)</label>
-                            <input name="mod_extra_price" type="number" step="any" class="ttl-input" style="height:32px; font-size:12px;" value="${eo ? eo.extra_price : 0}" />
+                          <div style="width:110px;">
+                            <label style="font-size:11px; font-weight:600; display:block; margin-bottom:3px;">บวกราคาเพิ่ม (฿)</label>
+                            <input name="mod_extra_price" type="number" step="any" class="ttl-input" style="height:32px; font-size:12px; width:100%; box-sizing:border-box;" value="${eo ? eo.extra_price : 0}" />
                           </div>
-                          <div>
-                            <label style="font-size:11px; font-weight:600;">ต้นทุนเพิ่ม (฿)</label>
-                            <input name="mod_extra_cost" type="number" step="any" class="ttl-input" style="height:32px; font-size:12px;" value="${eo ? (eo.extra_cost || 0) : 0}" />
+                          <div style="width:110px;">
+                            <label style="font-size:11px; font-weight:600; display:block; margin-bottom:3px;">ต้นทุนเพิ่ม (฿)</label>
+                            <input name="mod_extra_cost" type="number" step="any" class="ttl-input" style="height:32px; font-size:12px; width:100%; box-sizing:border-box;" value="${eo ? (eo.extra_cost || 0) : 0}" />
                           </div>
-                          <div>
-                            <label style="font-size:11px; font-weight:600;">คำสั่งเสียงพ้อง</label>
-                            <input name="mod_voice_keywords" class="ttl-input" style="height:32px; font-size:12px;" placeholder="คั่นด้วยจุลภาค ," value="${eo ? (Array.isArray(eo.voice_keywords) ? eo.voice_keywords.join(', ') : (eo.voice_keywords || '')) : ''}" />
+                          <div style="flex:2; min-width:140px;">
+                            <label style="font-size:11px; font-weight:600; display:block; margin-bottom:3px;">คำสั่งเสียงพ้อง</label>
+                            <input name="mod_voice_keywords" class="ttl-input" style="height:32px; font-size:12px; width:100%; box-sizing:border-box;" placeholder="คั่นด้วยจุลภาค ," value="${eo ? (Array.isArray(eo.voice_keywords) ? eo.voice_keywords.join(', ') : (eo.voice_keywords || '')) : ''}" />
                           </div>
-                          <div style="display:flex; gap:4px;">
-                            <button type="submit" class="ttl-btn ttl-btn-xs ttl-btn-dark" style="height:32px;">${eo ? 'บันทึก' : '+ เพิ่ม'}</button>
-                            <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" style="height:32px;" onclick="state.modalAddingOptionToGroupId=null; state.editingModifierOption=null; render();">ยกเลิก</button>
+                          <div style="display:flex; gap:6px; align-items:center;">
+                            <button type="submit" class="ttl-btn ttl-btn-xs ttl-btn-dark" style="height:32px; white-space:nowrap; padding:0 12px;">${eo ? '💾 บันทึก' : '+ เพิ่ม'}</button>
+                            <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" style="height:32px; white-space:nowrap;" onclick="state.modalAddingOptionToGroupId=null; state.editingModifierOption=null; render();">ยกเลิก</button>
                           </div>
                         </div>
                       </form>
