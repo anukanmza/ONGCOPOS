@@ -1599,10 +1599,13 @@ async function confirmCheckoutPayment() {
   const netTotal = Math.max(0, co.subtotal - totalDiscount);
   const cashRec = Number(state.checkoutCashReceived) || netTotal;
 
+  const spendUnit = Math.max(1, Number(cfg.spend_per_point) || 25);
+  const ptsPerUnit = Math.max(0, Number(cfg.points_earned) || 1);
   const tierObj = cus ? (cfg.tiers || []).find(t => t.name === cus.tier) : null;
   const mult = tierObj ? (Number(tierObj.points_multiplier) || 1) : 1;
-  const earnedPts = cus && netTotal > 0
-    ? Math.floor((netTotal / Math.max(1, Number(cfg.spend_per_point) || 25)) * (Number(cfg.points_earned) || 1) * mult)
+  const completedUnits = Math.floor(netTotal / spendUnit);
+  const earnedPts = cus && completedUnits > 0
+    ? Math.floor(completedUnits * ptsPerUnit * mult)
     : 0;
 
   if (co.mode === 'CART') {
@@ -4326,12 +4329,13 @@ function renderModals() {
     const cashRec = Number(state.checkoutCashReceived) || 0;
     const change = Math.max(0, cashRec - netTotal);
 
-    // คำนวณแต้มที่จะได้รับจากยอดสุทธิของบิลนี้ (หลังหักส่วนลดทั้งหมดแล้ว)
+    // คำนวณแต้มที่จะได้รับจากยอดสุทธิของบิลนี้ (ปัดเศษลงตามรอบยอดซื้อที่ครบ เช่น ซื้อครบทุก 25 บาท)
     const spendUnit = Math.max(1, Number(ls.spend_per_point) || 25);
     const ptsPerUnit = Math.max(0, Number(ls.points_earned) || 1);
     const cusTierObj = cusObj ? (ls.tiers || []).find(t => t.name === cusObj.tier) : null;
     const tierMult = cusTierObj ? (Number(cusTierObj.points_multiplier) || 1) : 1;
-    const earnedPointsPreview = (cusObj && netTotal > 0) ? Math.floor((netTotal / spendUnit) * ptsPerUnit * tierMult) : 0;
+    const completedUnits = Math.floor(netTotal / spendUnit);
+    const earnedPointsPreview = (cusObj && completedUnits > 0) ? Math.floor(completedUnits * ptsPerUnit * tierMult) : 0;
 
     // คำนวณจำนวนแต้มสูงสุดที่ใช้แลกได้ในบิลนี้
     const redeemUnit = Math.max(1, Number(ls.redeem_points_unit) || 10);
