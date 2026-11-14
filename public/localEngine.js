@@ -715,10 +715,7 @@ window.LocalPosEngine = {
           const usedPts = Math.min(cus.points || 0, redeemPts);
           const tierObj = (cfg.tiers || []).find(t => t.name === cus.tier);
           const mult = tierObj ? (Number(tierObj.points_multiplier) || 1) : 1;
-          const spendPerPt = Math.max(1, Number(cfg.spend_per_point) || 25);
-          const ptsEarnedUnit = Math.max(0, Number(cfg.points_earned) || 1);
-          const completedUnits = Math.floor(Math.max(0, Number(ord.total_amount) || 0) / spendPerPt);
-          const earned = completedUnits > 0 ? Math.floor(completedUnits * ptsEarnedUnit * mult) : 0;
+          const earned = Math.floor(((ord.total_amount || 0) / (cfg.spend_per_point || 25)) * (cfg.points_earned || 1) * mult);
           cus.points = Math.max(0, (cus.points || 0) - usedPts + earned);
           cus.total_spent = Math.round(((cus.total_spent || 0) + (ord.total_amount || 0)) * 100) / 100;
           cus.visit_count = (cus.visit_count || 0) + 1;
@@ -974,10 +971,7 @@ window.LocalPosEngine = {
           const usedPts = Math.min(cus.points || 0, Math.max(0, Math.floor(Number(redeem_points) || 0)));
           const tierObj = (cfg.tiers || []).find(t => t.name === cus.tier);
           const mult = tierObj ? (Number(tierObj.points_multiplier) || 1) : 1;
-          const spendPerPt = Math.max(1, Number(cfg.spend_per_point) || 25);
-          const ptsEarnedUnit = Math.max(0, Number(cfg.points_earned) || 1);
-          const completedUnits = Math.floor(Math.max(0, Number(ord.total_amount) || 0) / spendPerPt);
-          const earned = completedUnits > 0 ? Math.floor(completedUnits * ptsEarnedUnit * mult) : 0;
+          const earned = Math.floor(((ord.total_amount || 0) / (cfg.spend_per_point || 25)) * (cfg.points_earned || 1) * mult);
           cus.points = Math.max(0, (cus.points || 0) - usedPts + earned);
           cus.total_spent = Math.round(((cus.total_spent || 0) + (ord.total_amount || 0)) * 100) / 100;
           cus.visit_count = (cus.visit_count || 0) + 1;

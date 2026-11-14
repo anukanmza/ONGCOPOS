@@ -36,8 +36,7 @@ function computeCustomerLoyaltyUpdate(customer, netTotal, redeemPoints, loyaltyS
 
   const tierObj = tiers.find(t => t.name === nextTier) || tiers.find(t => t.name === customer?.tier) || { points_multiplier: 1 };
   const multiplier = Math.max(0.1, Number(tierObj.points_multiplier) || 1);
-  const completedUnits = Math.floor(Math.max(0, Number(netTotal) || 0) / spendPerPt);
-  const earnedPts = completedUnits > 0 ? Math.floor(completedUnits * ptsEarnedUnit * multiplier) : 0;
+  const earnedPts = netTotal > 0 ? Math.floor((netTotal / spendPerPt) * ptsEarnedUnit * multiplier) : 0;
   const nextPts = Math.max(0, currentPts - usedPts + earnedPts);
 
   return {
