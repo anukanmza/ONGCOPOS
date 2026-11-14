@@ -96,6 +96,10 @@ function getFullBootstrapData() {
   try {
     modifierGroups = db.prepare('SELECT * FROM modifier_groups ORDER BY sort_order ASC, id ASC').all();
   } catch {}
+  let deliveryPoints = [];
+  try {
+    deliveryPoints = db.prepare('SELECT * FROM delivery_points WHERE is_active = 1 ORDER BY sort_order ASC, id ASC').all();
+  } catch {}
   const rawProducts = db.prepare('SELECT * FROM products WHERE is_active = 1 ORDER BY item_type DESC, id ASC').all();
   const modifiers = db.prepare('SELECT * FROM product_modifiers ORDER BY id').all().map(m => ({
     ...m,
@@ -323,6 +327,7 @@ function getFullBootstrapData() {
     products,
     modifierGroups,
     modifiers,
+    deliveryPoints,
     ingredients,
     recipeItems,
     tables,
@@ -1785,6 +1790,36 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
     }
 
+    // Delivery Points Management (จุดรับส่งของเส้นตลาดอินโดจีน มุกดาหาร)
+    if (req.method === 'POST' && pathname === '/api/delivery-points/save') {
+      const body = await parseJsonBody(req);
+      const { id, name, landmark_desc = '', map_x = 50, map_y = 50, sort_order = 1, is_active = 1 } = body;
+      if (!name || !name.trim()) return sendJson(res, 400, { error: 'กรุณาระบุชื่อจุดรับส่งของ' });
+      const ptId = id || `DP-${Date.now().toString().slice(-4)}`;
+      const existing = db.prepare('SELECT id FROM delivery_points WHERE id = ?').get(ptId);
+      if (existing) {
+        db.prepare(`
+          UPDATE delivery_points
+          SET name = ?, landmark_desc = ?, map_x = ?, map_y = ?, sort_order = ?, is_active = ?
+          WHERE id = ?
+        `).run(name.trim(), landmark_desc.trim(), Number(map_x) || 50, Number(map_y) || 50, Number(sort_order) || 1, is_active ? 1 : 0, ptId);
+      } else {
+        db.prepare(`
+          INSERT INTO delivery_points (id, name, landmark_desc, map_x, map_y, sort_order, is_active, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(ptId, name.trim(), landmark_desc.trim(), Number(map_x) || 50, Number(map_y) || 50, Number(sort_order) || 1, is_active ? 1 : 0, new Date().toISOString());
+      }
+      broadcastUpdate('delivery_point_saved', { ptId });
+      return sendJson(res, 200, { success: true, ptId, data: getFullBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/delivery-points/delete') {
+      const { id } = await parseJsonBody(req);
+      db.prepare('DELETE FROM delivery_points WHERE id = ?').run(id);
+      broadcastUpdate('delivery_point_deleted', { id });
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
     // Add Daily Expense
     if (req.method === 'POST' && pathname === '/api/expenses/save') {
       const body = await parseJsonBody(req);
@@ -1807,7 +1842,9 @@ const server = http.createServer(async (req, res) => {
 
     // Static Files from /public
     const publicDir = path.join(__dirname, 'public');
-    let filePath = pathname === '/' ? path.join(publicDir, 'index.html') : path.join(publicDir, pathname);
+    let filePath = pathname === '/'
+      ? path.join(publicDir, 'index.html')
+      : (pathname === '/order' || pathname === '/order/' ? path.join(publicDir, 'order.html') : path.join(publicDir, pathname));
 
     // Prevent directory traversal
     if (!filePath.startsWith(publicDir)) {

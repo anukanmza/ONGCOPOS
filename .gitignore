@@ -4,4 +4,5 @@ data/
 .env.local
 .vercel/
 .DS_Store
+ONGCOPOS/
 

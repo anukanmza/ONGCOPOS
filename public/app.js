@@ -61,6 +61,10 @@ const state = {
   showNewExpenseModal: false,
   showNewCustomerModal: false,
   editingCustomer: null,
+  showDeliveryPointsModal: false,
+  editingDeliveryPoint: null,
+  deliveryMapPreviewX: 56,
+  deliveryMapPreviewY: 44,
   // Stock-In Draft & Inventory Search / Voice / History Modal State
   stockInSupplier: 'แม็คโคร & ตลาดสด',
   stockInNote: '',
@@ -340,6 +344,8 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
   if (endpoint === '/api/modifier-groups/delete') return eng.deleteModifierGroup(bodyObj || {});
   if (endpoint === '/api/modifiers/save') return eng.saveModifier(bodyObj || {});
   if (endpoint === '/api/modifiers/delete') return eng.deleteModifier(bodyObj || {});
+  if (endpoint === '/api/delivery-points/save') return eng.saveDeliveryPoint(bodyObj || {});
+  if (endpoint === '/api/delivery-points/delete') return eng.deleteDeliveryPoint(bodyObj || {});
   return eng.getBootstrap();
 }
 
@@ -353,6 +359,7 @@ function isUserBusyInteracting() {
     state.showNewProductModal ||
     state.showCategoryModal ||
     state.showModifierGroupModal ||
+    state.showDeliveryPointsModal ||
     state.showNewIngredientModal ||
     state.showNewExpenseModal ||
     state.invoiceModalOrder ||
@@ -764,6 +771,91 @@ async function deleteModifierOptionById(modId, modName) {
   if (state.editingModifierOption && state.editingModifierOption.id === modId) state.editingModifierOption = null;
   render();
   showToast(`🗑️ ลบตัวเลือก "${modName}" แล้ว`);
+}
+
+function openDeliveryPointsModal() {
+  state.showDeliveryPointsModal = true;
+  state.editingDeliveryPoint = null;
+  state.deliveryMapPreviewX = 56;
+  state.deliveryMapPreviewY = 44;
+  render();
+}
+
+function onDeliveryMapClick(event, container) {
+  const rect = container.getBoundingClientRect();
+  const clickX = event.clientX - rect.left;
+  const clickY = event.clientY - rect.top;
+  const pctX = Math.round(Math.max(2, Math.min(98, (clickX / rect.width) * 100)));
+  const pctY = Math.round(Math.max(2, Math.min(98, (clickY / rect.height) * 100)));
+
+  state.deliveryMapPreviewX = pctX;
+  state.deliveryMapPreviewY = pctY;
+
+  const inpX = document.getElementById('ttl-dp-map-x');
+  const inpY = document.getElementById('ttl-dp-map-y');
+  if (inpX) inpX.value = pctX;
+  if (inpY) inpY.value = pctY;
+
+  const previewPin = document.getElementById('ttl-dp-preview-pin');
+  if (previewPin) {
+    previewPin.style.left = `${pctX}%`;
+    previewPin.style.top = `${pctY}%`;
+    previewPin.style.display = 'block';
+  }
+}
+
+async function saveDeliveryPointForm(formEl) {
+  const f = formEl.elements;
+  const ptId = f.pt_id.value || undefined;
+  const name = (f.pt_name.value || '').trim();
+  const landmark_desc = (f.pt_desc.value || '').trim();
+  const map_x = Number(f.pt_map_x.value) || 50;
+  const map_y = Number(f.pt_map_y.value) || 50;
+  const sort_order = Number(f.pt_sort_order.value) || 1;
+
+  if (!name) {
+    alert('กรุณาระบุชื่อจุดรับส่งของ');
+    return;
+  }
+
+  const out = await apiCall('/api/delivery-points/save', 'POST', {
+    id: ptId,
+    name,
+    landmark_desc,
+    map_x,
+    map_y,
+    sort_order
+  });
+
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (!state.data.deliveryPoints) state.data.deliveryPoints = [];
+    const newPtId = ptId || `DP-${Date.now().toString().slice(-4)}`;
+    const exIdx = state.data.deliveryPoints.findIndex(p => p.id === newPtId);
+    const ptObj = { id: newPtId, name, landmark_desc, map_x, map_y, sort_order, is_active: 1 };
+    if (exIdx >= 0) state.data.deliveryPoints[exIdx] = ptObj;
+    else state.data.deliveryPoints.push(ptObj);
+  }
+
+  state.editingDeliveryPoint = null;
+  render();
+  showToast(ptId ? '✏️ บันทึกการแก้ไขจุดรับของเรียบร้อย' : '+ เพิ่มจุดรับของใหม่เรียบร้อย');
+}
+
+async function deleteDeliveryPointById(ptId, ptName) {
+  if (!confirm(`ต้องการลบจุดรับส่ง "${ptName}" หรือไม่?`)) return;
+  const out = await apiCall('/api/delivery-points/delete', 'POST', { id: ptId });
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (state.data.deliveryPoints) {
+      state.data.deliveryPoints = state.data.deliveryPoints.filter(p => p.id !== ptId);
+    }
+  }
+  if (state.editingDeliveryPoint && state.editingDeliveryPoint.id === ptId) state.editingDeliveryPoint = null;
+  render();
+  showToast(`🗑️ ลบจุดรับของ "${ptName}" แล้ว`);
 }
 
 function getActiveContextOrder() {
@@ -2883,6 +2975,12 @@ function renderTablesView() {
           <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.editingTable=null; state.showNewTableModal=true; render();">
             + เพิ่มโต๊ะใหม่
           </button>
+          <button type="button" class="ttl-btn ttl-btn-outline" style="border-color:#0d9488; color:#0d9488; font-weight:600;" onclick="openDeliveryPointsModal();">
+            🛵 จุดส่งตลาดอินโดจีน (${(state.data?.deliveryPoints || []).length})
+          </button>
+          <a href="/order" target="_blank" class="ttl-btn ttl-btn-ghost" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px; font-weight:600; color:#2563eb;">
+            📱 หน้าเว็บสั่งเอง (/order) ↗
+          </a>
         </div>
       </div>
 
@@ -5884,7 +5982,289 @@ function renderModals() {
     `;
   }
 
+  // 10. Delivery Points Management Modal (จุดรับส่งของเส้นตลาดอินโดจีน มุกดาหาร)
+  if (state.showDeliveryPointsModal) {
+    html += renderDeliveryPointsModal();
+  }
+
   return html;
+}
+
+function renderDeliveryPointsModal() {
+  const pts = (state.data?.deliveryPoints || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const ep = state.editingDeliveryPoint;
+  const curX = ep ? ep.map_x : (state.deliveryMapPreviewX || 56);
+  const curY = ep ? ep.map_y : (state.deliveryMapPreviewY || 44);
+
+  return `
+    <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showDeliveryPointsModal=false; state.editingDeliveryPoint=null; render();}">
+      <div class="ttl-modal" style="width:min(960px, 96vw); max-width:960px; max-height:92vh; overflow-y:auto; padding:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <div>
+            <div class="ttl-k">DELIVERY DROP-OFF POINTS • ตลาดอินโดจีน มุกดาหาร</div>
+            <h3 style="margin:2px 0 0; font-size:18px;">🛵 จัดการจุดรับส่งเดลิเวอรี่ เส้นเลียบโขง</h3>
+          </div>
+          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showDeliveryPointsModal=false; state.editingDeliveryPoint=null; render();">✕ ปิด</button>
+        </div>
+
+        <div style="font-size:12.5px; color:var(--ttl-muted); margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <span>📍 <b>คลิกบนแผนที่ด้านล่าง</b> เพื่อเลือกพิกัดปักหมุดจุดรับของได้ทันที หรือแก้ไขข้อมูลจากรายการด้านล่าง</span>
+          <a href="/order?mode=delivery" target="_blank" style="color:#2563eb; text-decoration:none; font-weight:600; font-size:12px;">
+            📱 ทดลองเปิดหน้าสั่งเดลิเวอรี่ของลูกค้า ↗
+          </a>
+        </div>
+
+        <!-- แผนผัง Pixel Art ตลาดอินโดจีน มุกดาหาร เลียบโขง -->
+        <div
+          id="ttl-delivery-map-container"
+          style="position:relative; width:100%; height:270px; background:#1e293b; border-radius:12px; overflow:hidden; border:2px solid #334155; cursor:crosshair; user-select:none; margin-bottom:16px;"
+          onclick="onDeliveryMapClick(event, this)"
+          title="คลิกตรงไหนก็ได้บนแผนที่เพื่อปักหมุด"
+        >
+          <!-- SVG Pixel Art Map Background -->
+          <svg viewBox="0 0 800 360" preserveAspectRatio="none" style="width:100%; height:100%; display:block;">
+            <!-- Definitions for Pixel Art Patterns -->
+            <defs>
+              <linearGradient id="mekongWater" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#0284c7" />
+                <stop offset="50%" stop-color="#0369a1" />
+                <stop offset="100%" stop-color="#075985" />
+              </linearGradient>
+              <pattern id="pixelWave" width="24" height="12" patternUnits="userSpaceOnUse">
+                <rect x="0" y="2" width="10" height="2" fill="#38bdf8" opacity="0.6"/>
+                <rect x="12" y="8" width="10" height="2" fill="#bae6fd" opacity="0.5"/>
+              </pattern>
+            </defs>
+
+            <!-- 1. Left: City / Commercial Area (ถ.สมุทรศักดารักษ์ & ซอยต่างๆ) -->
+            <rect x="0" y="0" width="280" height="360" fill="#334155" />
+            <!-- City Shophouse Blocks (Pixel roofs) -->
+            <!-- Block 1: North (หอเจ้าแม่สองนาง & วัดศรีมงคลใต้) -->
+            <rect x="16" y="14" width="220" height="42" fill="#475569" stroke="#1e293b" stroke-width="2"/>
+            <rect x="22" y="18" width="56" height="34" fill="#b45309" />
+            <text x="26" y="38" fill="#fef3c7" font-size="9" font-family="monospace" font-weight="bold">หอสองนาง</text>
+            <rect x="88" y="18" width="60" height="34" fill="#991b1b" />
+            <text x="92" y="38" fill="#fee2e2" font-size="9" font-family="monospace" font-weight="bold">วัดศรีมงคล</text>
+
+            <!-- Alley 1: ซ.สองนางสถิตย์ -->
+            <rect x="0" y="58" width="300" height="12" fill="#1e293b"/>
+            <text x="12" y="67" fill="#94a3b8" font-size="8" font-family="monospace">ซ.สองนางสถิตย์ ────</text>
+
+            <!-- Block 2: ซ.บริหารชนบท - ซ.วิเศษมุกดารักษ์ -->
+            <rect x="16" y="74" width="220" height="44" fill="#475569" stroke="#1e293b" stroke-width="2"/>
+            <rect x="22" y="78" width="70" height="36" fill="#065f46"/>
+            <text x="26" y="99" fill="#d1fae5" font-size="8.5" font-family="monospace">ซ.บริหารชนบท</text>
+            <rect x="100" y="78" width="80" height="36" fill="#1e40af"/>
+            <text x="104" y="99" fill="#dbeafe" font-size="8.5" font-family="monospace">ซ.วิเศษมุกดารักษ์</text>
+
+            <!-- Alley 2: ถ.พิทักษ์พนมเขต -->
+            <rect x="0" y="122" width="300" height="18" fill="#0f172a"/>
+            <text x="12" y="134" fill="#fbbf24" font-size="9" font-family="monospace" font-weight="bold">ถ.พิทักษ์พนมเขต ───────▶</text>
+
+            <!-- Block 3: Middle (ศาลาขาว & ตลาดอินโดจีน & วัดยอดแก้วศรีวิชัย) -->
+            <rect x="16" y="144" width="220" height="66" fill="#475569" stroke="#1e293b" stroke-width="2"/>
+            <rect x="22" y="148" width="85" height="58" fill="#ca8a04"/>
+            <text x="26" y="174" fill="#fff" font-size="9" font-family="monospace" font-weight="bold">อาคารตลาดอินโดจีน</text>
+            <text x="26" y="190" fill="#fef08a" font-size="8" font-family="monospace">(Indochina Market)</text>
+
+            <rect x="115" y="148" width="115" height="58" fill="#991b1b"/>
+            <text x="120" y="178" fill="#fecaca" font-size="9" font-family="monospace" font-weight="bold">วัดยอดแก้วศรีวิชัย</text>
+
+            <!-- Alley 3: ซ.ศศิวงศ์ -->
+            <rect x="0" y="214" width="300" height="12" fill="#1e293b"/>
+            <text x="12" y="223" fill="#94a3b8" font-size="8" font-family="monospace">ซ.ศศิวงศ์ ────</text>
+
+            <!-- Block 4: ซ.จันทร์เทพ - ซ.จ่างวาง -->
+            <rect x="16" y="230" width="220" height="50" fill="#475569" stroke="#1e293b" stroke-width="2"/>
+            <rect x="22" y="234" width="90" height="42" fill="#374151"/>
+            <text x="26" y="258" fill="#e5e7eb" font-size="8.5" font-family="monospace">ซ.จันทร์เทพ</text>
+
+            <!-- Alley 4: ซ.จ่างวาง & Riverfront -->
+            <rect x="0" y="284" width="300" height="12" fill="#1e293b"/>
+            <text x="12" y="293" fill="#94a3b8" font-size="8" font-family="monospace">ซ.จ่างวาง ────</text>
+
+            <rect x="16" y="300" width="220" height="50" fill="#475569" stroke="#1e293b" stroke-width="2"/>
+            <rect x="22" y="304" width="130" height="42" fill="#1e3a8a"/>
+            <text x="26" y="325" fill="#bfdbfe" font-size="9" font-family="monospace" font-weight="bold">Riverfront Hotel</text>
+            <text x="26" y="338" fill="#93c5fd" font-size="7.5" font-family="monospace">คุ้นคุ้น คิทเช่น</text>
+
+            <!-- 2. Samran Chai Khong Road (ถนนสำราญชายโขง) running top to bottom -->
+            <rect x="280" y="0" width="60" height="360" fill="#1e293b" />
+            <!-- Dashed Road divider -->
+            <line x1="310" y1="0" x2="310" y2="360" stroke="#facc15" stroke-width="2" stroke-dasharray="12,10" />
+            <text x="314" y="26" fill="#e2e8f0" font-size="8" font-family="monospace" transform="rotate(90, 314, 26)">ถ.สำราญชายโขง</text>
+            <text x="314" y="180" fill="#e2e8f0" font-size="8" font-family="monospace" transform="rotate(90, 314, 180)">ถ.สำราญชายโขง</text>
+
+            <!-- 3. Riverside Walking Promenade (ลานคนเดินริมโขง) -->
+            <rect x="340" y="0" width="130" height="360" fill="#78716c" />
+            <!-- Stone Pavement lines -->
+            <line x1="340" y1="60" x2="470" y2="60" stroke="#a8a29e" stroke-width="1.5" />
+            <line x1="340" y1="120" x2="470" y2="120" stroke="#a8a29e" stroke-width="1.5" />
+            <line x1="340" y1="180" x2="470" y2="180" stroke="#a8a29e" stroke-width="1.5" />
+            <line x1="340" y1="240" x2="470" y2="240" stroke="#a8a29e" stroke-width="1.5" />
+            <line x1="340" y1="300" x2="470" y2="300" stroke="#a8a29e" stroke-width="1.5" />
+
+            <!-- ศาลาขาว Rau Rak Mukdahan Pavilion on the promenade -->
+            <rect x="360" y="116" width="90" height="42" fill="#ffffff" stroke="#0f172a" stroke-width="2" rx="4"/>
+            <rect x="364" y="120" width="82" height="34" fill="#f8fafc"/>
+            <text x="372" y="136" fill="#0f172a" font-size="9" font-family="monospace" font-weight="bold">ศาลาขาวริมโขง</text>
+            <text x="370" y="148" fill="#475569" font-size="7.5" font-family="monospace">Rau Rak Mukdahan</text>
+
+            <!-- Embankment Slope -->
+            <rect x="470" y="0" width="20" height="360" fill="#57534e" />
+
+            <!-- 4. East: Mekong River (แม่น้ำโขง) -->
+            <rect x="490" y="0" width="310" height="360" fill="url(#mekongWater)" />
+            <rect x="490" y="0" width="310" height="360" fill="url(#pixelWave)" />
+
+            <!-- Longtail Boat on river -->
+            <polygon points="620,160 660,160 650,172 610,172" fill="#b45309" />
+            <rect x="625" y="152" width="20" height="8" fill="#f59e0b" />
+            <line x1="660" y1="160" x2="675" y2="152" stroke="#475569" stroke-width="2" />
+            <text x="618" y="186" fill="#e0f2fe" font-size="8" font-family="monospace">เรือหางยาวริมโขง</text>
+
+            <text x="680" y="60" fill="#bae6fd" font-size="14" font-family="monospace" font-weight="bold" opacity="0.8">แม่น้ำโขง</text>
+            <text x="670" y="80" fill="#7dd3fc" font-size="9" font-family="monospace" opacity="0.7">MEKONG RIVER</text>
+
+            <!-- Compass / Direction Arrows -->
+            <g transform="translate(740, 290)">
+              <rect x="-35" y="-35" width="70" height="70" fill="#0f172a" opacity="0.85" rx="8" />
+              <text x="0" y="-18" fill="#f87171" font-size="11" font-weight="bold" text-anchor="middle">▲ N เหนือ</text>
+              <text x="0" y="24" fill="#94a3b8" font-size="9" text-anchor="middle">▼ ใต้</text>
+              <text x="-25" y="4" fill="#94a3b8" font-size="9" text-anchor="middle">◀</text>
+              <text x="25" y="4" fill="#38bdf8" font-size="9" text-anchor="middle">โขง▶</text>
+            </g>
+          </svg>
+
+          <!-- Existing Pins on Map -->
+          ${pts.map((p, idx) => `
+            <div
+              style="position:absolute; left:${p.map_x}%; top:${p.map_y}%; transform:translate(-50%, -100%); z-index:10; pointer-events:auto; cursor:pointer;"
+              onclick="event.stopPropagation(); state.editingDeliveryPoint=${JSON.stringify(p).replace(/"/g, '&quot;')}; render();"
+              title="${p.name} (คลิกเพื่อแก้ไข)"
+            >
+              <div style="background:#0d9488; color:#fff; font-weight:800; font-size:11px; padding:3px 7px; border-radius:12px; border:2px solid #fff; box-shadow:0 3px 6px rgba(0,0,0,0.4); white-space:nowrap; display:flex; align-items:center; gap:4px;">
+                <span>📍 ${idx + 1}. ${p.name.split('/')[0].split('(')[0].trim()}</span>
+              </div>
+              <div style="width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:6px solid #0d9488; margin:0 auto;"></div>
+            </div>
+          `).join('')}
+
+          <!-- New/Preview Pin Marker -->
+          <div
+            id="ttl-dp-preview-pin"
+            style="position:absolute; left:${curX}%; top:${curY}%; transform:translate(-50%, -100%); z-index:20; pointer-events:none;"
+          >
+            <div style="background:#f97316; color:#fff; font-weight:800; font-size:11px; padding:3px 8px; border-radius:12px; border:2px solid #fff; box-shadow:0 0 10px #f97316; white-space:nowrap; animation:pulse 1.4s infinite;">
+              🎯 หมุดที่เลือก (${curX}%, ${curY}%)
+            </div>
+            <div style="width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:7px solid #f97316; margin:0 auto;"></div>
+          </div>
+        </div>
+
+        <!-- 2 Columns: Form & Points List -->
+        <div style="display:grid; grid-template-columns:1.1fr 1fr; gap:16px; align-items:start;">
+          <!-- Left: Form -->
+          <form style="padding:14px; border-radius:12px; background:var(--ttl-page); border:1px solid var(--ttl-rule);" onsubmit="event.preventDefault(); saveDeliveryPointForm(this);">
+            <input type="hidden" name="pt_id" value="${ep ? ep.id : ''}" />
+            <input type="hidden" id="ttl-dp-map-x" name="pt_map_x" value="${curX}" />
+            <input type="hidden" id="ttl-dp-map-y" name="pt_map_y" value="${curY}" />
+
+            <div style="font-weight:700; font-size:13px; margin-bottom:10px; color:var(--ttl-ink);">
+              ${ep ? `✏️ แก้ไขจุดรับของ "${ep.name}"` : '+ เพิ่มจุดรับส่งของใหม่ (ปักหมุดบนแผนที่ด้านบน)'}
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:12px;">
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ชื่อจุดรับของ (ที่ลูกค้าเห็นในตัวเลือก)</label>
+                <input
+                  name="pt_name"
+                  type="text"
+                  class="ttl-input"
+                  placeholder="เช่น ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)"
+                  value="${(ep ? ep.name : '').replace(/"/g, '&quot;')}"
+                  required
+                />
+              </div>
+
+              <div>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">จุดสังเกต / รายละเอียดเพิ่มเติม</label>
+                <input
+                  name="pt_desc"
+                  type="text"
+                  class="ttl-input"
+                  placeholder="เช่น ริมแม่น้ำโขง หน้าศาลาขาว ลานกิจกรรม"
+                  value="${(ep ? ep.landmark_desc : '').replace(/"/g, '&quot;')}"
+                />
+              </div>
+
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                <div>
+                  <label style="font-size:11px; color:var(--ttl-muted); display:block;">พิกัดแผนที่ (คลิกบนแผนที่เพื่อเปลี่ยน)</label>
+                  <div style="padding:7px 10px; background:#fff; border:1px solid var(--ttl-rule); border-radius:8px; font-size:12px; font-family:monospace; color:#0d9488; font-weight:700;">
+                    X: ${curX}% • Y: ${curY}%
+                  </div>
+                </div>
+                <div>
+                  <label style="font-size:11px; color:var(--ttl-muted); display:block;">ลำดับแสดง (Sort Order)</label>
+                  <input
+                    name="pt_sort_order"
+                    type="number"
+                    min="1"
+                    class="ttl-input"
+                    value="${ep ? (ep.sort_order || 1) : pts.length + 1}"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex; justify-content:flex-end; gap:8px;">
+              ${ep ? `
+                <button type="button" class="ttl-btn ttl-btn-ghost ttl-btn-sm" onclick="state.editingDeliveryPoint=null; render();">ยกเลิก</button>
+              ` : ''}
+              <button type="submit" class="ttl-btn ttl-btn-dark ttl-btn-sm" style="font-weight:700;">
+                ${ep ? '💾 บันทึกการแก้ไข' : '+ บันทึกจุดรับของ'}
+              </button>
+            </div>
+          </form>
+
+          <!-- Right: List of Points -->
+          <div style="display:flex; flex-direction:column; gap:8px; max-height:360px; overflow-y:auto;">
+            <div style="font-weight:700; font-size:13px; color:var(--ttl-ink);">
+              📋 รายชื่อจุดรับส่งของทั้งหมด (${pts.length} จุด)
+            </div>
+            ${pts.map((p, idx) => `
+              <div style="padding:10px 12px; border-radius:10px; background:var(--ttl-card); border:1px solid var(--ttl-rule); display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                <div>
+                  <div style="font-weight:700; font-size:13px;">${idx + 1}. ${p.name}</div>
+                  <div style="font-size:11px; color:var(--ttl-muted);">${p.landmark_desc || 'ไม่มีคำอธิบาย'}</div>
+                  <div style="font-size:10.5px; color:#0d9488; font-family:monospace; margin-top:2px;">พิกัด: (${p.map_x}%, ${p.map_y}%)</div>
+                </div>
+                <div style="display:flex; gap:4px; flex-shrink:0;">
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+                    style="height:26px; padding:0 8px; font-size:11px;"
+                    onclick="state.editingDeliveryPoint=${JSON.stringify(p).replace(/"/g, '&quot;')}; render();"
+                  >
+                    ✏️ แก้ไข
+                  </button>
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
+                    style="height:26px; padding:0 8px; font-size:11px;"
+                    onclick="deleteDeliveryPointById('${p.id}', '${p.name.replace(/'/g, "\\'")}')"
+                  >
+                    🗑️ ลบ
+                  </button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // ============================================================================

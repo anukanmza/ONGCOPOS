@@ -15,6 +15,15 @@ const DEFAULT_LOYALTY_SETTINGS = {
   ]
 };
 
+const DEFAULT_DELIVERY_POINTS = [
+  { id: 'DP-01', name: 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', landmark_desc: 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ)', map_x: 52, map_y: 10, sort_order: 1, is_active: true },
+  { id: 'DP-02', name: 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', landmark_desc: 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', map_x: 54, map_y: 26, sort_order: 2, is_active: true },
+  { id: 'DP-03', name: 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', landmark_desc: 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', map_x: 56, map_y: 44, sort_order: 3, is_active: true },
+  { id: 'DP-04', name: 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', landmark_desc: 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', map_x: 58, map_y: 60, sort_order: 4, is_active: true },
+  { id: 'DP-05', name: 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', landmark_desc: 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', map_x: 60, map_y: 74, sort_order: 5, is_active: true },
+  { id: 'DP-06', name: 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', landmark_desc: 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้', map_x: 62, map_y: 90, sort_order: 6, is_active: true }
+];
+
 function computeCustomerLoyaltyUpdate(customer, netTotal, redeemPoints, loyaltySettings = DEFAULT_LOYALTY_SETTINGS) {
   const cfg = { ...DEFAULT_LOYALTY_SETTINGS, ...(loyaltySettings || {}) };
   const spendPerPt = Math.max(1, Number(cfg.spend_per_point) || 25);
@@ -187,7 +196,8 @@ async function getSupabaseBootstrapData() {
     receiptItems,
     inventoryLogs,
     expenses,
-    fetchedCustomers
+    fetchedCustomers,
+    rawDeliveryPoints
   ] = await Promise.all([
     sbRest('categories?select=*&order=id.asc'),
     sbRest('products?select=*&is_active=eq.true&order=item_type.desc,id.asc'),
@@ -205,7 +215,8 @@ async function getSupabaseBootstrapData() {
     sbRest('customers?select=*&order=total_spent.desc').catch(() => [
       { id: 'CUS-001', name: 'ป้าสมศรี (ซอย 3)', phone: '081-234-5678', tier: 'VIP', points: 120, total_spent: 3450, note: 'ชอบสั่งกะเพราเผ็ดน้อย' },
       { id: 'CUS-002', name: 'พี่เอก (ช่างแอร์)', phone: '089-876-5432', tier: 'ขาประจำ', points: 45, total_spent: 1120, note: 'ซื้อน้ำแข็งและเครื่องดื่มประจำ' }
-    ])
+    ]),
+    sbRest('delivery_points?select=*&order=sort_order.asc,id.asc').catch(() => [])
   ]);
 
   const rawCustomers = Array.isArray(fetchedCustomers) && fetchedCustomers.length > 0 ? fetchedCustomers : [
@@ -232,6 +243,29 @@ async function getSupabaseBootstrapData() {
         { id: 'GRP-SPICY', name: 'ระดับความเผ็ด', selection_type: 'SINGLE', is_required: false, sort_order: 1 },
         { id: 'GRP-TOPPING', name: 'ท็อปปิ้งไข่ & เพิ่มเติม', selection_type: 'MULTIPLE', is_required: false, sort_order: 2 }
       ];
+    }
+  }
+
+  // Resolve deliveryPoints (from native table or fallback in customers table)
+  let deliveryPoints = [];
+  if (Array.isArray(rawDeliveryPoints) && rawDeliveryPoints.length > 0) {
+    deliveryPoints = rawDeliveryPoints.map(p => ({
+      ...p,
+      map_x: Number(p.map_x) || 50,
+      map_y: Number(p.map_y) || 50,
+      sort_order: Number(p.sort_order) || 0,
+      is_active: p.is_active !== false
+    }));
+  } else {
+    const sysDpRow = rawCustomers.find(c => c.id === 'SYS-DELIVERY-POINTS');
+    if (sysDpRow && sysDpRow.note) {
+      try {
+        const parsed = JSON.parse(sysDpRow.note);
+        if (Array.isArray(parsed) && parsed.length > 0) deliveryPoints = parsed;
+      } catch {}
+    }
+    if (deliveryPoints.length === 0) {
+      deliveryPoints = DEFAULT_DELIVERY_POINTS;
     }
   }
 
@@ -485,6 +519,7 @@ async function getSupabaseBootstrapData() {
     ingredients: normalizedIngredients,
     recipeItems,
     tables,
+    deliveryPoints,
     customers: customers.map(c => ({ ...c, points: Number(c.points || 0), total_spent: Number(c.total_spent || 0) })),
     loyaltySettings,
     allBills,
@@ -523,6 +558,7 @@ async function getSupabaseBootstrapData() {
 
 module.exports = {
   DEFAULT_LOYALTY_SETTINGS,
+  DEFAULT_DELIVERY_POINTS,
   computeCustomerLoyaltyUpdate,
   setRuntimeSupabaseConfig,
   getSupabaseConfig,

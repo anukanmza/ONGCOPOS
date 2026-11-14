@@ -96,6 +96,18 @@ CREATE TABLE IF NOT EXISTS customers (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 6.2 ตารางจุดรับของเดลิเวอรี่ตลาดอินโดจีน (Delivery Drop-off Points)
+CREATE TABLE IF NOT EXISTS delivery_points (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  landmark_desc TEXT DEFAULT '',
+  map_x NUMERIC(5,2) NOT NULL DEFAULT 50,
+  map_y NUMERIC(5,2) NOT NULL DEFAULT 50,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- 7. ตารางบิลขาย (Orders)
 CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY,

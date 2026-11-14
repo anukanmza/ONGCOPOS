@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/order", "destination": "/order.html" },
     { "source": "/api/:path*", "destination": "/api?route=:path*" }
   ]
 }

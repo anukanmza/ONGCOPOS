@@ -233,6 +233,34 @@ function initSchema() {
     }
   } catch {}
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_points (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      landmark_desc TEXT DEFAULT '',
+      map_x REAL NOT NULL DEFAULT 50,
+      map_y REAL NOT NULL DEFAULT 50,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+  `);
+
+  // Seed default delivery points if empty
+  try {
+    const dpCount = db.prepare('SELECT COUNT(*) as cnt FROM delivery_points').get()?.cnt || 0;
+    if (dpCount === 0) {
+      const insDp = db.prepare('INSERT OR IGNORE INTO delivery_points (id, name, landmark_desc, map_x, map_y, sort_order, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+      const now = new Date().toISOString();
+      insDp.run('DP-01', 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ)', 52, 10, 1, 1, now);
+      insDp.run('DP-02', 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', 54, 26, 2, 1, now);
+      insDp.run('DP-03', 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', 56, 44, 3, 1, now);
+      insDp.run('DP-04', 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', 58, 60, 4, 1, now);
+      insDp.run('DP-05', 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', 60, 74, 5, 1, now);
+      insDp.run('DP-06', 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้', 62, 90, 6, 1, now);
+    }
+  } catch {}
+
   // Migrate SQLite CHECK constraints on orders and order_items if created by older schema
   const ordSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").get()?.sql || '';
   if (ordSql && !ordSql.includes('VOIDED')) {

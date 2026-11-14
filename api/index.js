@@ -1256,6 +1256,106 @@ module.exports = async (req, res) => {
       return send(200, { success: true, data: await getSupabaseBootstrapData() });
     }
 
+    // Delivery Points Management (จุดรับส่งของเส้นตลาดอินโดจีน มุกดาหาร)
+    if (req.method === 'POST' && pathname === '/api/delivery-points/save') {
+      const { id, name, landmark_desc = '', map_x = 50, map_y = 50, sort_order = 1, is_active = 1 } = body;
+      if (!name || !name.trim()) return send(400, { error: 'กรุณาระบุชื่อจุดรับส่งของ' });
+      const ptId = id || `DP-${Date.now().toString().slice(-4)}`;
+      const ptObj = {
+        id: ptId,
+        name: name.trim(),
+        landmark_desc: landmark_desc.trim(),
+        map_x: Number(map_x) || 50,
+        map_y: Number(map_y) || 50,
+        sort_order: Number(sort_order) || 1,
+        is_active: is_active ? 1 : 0
+      };
+
+      let savedDirectly = false;
+      try {
+        await sbRest('delivery_points', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: { ...ptObj, created_at: new Date().toISOString() }
+        });
+        savedDirectly = true;
+      } catch (err) {
+        console.warn('Could not save to delivery_points table directly, using SYS-DELIVERY-POINTS fallback:', err.message);
+      }
+
+      // Sync to fallback SYS-DELIVERY-POINTS in customers table
+      try {
+        let list = [];
+        const rows = await sbRest('customers?select=*&id=eq.SYS-DELIVERY-POINTS');
+        if (rows && rows[0] && rows[0].note) {
+          try { list = JSON.parse(rows[0].note); } catch {}
+        }
+        if (!Array.isArray(list) || list.length === 0) {
+          list = [
+            { id: 'DP-01', name: 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', landmark_desc: 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ)', map_x: 52, map_y: 10, sort_order: 1, is_active: 1 },
+            { id: 'DP-02', name: 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', landmark_desc: 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', map_x: 54, map_y: 26, sort_order: 2, is_active: 1 },
+            { id: 'DP-03', name: 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', landmark_desc: 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', map_x: 56, map_y: 44, sort_order: 3, is_active: 1 },
+            { id: 'DP-04', name: 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', landmark_desc: 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', map_x: 58, map_y: 60, sort_order: 4, is_active: 1 },
+            { id: 'DP-05', name: 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', landmark_desc: 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', map_x: 60, map_y: 74, sort_order: 5, is_active: 1 },
+            { id: 'DP-06', name: 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', landmark_desc: 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้', map_x: 62, map_y: 90, sort_order: 6, is_active: 1 }
+          ];
+        }
+        const idx = list.findIndex(p => p.id === ptId);
+        if (idx >= 0) {
+          list[idx] = ptObj;
+        } else {
+          list.push(ptObj);
+        }
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-DELIVERY-POINTS',
+            name: '__DELIVERY_POINTS__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(list),
+            created_at: new Date().toISOString()
+          }
+        });
+      } catch {}
+
+      return send(200, { success: true, ptId, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/delivery-points/delete') {
+      const { id } = body;
+      try {
+        await sbRest(`delivery_points?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+      } catch {}
+      try {
+        const rows = await sbRest('customers?select=*&id=eq.SYS-DELIVERY-POINTS');
+        if (rows && rows[0] && rows[0].note) {
+          const list = JSON.parse(rows[0].note);
+          if (Array.isArray(list)) {
+            const filtered = list.filter(p => p.id !== id);
+            await sbRest('customers', {
+              method: 'POST',
+              prefer: 'resolution=merge-duplicates,return=representation',
+              body: {
+                id: 'SYS-DELIVERY-POINTS',
+                name: '__DELIVERY_POINTS__',
+                phone: '',
+                tier: 'SYSTEM',
+                points: 0,
+                total_spent: 0,
+                note: JSON.stringify(filtered),
+                created_at: new Date().toISOString()
+              }
+            });
+          }
+        }
+      } catch {}
+      return send(200, { success: true, data: await getSupabaseBootstrapData() });
+    }
+
     if (req.method === 'POST' && pathname === '/api/orders/cancel') {
       const { order_id, mode = 'RETURNED_RESTOCK' } = body;
       const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(order_id)}`);
