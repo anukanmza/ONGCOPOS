@@ -16,13 +16,20 @@ const DEFAULT_LOYALTY_SETTINGS = {
 };
 
 const DEFAULT_DELIVERY_POINTS = [
-  { id: 'DP-01', name: 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', landmark_desc: 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ)', map_x: 52, map_y: 10, sort_order: 1, is_active: true },
-  { id: 'DP-02', name: 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', landmark_desc: 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', map_x: 54, map_y: 26, sort_order: 2, is_active: true },
-  { id: 'DP-03', name: 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', landmark_desc: 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', map_x: 56, map_y: 44, sort_order: 3, is_active: true },
-  { id: 'DP-04', name: 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', landmark_desc: 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', map_x: 58, map_y: 60, sort_order: 4, is_active: true },
-  { id: 'DP-05', name: 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', landmark_desc: 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', map_x: 60, map_y: 74, sort_order: 5, is_active: true },
-  { id: 'DP-06', name: 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', landmark_desc: 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้', map_x: 62, map_y: 90, sort_order: 6, is_active: true }
+  { id: 'DP-01', name: 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', landmark_desc: 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ / ฝั่งซ้าย)', map_x: 12, map_y: 44, sort_order: 1, is_active: true },
+  { id: 'DP-02', name: 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', landmark_desc: 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', map_x: 28, map_y: 46, sort_order: 2, is_active: true },
+  { id: 'DP-03', name: 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', landmark_desc: 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', map_x: 48, map_y: 36, sort_order: 3, is_active: true },
+  { id: 'DP-04', name: 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', landmark_desc: 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', map_x: 58, map_y: 52, sort_order: 4, is_active: true },
+  { id: 'DP-05', name: 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', landmark_desc: 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', map_x: 74, map_y: 48, sort_order: 5, is_active: true },
+  { id: 'DP-06', name: 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', landmark_desc: 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้ (ฝั่งขวา)', map_x: 90, map_y: 50, sort_order: 6, is_active: true }
 ];
+
+const DEFAULT_DELIVERY_MAP_CONFIG = {
+  custom_image_url: '',
+  orientation: 'HORIZONTAL', // ทิศเหนืออยู่ซ้าย, ใต้อยู่ขวา, แม่น้ำโขงอยู่ด้านบน
+  river_position: 'TOP',
+  custom_landmarks: []
+};
 
 function computeCustomerLoyaltyUpdate(customer, netTotal, redeemPoints, loyaltySettings = DEFAULT_LOYALTY_SETTINGS) {
   const cfg = { ...DEFAULT_LOYALTY_SETTINGS, ...(loyaltySettings || {}) };
@@ -480,7 +487,16 @@ async function getSupabaseBootstrapData() {
       loyaltySettings = { ...DEFAULT_LOYALTY_SETTINGS, ...parsed };
     } catch {}
   }
-  const customers = rawCustomers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG' && c.id !== 'SYS-MODIFIER-GROUPS');
+  let deliveryMapConfig = { ...DEFAULT_DELIVERY_MAP_CONFIG };
+  const sysMapRow = rawCustomers.find(c => c.id === 'SYS-DELIVERY-MAP-CONFIG');
+  if (sysMapRow && sysMapRow.note) {
+    try {
+      const parsed = JSON.parse(sysMapRow.note);
+      deliveryMapConfig = { ...DEFAULT_DELIVERY_MAP_CONFIG, ...parsed };
+    } catch {}
+  }
+
+  const customers = rawCustomers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG' && c.id !== 'SYS-MODIFIER-GROUPS' && c.id !== 'SYS-DELIVERY-POINTS' && c.id !== 'SYS-DELIVERY-MAP-CONFIG');
 
   const allBills = allValidOrders.map(o => {
     const tbl = o.table_id ? tableMap.get(o.table_id) : null;
@@ -520,6 +536,7 @@ async function getSupabaseBootstrapData() {
     recipeItems,
     tables,
     deliveryPoints,
+    deliveryMapConfig,
     customers: customers.map(c => ({ ...c, points: Number(c.points || 0), total_spent: Number(c.total_spent || 0) })),
     loyaltySettings,
     allBills,
@@ -559,6 +576,7 @@ async function getSupabaseBootstrapData() {
 module.exports = {
   DEFAULT_LOYALTY_SETTINGS,
   DEFAULT_DELIVERY_POINTS,
+  DEFAULT_DELIVERY_MAP_CONFIG,
   computeCustomerLoyaltyUpdate,
   setRuntimeSupabaseConfig,
   getSupabaseConfig,

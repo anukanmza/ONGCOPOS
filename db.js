@@ -252,12 +252,23 @@ function initSchema() {
     if (dpCount === 0) {
       const insDp = db.prepare('INSERT OR IGNORE INTO delivery_points (id, name, landmark_desc, map_x, map_y, sort_order, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
       const now = new Date().toISOString();
-      insDp.run('DP-01', 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ)', 52, 10, 1, 1, now);
-      insDp.run('DP-02', 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', 54, 26, 2, 1, now);
-      insDp.run('DP-03', 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', 56, 44, 3, 1, now);
-      insDp.run('DP-04', 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', 58, 60, 4, 1, now);
-      insDp.run('DP-05', 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', 60, 74, 5, 1, now);
-      insDp.run('DP-06', 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้', 62, 90, 6, 1, now);
+      insDp.run('DP-01', 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ / ฝั่งซ้าย)', 12, 44, 1, 1, now);
+      insDp.run('DP-02', 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', 28, 46, 2, 1, now);
+      insDp.run('DP-03', 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', 48, 36, 3, 1, now);
+      insDp.run('DP-04', 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', 58, 52, 4, 1, now);
+      insDp.run('DP-05', 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', 74, 48, 5, 1, now);
+      insDp.run('DP-06', 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้ (ฝั่งขวา)', 90, 50, 6, 1, now);
+    } else {
+      // Migrate old vertical layout coordinates (52, 10) to horizontal layout (North Left -> South Right)
+      const dp1 = db.prepare("SELECT map_x, map_y FROM delivery_points WHERE id = 'DP-01'").get();
+      if (dp1 && dp1.map_x === 52 && dp1.map_y === 10) {
+        db.prepare("UPDATE delivery_points SET map_x = 12, map_y = 44 WHERE id = 'DP-01'").run();
+        db.prepare("UPDATE delivery_points SET map_x = 28, map_y = 46 WHERE id = 'DP-02'").run();
+        db.prepare("UPDATE delivery_points SET map_x = 48, map_y = 36 WHERE id = 'DP-03'").run();
+        db.prepare("UPDATE delivery_points SET map_x = 58, map_y = 52 WHERE id = 'DP-04'").run();
+        db.prepare("UPDATE delivery_points SET map_x = 74, map_y = 48 WHERE id = 'DP-05'").run();
+        db.prepare("UPDATE delivery_points SET map_x = 90, map_y = 50 WHERE id = 'DP-06'").run();
+      }
     }
   } catch {}
 

@@ -61,13 +61,19 @@ function createInitialSeedState() {
       { id: 'GRP-TOPPING', name: 'ท็อปปิ้งไข่ & เพิ่มเติม', selection_type: 'MULTIPLE', is_required: false, sort_order: 2 }
     ],
     deliveryPoints: [
-      { id: 'DP-01', name: 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', landmark_desc: 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ)', map_x: 52, map_y: 10, sort_order: 1, is_active: 1 },
-      { id: 'DP-02', name: 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', landmark_desc: 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', map_x: 54, map_y: 26, sort_order: 2, is_active: 1 },
-      { id: 'DP-03', name: 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', landmark_desc: 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', map_x: 56, map_y: 44, sort_order: 3, is_active: 1 },
-      { id: 'DP-04', name: 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', landmark_desc: 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', map_x: 58, map_y: 60, sort_order: 4, is_active: 1 },
-      { id: 'DP-05', name: 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', landmark_desc: 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', map_x: 60, map_y: 74, sort_order: 5, is_active: 1 },
-      { id: 'DP-06', name: 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', landmark_desc: 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้', map_x: 62, map_y: 90, sort_order: 6, is_active: 1 }
+      { id: 'DP-01', name: 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', landmark_desc: 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ / ฝั่งซ้าย)', map_x: 12, map_y: 44, sort_order: 1, is_active: 1 },
+      { id: 'DP-02', name: 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', landmark_desc: 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', map_x: 28, map_y: 46, sort_order: 2, is_active: 1 },
+      { id: 'DP-03', name: 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', landmark_desc: 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', map_x: 48, map_y: 36, sort_order: 3, is_active: 1 },
+      { id: 'DP-04', name: 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', landmark_desc: 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', map_x: 58, map_y: 52, sort_order: 4, is_active: 1 },
+      { id: 'DP-05', name: 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', landmark_desc: 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', map_x: 74, map_y: 48, sort_order: 5, is_active: 1 },
+      { id: 'DP-06', name: 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', landmark_desc: 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้ (ฝั่งขวา)', map_x: 90, map_y: 50, sort_order: 6, is_active: 1 }
     ],
+    deliveryMapConfig: {
+      custom_image_url: '',
+      orientation: 'HORIZONTAL',
+      river_position: 'TOP',
+      custom_landmarks: []
+    },
     modifiers: [
       { id: 'MOD-LESS-SPICY', group_id: 'GRP-SPICY', name: 'เผ็ดน้อย', voice_keywords: ['เผ็ดน้อย', 'พริกเม็ดเดียว'], extra_price: 0, extra_cost: 0 },
       { id: 'MOD-MED-SPICY', group_id: 'GRP-SPICY', name: 'เผ็ดกลาง', voice_keywords: ['เผ็ดกลาง', 'เผ็ดปกติ'], extra_price: 0, extra_cost: 0 },
@@ -199,13 +205,42 @@ function loadLocalDb() {
         }
         if (!Array.isArray(parsed.deliveryPoints) || parsed.deliveryPoints.length === 0) {
           parsed.deliveryPoints = [
-            { id: 'DP-01', name: 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', landmark_desc: 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ)', map_x: 52, map_y: 10, sort_order: 1, is_active: 1 },
-            { id: 'DP-02', name: 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', landmark_desc: 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', map_x: 54, map_y: 26, sort_order: 2, is_active: 1 },
-            { id: 'DP-03', name: 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', landmark_desc: 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', map_x: 56, map_y: 44, sort_order: 3, is_active: 1 },
-            { id: 'DP-04', name: 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', landmark_desc: 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', map_x: 58, map_y: 60, sort_order: 4, is_active: 1 },
-            { id: 'DP-05', name: 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', landmark_desc: 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', map_x: 60, map_y: 74, sort_order: 5, is_active: 1 },
-            { id: 'DP-06', name: 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', landmark_desc: 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้', map_x: 62, map_y: 90, sort_order: 6, is_active: 1 }
+            { id: 'DP-01', name: 'หอเจ้าแม่สองนางพี่น้อง / วัดศรีมงคลใต้', landmark_desc: 'ซอยสองนางสถิตย์ ริมแม่น้ำโขง (ทิศเหนือ / ฝั่งซ้าย)', map_x: 12, map_y: 44, sort_order: 1, is_active: 1 },
+            { id: 'DP-02', name: 'ช่วงซอยบริหารชนบท - ซอยวิเศษมุกดารักษ์', landmark_desc: 'ทางเดินเลียบโขงหน้าซอยบริหารชนบท', map_x: 28, map_y: 46, sort_order: 2, is_active: 1 },
+            { id: 'DP-03', name: 'ศาลาขาว ตลาดอินโดจีน (Rau Rak Pavillion)', landmark_desc: 'จุดตัด ถ.พิทักษ์พนมเขต ศาลาขาวริมโขง', map_x: 48, map_y: 36, sort_order: 3, is_active: 1 },
+            { id: 'DP-04', name: 'ลานตลาดอินโดจีน / หน้าวัดยอดแก้วศรีวิชัย', landmark_desc: 'ศูนย์กลางตลาดอินโดจีน ลานกิจกรรมริมโขง', map_x: 58, map_y: 52, sort_order: 4, is_active: 1 },
+            { id: 'DP-05', name: 'ช่วงซอยศศิวงศ์ - ซอยจันทร์เทพ', landmark_desc: 'ทางเดินเลียบโขงช่วงอาคารตลาดอินโดจีนตอนใต้', map_x: 74, map_y: 48, sort_order: 5, is_active: 1 },
+            { id: 'DP-06', name: 'หน้าโรงแรม Riverfront Hotel / คุ้นคุ้น คิทเช่น', landmark_desc: 'ช่วงซอยจ่างวาง ปลายตลาดอินโดจีนฝั่งทิศใต้ (ฝั่งขวา)', map_x: 90, map_y: 50, sort_order: 6, is_active: 1 }
           ];
+          changed = true;
+        } else {
+          // If first point still has old vertical coords (52, 10), migrate to horizontal layout
+          const dp1 = parsed.deliveryPoints.find(p => p.id === 'DP-01');
+          if (dp1 && dp1.map_x === 52 && dp1.map_y === 10) {
+            const hMap = {
+              'DP-01': { x: 12, y: 44 },
+              'DP-02': { x: 28, y: 46 },
+              'DP-03': { x: 48, y: 36 },
+              'DP-04': { x: 58, y: 52 },
+              'DP-05': { x: 74, y: 48 },
+              'DP-06': { x: 90, y: 50 }
+            };
+            for (const pt of parsed.deliveryPoints) {
+              if (hMap[pt.id]) {
+                pt.map_x = hMap[pt.id].x;
+                pt.map_y = hMap[pt.id].y;
+              }
+            }
+            changed = true;
+          }
+        }
+        if (!parsed.deliveryMapConfig || typeof parsed.deliveryMapConfig !== 'object') {
+          parsed.deliveryMapConfig = {
+            custom_image_url: '',
+            orientation: 'HORIZONTAL',
+            river_position: 'TOP',
+            custom_landmarks: []
+          };
           changed = true;
         }
         for (const p of (parsed.products || [])) {
@@ -384,6 +419,12 @@ function buildLocalBootstrap() {
     modifierGroups: db.modifierGroups || [],
     modifiers: db.modifiers,
     deliveryPoints: (db.deliveryPoints || []).filter(p => p.is_active !== 0),
+    deliveryMapConfig: db.deliveryMapConfig || {
+      custom_image_url: '',
+      orientation: 'HORIZONTAL',
+      river_position: 'TOP',
+      custom_landmarks: []
+    },
     ingredients: db.ingredients,
     recipeItems: enrichedRecipes,
     tables,
@@ -1534,6 +1575,18 @@ window.LocalPosEngine = {
     }
     saveLocalDb(db);
     return { success: true, ptId, data: buildLocalBootstrap() };
+  },
+
+  saveDeliveryMapConfig(body) {
+    const db = loadLocalDb();
+    db.deliveryMapConfig = {
+      custom_image_url: body.custom_image_url || '',
+      orientation: body.orientation || 'HORIZONTAL',
+      river_position: body.river_position || 'TOP',
+      custom_landmarks: Array.isArray(body.custom_landmarks) ? body.custom_landmarks : []
+    };
+    saveLocalDb(db);
+    return { success: true, deliveryMapConfig: db.deliveryMapConfig, data: buildLocalBootstrap() };
   },
 
   deleteDeliveryPoint(body) {

@@ -478,17 +478,19 @@ function render() {
   `;
 }
 
-// Render Delivery Section with Indochina Market Pixel Map
+// Render Delivery Section with Indochina Market Pixel Map (Horizontal: North on Left, South on Right, Mekong River on Top)
 function renderDeliverySection() {
   const pts = (orderState.data?.deliveryPoints || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const curPt = pts.find(p => p.id === orderState.selectedDeliveryPointId) || pts[0];
+  const mapCfg = orderState.data?.deliveryMapConfig || { orientation: 'HORIZONTAL', river_position: 'TOP', custom_image_url: '', custom_landmarks: [] };
+  const customLandmarks = Array.isArray(mapCfg.custom_landmarks) ? mapCfg.custom_landmarks : [];
 
   return `
     <div class="co-notice-banner">
       <span style="font-size:18px;">📍</span>
       <div>
         <b>บริการส่งด่วนเฉพาะเส้น ตลาดอินโดจีน มุกดาหาร</b>
-        <div style="font-size:11px; color:#155e75;">เลือกจุดรับของบนแผนที่ด้านล่าง ไรเดอร์จะนำส่งถึงจุดที่ใกล้คุณที่สุด</div>
+        <div style="font-size:11px; color:#155e75;">เลือกจุดรับของบนแผนที่ด้านล่าง ไรเดอร์จะนำส่งถึงจุดที่ใกล้คุณที่สุด (เหนืออยู่ซ้าย ◀ | ใต้อยู่ขวา ▶ | โขงอยู่บน ▲)</div>
       </div>
     </div>
 
@@ -502,66 +504,164 @@ function renderDeliverySection() {
         </div>
       </div>
 
-      <!-- Interactive Pixel Map -->
+      <!-- Interactive Pixel Map (Horizontal Orientation) -->
       <div class="co-map-wrapper">
-        <svg viewBox="0 0 800 360" preserveAspectRatio="none" style="width:100%; height:100%; display:block;">
-          <defs>
-            <linearGradient id="odMekongWater" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#0284c7" />
-              <stop offset="50%" stop-color="#0369a1" />
-              <stop offset="100%" stop-color="#075985" />
-            </linearGradient>
-            <pattern id="odPixelWave" width="24" height="12" patternUnits="userSpaceOnUse">
-              <rect x="0" y="2" width="10" height="2" fill="#38bdf8" opacity="0.6"/>
-              <rect x="12" y="8" width="10" height="2" fill="#bae6fd" opacity="0.5"/>
-            </pattern>
-          </defs>
+        ${mapCfg.custom_image_url ? `
+          <!-- Custom Drawn Map Background -->
+          <img
+            src="${mapCfg.custom_image_url}"
+            alt="แผนผังที่วาดเอง"
+            style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block;"
+          />
+        ` : `
+          <!-- แผนผัง Pixel Art มาตรฐานแบบแนวนอน (ทิศเหนืออยู่ซ้าย, ทิศใต้อยู่ขวา, แม่น้ำโขงอยู่ด้านบน) -->
+          <svg viewBox="0 0 1000 380" preserveAspectRatio="none" style="width:100%; height:100%; display:block;">
+            <defs>
+              <linearGradient id="odMekongHorizontalWater" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" stop-color="#0284c7" />
+                <stop offset="60%" stop-color="#0369a1" />
+                <stop offset="100%" stop-color="#075985" />
+              </linearGradient>
+              <pattern id="odPixelWaveH" width="24" height="12" patternUnits="userSpaceOnUse">
+                <rect x="0" y="2" width="10" height="2" fill="#38bdf8" opacity="0.6"/>
+                <rect x="12" y="8" width="10" height="2" fill="#bae6fd" opacity="0.5"/>
+              </pattern>
+            </defs>
 
-          <!-- Left: City Area -->
-          <rect x="0" y="0" width="280" height="360" fill="#334155" />
-          <rect x="16" y="14" width="220" height="42" fill="#475569" stroke="#1e293b" stroke-width="2"/>
-          <text x="24" y="38" fill="#fef3c7" font-size="9" font-family="monospace">หอสองนาง / วัดศรีมงคล</text>
+            <!-- 1. Top Section (Y: 0 to 110): แม่น้ำโขง (Mekong River) ทอดยาวจากซ้าย (เหนือ) ไปขวา (ใต้) -->
+            <rect x="0" y="0" width="1000" height="110" fill="url(#odMekongHorizontalWater)" />
+            <rect x="0" y="0" width="1000" height="110" fill="url(#odPixelWaveH)" />
 
-          <rect x="0" y="58" width="300" height="12" fill="#1e293b"/>
-          <text x="12" y="67" fill="#94a3b8" font-size="8" font-family="monospace">ซ.สองนางสถิตย์ ───</text>
+            <!-- Longtail Boats on River -->
+            <g transform="translate(180, 40)">
+              <polygon points="0,10 42,10 32,22 -8,22" fill="#b45309" />
+              <rect x="6" y="2" width="20" height="8" fill="#f59e0b" />
+              <line x1="42" y1="10" x2="58" y2="2" stroke="#475569" stroke-width="2" />
+              <text x="0" y="34" fill="#e0f2fe" font-size="8.5" font-family="monospace">เรือหางยาว</text>
+            </g>
 
-          <rect x="16" y="74" width="220" height="44" fill="#475569" stroke="#1e293b" stroke-width="2"/>
-          <text x="24" y="99" fill="#d1fae5" font-size="8.5" font-family="monospace">ซ.บริหารชนบท / ซ.วิเศษฯ</text>
+            <g transform="translate(680, 30)">
+              <polygon points="0,10 45,10 35,22 -8,22" fill="#b45309" />
+              <rect x="8" y="2" width="22" height="8" fill="#ef4444" />
+              <line x1="45" y1="10" x2="62" y2="2" stroke="#475569" stroke-width="2" />
+              <text x="4" y="34" fill="#e0f2fe" font-size="8.5" font-family="monospace">เรือข้ามฟาก</text>
+            </g>
 
-          <rect x="0" y="122" width="300" height="18" fill="#0f172a"/>
-          <text x="12" y="134" fill="#fbbf24" font-size="9" font-family="monospace" font-weight="bold">ถ.พิทักษ์พนมเขต ────▶</text>
+            <text x="500" y="42" fill="#bae6fd" font-size="16" font-family="monospace" font-weight="bold" text-anchor="middle" opacity="0.85">แม่น้ำโขง • MEKONG RIVER</text>
+            <text x="500" y="58" fill="#7dd3fc" font-size="9" font-family="monospace" text-anchor="middle" opacity="0.75">(มองข้ามไปเป็นฝั่ง สปป.ลาว / แขวงสะหวันนะเขต)</text>
 
-          <rect x="16" y="144" width="220" height="66" fill="#475569" stroke="#1e293b" stroke-width="2"/>
-          <rect x="22" y="148" width="100" height="58" fill="#ca8a04"/>
-          <text x="26" y="180" fill="#fff" font-size="9" font-family="monospace" font-weight="bold">ตลาดอินโดจีน</text>
+            <!-- 2. Embankment & Promenade (Y: 110 to 170): ลานคนเดินเลียบแม่น้ำโขง -->
+            <rect x="0" y="110" width="1000" height="60" fill="#78716c" />
+            <line x1="120" y1="110" x2="120" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+            <line x1="260" y1="110" x2="260" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+            <line x1="410" y1="110" x2="410" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+            <line x1="560" y1="110" x2="560" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+            <line x1="720" y1="110" x2="720" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+            <line x1="860" y1="110" x2="860" y2="170" stroke="#a8a29e" stroke-width="1.5" />
 
-          <rect x="0" y="214" width="300" height="12" fill="#1e293b"/>
-          <text x="12" y="223" fill="#94a3b8" font-size="8" font-family="monospace">ซ.ศศิวงศ์ ───</text>
+            <text x="70" y="142" fill="#f5f5f4" font-size="9" font-family="monospace" font-weight="bold">ลานคนเดินริมโขง</text>
+            <text x="780" y="142" fill="#f5f5f4" font-size="9" font-family="monospace" font-weight="bold">ลานคนเดินริมโขง</text>
 
-          <rect x="16" y="230" width="220" height="50" fill="#475569" stroke="#1e293b" stroke-width="2"/>
-          <text x="24" y="258" fill="#e5e7eb" font-size="8.5" font-family="monospace">ซ.จันทร์เทพ</text>
+            <!-- ศาลาขาว Rau Rak Mukdahan Pavilion on the promenade (Center) -->
+            <rect x="430" y="114" width="115" height="50" fill="#ffffff" stroke="#0f172a" stroke-width="2" rx="4"/>
+            <rect x="434" y="118" width="107" height="42" fill="#f8fafc"/>
+            <text x="487" y="136" fill="#0f172a" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">ศาลาขาวริมโขง</text>
+            <text x="487" y="150" fill="#475569" font-size="8" font-family="monospace" text-anchor="middle">Rau Rak Mukdahan</text>
 
-          <rect x="0" y="284" width="300" height="12" fill="#1e293b"/>
-          <text x="12" y="293" fill="#94a3b8" font-size="8" font-family="monospace">ซ.จ่างวาง ───</text>
+            <!-- 3. Road (Y: 170 to 230): ถนนสำราญชายโขง แนวนอน -->
+            <rect x="0" y="170" width="1000" height="60" fill="#1e293b" />
+            <line x1="0" y1="200" x2="1000" y2="200" stroke="#facc15" stroke-width="2.5" stroke-dasharray="16,12" />
+            <text x="220" y="194" fill="#e2e8f0" font-size="9" font-family="monospace">◀ ทิศเหนือ (ไปสะพานมิตรภาพ 2)</text>
+            <text x="500" y="218" fill="#fde047" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">ถนนสำราญชายโขง (SAMRAN CHAI KHONG RD)</text>
+            <text x="760" y="194" fill="#e2e8f0" font-size="9" font-family="monospace">ทิศใต้ (ไปสะพานห้วยมุก) ▶</text>
 
-          <rect x="16" y="300" width="220" height="50" fill="#1e3a8a"/>
-          <text x="24" y="328" fill="#bfdbfe" font-size="9" font-family="monospace" font-weight="bold">Riverfront Hotel</text>
+            <!-- 4. City / Buildings / Alleys (Y: 230 to 380): ตัวเมืองมุกดาหารและซอยต่างๆ -->
+            <rect x="0" y="230" width="1000" height="150" fill="#334155" />
 
-          <!-- Middle: Samran Chai Khong Rd -->
-          <rect x="280" y="0" width="60" height="360" fill="#1e293b" />
-          <line x1="310" y1="0" x2="310" y2="360" stroke="#facc15" stroke-width="2" stroke-dasharray="12,10" />
+            <!-- North/Left Block: หอเจ้าแม่สองนางพี่น้อง & วัดศรีมงคลใต้ -->
+            <rect x="14" y="244" width="105" height="110" fill="#b45309" stroke="#1e293b" stroke-width="2" rx="4"/>
+            <text x="66" y="295" fill="#fef3c7" font-size="9.5" font-family="monospace" font-weight="bold" text-anchor="middle">หอเจ้าแม่สองนาง</text>
+            <text x="66" y="312" fill="#fde68a" font-size="8" font-family="monospace" text-anchor="middle">& ต้นไม้ศักดิ์สิทธิ์</text>
 
-          <!-- Promenade -->
-          <rect x="340" y="0" width="130" height="360" fill="#78716c" />
-          <rect x="360" y="116" width="90" height="42" fill="#ffffff" stroke="#0f172a" stroke-width="2" rx="4"/>
-          <text x="368" y="140" fill="#0f172a" font-size="9" font-family="monospace" font-weight="bold">ศาลาขาวริมโขง</text>
+            <!-- Alley 1: ซอยสองนางสถิตย์ -->
+            <rect x="125" y="230" width="36" height="150" fill="#1e293b"/>
+            <text x="143" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 143, 290)">ซ.สองนางสถิตย์ ▼</text>
 
-          <!-- Embankment & Mekong River -->
-          <rect x="470" y="0" width="20" height="360" fill="#57534e" />
-          <rect x="490" y="0" width="310" height="360" fill="url(#odMekongWater)" />
-          <rect x="490" y="0" width="310" height="360" fill="url(#odPixelWave)" />
-          <text x="680" y="60" fill="#bae6fd" font-size="14" font-family="monospace" font-weight="bold">แม่น้ำโขง</text>
-        </svg>
+            <!-- วัดศรีมงคลใต้ -->
+            <rect x="168" y="244" width="95" height="110" fill="#991b1b" stroke="#1e293b" stroke-width="2" rx="4"/>
+            <text x="215" y="295" fill="#fee2e2" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">วัดศรีมงคลใต้</text>
+            <text x="215" y="312" fill="#fecaca" font-size="8" font-family="monospace" text-anchor="middle">พระอารามหลวง</text>
+
+            <!-- Alley 2: ซอยบริหารชนบท -->
+            <rect x="270" y="230" width="34" height="150" fill="#1e293b"/>
+            <text x="287" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 287, 290)">ซ.บริหารชนบท ▼</text>
+
+            <!-- ตึกแถว 1 -->
+            <rect x="310" y="244" width="48" height="110" fill="#065f46" stroke="#1e293b" stroke-width="2"/>
+            <text x="334" y="300" fill="#d1fae5" font-size="8" font-family="monospace" text-anchor="middle">ร้านค้า</text>
+
+            <!-- Alley 3: ซอยวิเศษมุกดารักษ์ -->
+            <rect x="364" y="230" width="34" height="150" fill="#1e293b"/>
+            <text x="381" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 381, 290)">ซ.วิเศษมุกดารักษ์ ▼</text>
+
+            <!-- ตลาดอินโดจีน อาคารใหญ่ (Center) -->
+            <rect x="406" y="244" width="95" height="110" fill="#ca8a04" stroke="#1e293b" stroke-width="2" rx="4"/>
+            <text x="453" y="290" fill="#ffffff" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">อาคารตลาดอินโดจีน</text>
+            <text x="453" y="306" fill="#fef08a" font-size="8" font-family="monospace" text-anchor="middle">INDOCHINA MARKET</text>
+
+            <!-- ถนนพิทักษ์พนมเขต (ทางเข้าหลัก) -->
+            <rect x="508" y="230" width="44" height="150" fill="#0f172a"/>
+            <text x="530" y="290" fill="#fbbf24" font-size="9" font-family="monospace" font-weight="bold" transform="rotate(90, 530, 290)">ถ.พิทักษ์พนมเขต ▼</text>
+
+            <!-- วัดยอดแก้วศรีวิชัย -->
+            <rect x="560" y="244" width="115" height="110" fill="#991b1b" stroke="#1e293b" stroke-width="2" rx="4"/>
+            <text x="617" y="295" fill="#fee2e2" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">วัดยอดแก้วศรีวิชัย</text>
+            <text x="617" y="312" fill="#fecaca" font-size="8" font-family="monospace" text-anchor="middle">ศูนย์กลางชุมชน</text>
+
+            <!-- Alley 4: ซอยศศิวงศ์ -->
+            <rect x="682" y="230" width="34" height="150" fill="#1e293b"/>
+            <text x="699" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 699, 290)">ซ.ศศิวงศ์ ▼</text>
+
+            <!-- ตึกแถว 2 -->
+            <rect x="722" y="244" width="48" height="110" fill="#374151" stroke="#1e293b" stroke-width="2"/>
+            <text x="746" y="300" fill="#e5e7eb" font-size="8" font-family="monospace" text-anchor="middle">ร้านค้า</text>
+
+            <!-- Alley 5: ซอยจันทร์เทพ -->
+            <rect x="776" y="230" width="34" height="150" fill="#1e293b"/>
+            <text x="793" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 793, 290)">ซ.จันทร์เทพ ▼</text>
+
+            <!-- South/Right Block: Riverfront Hotel & คุ้นคุ้น คิทเช่น -->
+            <rect x="818" y="244" width="110" height="110" fill="#1e3a8a" stroke="#1e293b" stroke-width="2" rx="4"/>
+            <text x="873" y="290" fill="#bfdbfe" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">Riverfront Hotel</text>
+            <text x="873" y="306" fill="#93c5fd" font-size="8.5" font-family="monospace" text-anchor="middle">คุ้นคุ้น คิทเช่น</text>
+
+            <!-- Alley 6: ซอยจ่างวาง -->
+            <rect x="934" y="230" width="34" height="150" fill="#1e293b"/>
+            <text x="951" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 951, 290)">ซ.จ่างวาง ▼</text>
+
+            <!-- เข็มทิศ (Compass) แสดงทิศทางชัดเจน -->
+            <g transform="translate(48, 48)">
+              <rect x="-36" y="-36" width="72" height="72" fill="#0f172a" opacity="0.88" rx="8" stroke="#334155" stroke-width="1.5"/>
+              <text x="-24" y="4" fill="#f87171" font-size="10" font-weight="bold">◀ N เหนือ</text>
+              <text x="24" y="4" fill="#94a3b8" font-size="9" text-anchor="end">ใต้ ▶</text>
+              <text x="0" y="-18" fill="#38bdf8" font-size="8.5" text-anchor="middle">▲ แม่น้ำโขง</text>
+              <text x="0" y="24" fill="#94a3b8" font-size="8.5" text-anchor="middle">▼ ในเมือง</text>
+            </g>
+          </svg>
+        `}
+
+        <!-- User-defined Custom Landmarks on Map -->
+        ${customLandmarks.map(lm => `
+          <div
+            style="position:absolute; left:${lm.map_x}%; top:${lm.map_y}%; transform:translate(-50%, -50%); z-index:8; pointer-events:none;"
+            title="${lm.name}${lm.details ? ` (${lm.details})` : ''}"
+          >
+            <div style="background:rgba(15,23,42,0.88); color:#f1f5f9; font-size:9.5px; font-weight:700; padding:2px 6px; border-radius:6px; border:1px solid #38bdf8; display:flex; align-items:center; gap:3px; white-space:nowrap; box-shadow:0 2px 4px rgba(0,0,0,0.6);">
+              <span>${lm.icon || '📍'}</span>
+              <span>${lm.name}</span>
+            </div>
+          </div>
+        `).join('')}
 
         <!-- Dynamic Pins from Database -->
         ${pts.map((p, idx) => `
@@ -1248,3 +1348,4 @@ function renderLiveTrackerView() {
 
 // Start App
 fetchBootstrap();
+

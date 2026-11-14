@@ -1356,6 +1356,33 @@ module.exports = async (req, res) => {
       return send(200, { success: true, data: await getSupabaseBootstrapData() });
     }
 
+    if (req.method === 'POST' && pathname === '/api/delivery-map/save-config') {
+      const { custom_image_url = '', orientation = 'HORIZONTAL', river_position = 'TOP', custom_landmarks = [] } = body;
+      const cfgObj = {
+        custom_image_url: custom_image_url || '',
+        orientation: orientation || 'HORIZONTAL',
+        river_position: river_position || 'TOP',
+        custom_landmarks: Array.isArray(custom_landmarks) ? custom_landmarks : []
+      };
+      try {
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-DELIVERY-MAP-CONFIG',
+            name: '__DELIVERY_MAP_CONFIG__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(cfgObj),
+            created_at: new Date().toISOString()
+          }
+        });
+      } catch {}
+      return send(200, { success: true, deliveryMapConfig: cfgObj, data: await getSupabaseBootstrapData() });
+    }
+
     if (req.method === 'POST' && pathname === '/api/orders/cancel') {
       const { order_id, mode = 'RETURNED_RESTOCK' } = body;
       const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(order_id)}`);

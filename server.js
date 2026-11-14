@@ -129,8 +129,20 @@ function getFullBootstrapData() {
 
   const rawTables = db.prepare('SELECT * FROM dining_tables ORDER BY id').all();
   const rawCustomers = db.prepare('SELECT * FROM customers ORDER BY total_spent DESC, created_at DESC').all();
-  const customers = rawCustomers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG');
+  const customers = rawCustomers.filter(c => !c.id.startsWith('SYS-'));
   const loyaltySettings = getLoyaltySettingsFromDb();
+  let deliveryMapConfig = {
+    custom_image_url: '',
+    orientation: 'HORIZONTAL',
+    river_position: 'TOP',
+    custom_landmarks: []
+  };
+  try {
+    const row = db.prepare("SELECT note FROM customers WHERE id = 'SYS-DELIVERY-MAP-CONFIG'").get();
+    if (row && row.note) {
+      deliveryMapConfig = { ...deliveryMapConfig, ...JSON.parse(row.note) };
+    }
+  } catch {}
   const openOrders = db.prepare("SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at DESC").all();
   const allRecentOrders = db.prepare("SELECT * FROM orders WHERE status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED') ORDER BY created_at DESC LIMIT 80").all();
   const allOrderIds = allRecentOrders.map(o => o.id);
@@ -331,6 +343,8 @@ function getFullBootstrapData() {
     ingredients,
     recipeItems,
     tables,
+    deliveryPoints,
+    deliveryMapConfig,
     customers,
     loyaltySettings,
     allBills,
@@ -1818,6 +1832,26 @@ const server = http.createServer(async (req, res) => {
       db.prepare('DELETE FROM delivery_points WHERE id = ?').run(id);
       broadcastUpdate('delivery_point_deleted', { id });
       return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    // Save Delivery Map Config (Custom Image & Landmarks)
+    if (req.method === 'POST' && pathname === '/api/delivery-map/save-config') {
+      const body = await parseJsonBody(req);
+      const { custom_image_url = '', orientation = 'HORIZONTAL', river_position = 'TOP', custom_landmarks = [] } = body;
+      const cfgObj = {
+        custom_image_url: custom_image_url || '',
+        orientation: orientation || 'HORIZONTAL',
+        river_position: river_position || 'TOP',
+        custom_landmarks: Array.isArray(custom_landmarks) ? custom_landmarks : []
+      };
+      db.prepare(`
+        INSERT INTO customers (id, name, phone, tier, points, total_spent, note, created_at)
+        VALUES ('SYS-DELIVERY-MAP-CONFIG', '__DELIVERY_MAP_CONFIG__', '', 'SYSTEM', 0, 0, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET note = excluded.note
+      `).run(JSON.stringify(cfgObj), new Date().toISOString());
+
+      broadcastUpdate('delivery_map_config_saved', { config: cfgObj });
+      return sendJson(res, 200, { success: true, deliveryMapConfig: cfgObj, data: getFullBootstrapData() });
     }
 
     // Add Daily Expense
