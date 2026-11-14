@@ -144,7 +144,7 @@ function getFullBootstrapData() {
     }
   } catch {}
   const openOrders = db.prepare("SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at DESC").all();
-  const allRecentOrders = db.prepare("SELECT * FROM orders WHERE status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED') ORDER BY created_at DESC LIMIT 80").all();
+  const allRecentOrders = db.prepare("SELECT * FROM orders WHERE status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED') ORDER BY created_at DESC LIMIT 1000").all();
   const allOrderIds = allRecentOrders.map(o => o.id);
 
   let allOrderItemsWithMeta = [];

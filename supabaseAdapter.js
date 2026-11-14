@@ -213,12 +213,12 @@ async function getSupabaseBootstrapData() {
     sbRest('ingredients?select=*&order=id.asc'),
     sbRest('recipe_items?select=*'),
     sbRest('dining_tables?select=*&order=id.asc'),
-    sbRest('orders?select=*&order=created_at.desc&limit=100'),
-    sbRest('order_items?select=*&order=created_at.asc&limit=500'),
-    sbRest('stock_in_receipts?select=*&order=created_at.desc&limit=60'),
+    sbRest('orders?select=*&order=created_at.desc&limit=1000'),
+    sbRest('order_items?select=*&order=created_at.desc&limit=5000'),
+    sbRest('stock_in_receipts?select=*&order=created_at.desc&limit=300'),
     sbRest('stock_in_items?select=*'),
-    sbRest('inventory_logs?select=*&order=created_at.desc&limit=60'),
-    sbRest('expenses?select=*&order=created_at.desc&limit=60'),
+    sbRest('inventory_logs?select=*&order=created_at.desc&limit=300'),
+    sbRest('expenses?select=*&order=created_at.desc&limit=500'),
     sbRest('customers?select=*&order=total_spent.desc').catch(() => [
       { id: 'CUS-001', name: 'ป้าสมศรี (ซอย 3)', phone: '081-234-5678', tier: 'VIP', points: 120, total_spent: 3450, note: 'ชอบสั่งกะเพราเผ็ดน้อย' },
       { id: 'CUS-002', name: 'พี่เอก (ช่างแอร์)', phone: '089-876-5432', tier: 'ขาประจำ', points: 45, total_spent: 1120, note: 'ซื้อน้ำแข็งและเครื่องดื่มประจำ' }
