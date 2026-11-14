@@ -710,7 +710,13 @@ window.LocalPosEngine = {
       if (ord && ord.customer_id && Array.isArray(db.customers)) {
         const cus = db.customers.find(c => c.id === ord.customer_id);
         if (cus) {
-          cus.points = (cus.points || 0) + Math.floor((ord.total_amount || 0) / 25);
+          const cfg = db.loyaltySettings || { spend_per_point: 25, points_earned: 1 };
+          const redeemPts = Math.max(0, Math.floor(Number(body.redeem_points) || 0));
+          const usedPts = Math.min(cus.points || 0, redeemPts);
+          const tierObj = (cfg.tiers || []).find(t => t.name === cus.tier);
+          const mult = tierObj ? (Number(tierObj.points_multiplier) || 1) : 1;
+          const earned = Math.floor(((ord.total_amount || 0) / (cfg.spend_per_point || 25)) * (cfg.points_earned || 1) * mult);
+          cus.points = Math.max(0, (cus.points || 0) - usedPts + earned);
           cus.total_spent = Math.round(((cus.total_spent || 0) + (ord.total_amount || 0)) * 100) / 100;
           cus.visit_count = (cus.visit_count || 0) + 1;
         }
@@ -963,7 +969,9 @@ window.LocalPosEngine = {
         if (cus) {
           const cfg = db.loyaltySettings || { spend_per_point: 25, points_earned: 1 };
           const usedPts = Math.min(cus.points || 0, Math.max(0, Math.floor(Number(redeem_points) || 0)));
-          const earned = Math.floor(((ord.total_amount || 0) / (cfg.spend_per_point || 25)) * (cfg.points_earned || 1));
+          const tierObj = (cfg.tiers || []).find(t => t.name === cus.tier);
+          const mult = tierObj ? (Number(tierObj.points_multiplier) || 1) : 1;
+          const earned = Math.floor(((ord.total_amount || 0) / (cfg.spend_per_point || 25)) * (cfg.points_earned || 1) * mult);
           cus.points = Math.max(0, (cus.points || 0) - usedPts + earned);
           cus.total_spent = Math.round(((cus.total_spent || 0) + (ord.total_amount || 0)) * 100) / 100;
           cus.visit_count = (cus.visit_count || 0) + 1;

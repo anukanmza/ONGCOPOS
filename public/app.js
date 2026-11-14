@@ -1428,7 +1428,7 @@ async function handleReturnTableItem(orderItemId, mode) {
 
 function getCheckoutCustomerObj() {
   if (!state.data || !state.data.customers) return null;
-  const cid = state.checkoutModalOrder?.customerId || state.selectedCustomerId;
+  const cid = state.checkoutModalOrder?.customerId || state.checkoutModalOrder?.customer_id || state.selectedCustomerId;
   if (!cid) return null;
   return state.data.customers.find(c => c.id === cid) || null;
 }
@@ -1440,7 +1440,10 @@ function getPointsDiscountBaht(redeemPoints, subtotal) {
   const unitPts = Math.max(1, Number(cfg.redeem_points_unit) || 10);
   const unitBaht = Math.max(1, Number(cfg.redeem_discount_baht) || 10);
   const rawDisc = Math.floor(pts / unitPts) * unitBaht;
-  return Math.min(Math.max(0, Number(subtotal) || 0), rawDisc);
+  if (typeof subtotal === 'number' && !isNaN(subtotal) && subtotal >= 0) {
+    return Math.min(subtotal, rawDisc);
+  }
+  return rawDisc;
 }
 
 function setCheckoutRedeemPoints(pts) {
@@ -1454,23 +1457,36 @@ function setCheckoutRedeemPoints(pts) {
   const cfg = getLoyaltySettings();
   const unitPts = Math.max(1, Number(cfg.redeem_points_unit) || 10);
   const unitBaht = Math.max(1, Number(cfg.redeem_discount_baht) || 10);
-  const maxByPoints = Math.floor((cus.points || 0) / unitPts) * unitPts;
-  const maxBySubtotal = Math.floor((co.subtotal || 0) / unitBaht) * unitPts;
+  const manualDisc = Math.max(0, Number(state.checkoutDiscount) || 0);
+  const remainingPayable = Math.max(0, (co.subtotal || 0) - manualDisc);
+
+  const maxByPoints = Math.floor((Number(cus.points) || 0) / unitPts) * unitPts;
+  const maxBySubtotal = unitBaht > 0 ? Math.floor(remainingPayable / unitBaht) * unitPts : 0;
   const maxAllowed = Math.max(0, Math.min(maxByPoints, maxBySubtotal));
 
   let requested = Math.max(0, Math.floor(Number(pts) || 0));
   if (requested > maxAllowed) requested = maxAllowed;
   // Snap to redeem_points_unit step
   requested = Math.floor(requested / unitPts) * unitPts;
-  if (requested > 0 && requested < (Number(cfg.min_redeem_points) || 0)) {
-    showToast(`⚠️ ต้องใช้แต้มขั้นต่ำอย่างน้อย ${cfg.min_redeem_points} แต้ม`);
-    return;
+
+  const minPts = Number(cfg.min_redeem_points) || 0;
+  if (requested > 0 && requested < minPts) {
+    if (Number(pts) > (Number(state.checkoutRedeemPoints) || 0)) {
+      const minStep = Math.ceil(minPts / unitPts) * unitPts;
+      if (minStep <= maxAllowed) {
+        requested = minStep;
+      } else {
+        showToast(`⚠️ ยอดแต้มสะสมหรือยอดบิลไม่พอสำหรับขั้นต่ำ ${minPts} แต้ม`);
+        return;
+      }
+    } else {
+      requested = 0;
+    }
   }
 
   state.checkoutRedeemPoints = requested;
-  const ptsDisc = getPointsDiscountBaht(requested, co.subtotal);
-  const manualDisc = Math.max(0, Number(state.checkoutManualDiscount) || 0);
-  const net = Math.max(0, co.subtotal - manualDisc - ptsDisc);
+  const ptsDisc = getPointsDiscountBaht(requested, remainingPayable);
+  const net = Math.max(0, (co.subtotal || 0) - manualDisc - ptsDisc);
   state.checkoutCashReceived = String(net);
   render();
 }
@@ -1576,8 +1592,9 @@ async function confirmCheckoutPayment() {
   const cus = getCheckoutCustomerObj();
   const cfg = getLoyaltySettings();
   const redeemPts = cus ? Math.max(0, Math.floor(Number(state.checkoutRedeemPoints) || 0)) : 0;
-  const ptsDiscount = cus ? getPointsDiscountBaht(redeemPts, co.subtotal) : 0;
   const manualDiscount = Math.max(0, Number(state.checkoutDiscount) || 0);
+  const remainingBeforePoints = Math.max(0, co.subtotal - manualDiscount);
+  const ptsDiscount = cus ? getPointsDiscountBaht(redeemPts, remainingBeforePoints) : 0;
   const totalDiscount = Math.min(co.subtotal, manualDiscount + ptsDiscount);
   const netTotal = Math.max(0, co.subtotal - totalDiscount);
   const cashRec = Number(state.checkoutCashReceived) || netTotal;
@@ -4302,25 +4319,27 @@ function renderModals() {
 
     const manualDiscount = Math.max(0, Number(state.checkoutDiscount) || 0);
     const redeemPts = Math.max(0, Number(state.checkoutRedeemPoints) || 0);
-    const pointsDiscount = getPointsDiscountBaht(redeemPts);
-    const totalDiscount = manualDiscount + pointsDiscount;
+    const remainingBeforePoints = Math.max(0, co.subtotal - manualDiscount);
+    const pointsDiscount = getPointsDiscountBaht(redeemPts, remainingBeforePoints);
+    const totalDiscount = Math.min(co.subtotal, manualDiscount + pointsDiscount);
     const netTotal = Math.max(0, co.subtotal - totalDiscount);
     const cashRec = Number(state.checkoutCashReceived) || 0;
     const change = Math.max(0, cashRec - netTotal);
 
-    // คำนวณแต้มที่จะได้รับจากยอดสุทธิของบิลนี้
+    // คำนวณแต้มที่จะได้รับจากยอดสุทธิของบิลนี้ (หลังหักส่วนลดทั้งหมดแล้ว)
     const spendUnit = Math.max(1, Number(ls.spend_per_point) || 25);
     const ptsPerUnit = Math.max(0, Number(ls.points_earned) || 1);
     const cusTierObj = cusObj ? (ls.tiers || []).find(t => t.name === cusObj.tier) : null;
     const tierMult = cusTierObj ? (Number(cusTierObj.points_multiplier) || 1) : 1;
-    const earnedPointsPreview = cusObj ? Math.floor((netTotal / spendUnit) * ptsPerUnit * tierMult) : 0;
+    const earnedPointsPreview = (cusObj && netTotal > 0) ? Math.floor((netTotal / spendUnit) * ptsPerUnit * tierMult) : 0;
 
     // คำนวณจำนวนแต้มสูงสุดที่ใช้แลกได้ในบิลนี้
     const redeemUnit = Math.max(1, Number(ls.redeem_points_unit) || 10);
     const redeemBahtPerUnit = Math.max(0, Number(ls.redeem_discount_baht) || 10);
     const maxUnitsByPoints = cusObj ? Math.floor((Number(cusObj.points) || 0) / redeemUnit) : 0;
-    const maxUnitsBySubtotal = redeemBahtPerUnit > 0 ? Math.floor(Math.max(0, co.subtotal - manualDiscount) / redeemBahtPerUnit) : 0;
+    const maxUnitsBySubtotal = redeemBahtPerUnit > 0 ? Math.floor(remainingBeforePoints / redeemBahtPerUnit) : 0;
     const maxRedeemPointsPossible = Math.max(0, Math.min(maxUnitsByPoints, maxUnitsBySubtotal) * redeemUnit);
+    const maxDiscountBaht = getPointsDiscountBaht(maxRedeemPointsPossible, remainingBeforePoints);
 
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.checkoutModalOrder=null; render();}">
@@ -4369,6 +4388,7 @@ function renderModals() {
                 onchange="
                   const cid = this.value || null;
                   const cfound = (state.data.customers || []).find(x => x.id === cid);
+                  state.checkoutModalOrder.customerId = cid;
                   state.checkoutModalOrder.customer_id = cid;
                   state.checkoutModalOrder.customer_name = cfound ? cfound.name : '';
                   if (state.checkoutModalOrder.mode === 'CURRENT_CART') state.selectedCustomerId = cid;
@@ -4421,7 +4441,7 @@ function renderModals() {
                       style="height:28px; padding:0 8px; font-size:11.5px;"
                       onclick="setCheckoutRedeemPoints(${maxRedeemPointsPossible})"
                     >
-                      ใช้แต้มสูงสุด (${maxRedeemPointsPossible} แต้ม = -฿${getPointsDiscountBaht(maxRedeemPointsPossible)})
+                      ใช้แต้มสูงสุด (${maxRedeemPointsPossible} แต้ม = -฿${maxDiscountBaht})
                     </button>
                   </div>
                 </div>
@@ -4467,8 +4487,11 @@ function renderModals() {
                 class="ttl-input"
                 value="${state.checkoutDiscount}"
                 oninput="
-                  state.checkoutDiscount=this.value;
-                  const nextNet = Math.max(0, ${co.subtotal} - (Number(this.value)||0) - ${pointsDiscount});
+                  state.checkoutDiscount = this.value;
+                  const mDisc = Math.max(0, Number(this.value) || 0);
+                  const rem = Math.max(0, ${co.subtotal} - mDisc);
+                  const pDisc = getPointsDiscountBaht(Number(state.checkoutRedeemPoints) || 0, rem);
+                  const nextNet = Math.max(0, ${co.subtotal} - mDisc - pDisc);
                   state.checkoutCashReceived = String(nextNet);
                   render();
                 "
