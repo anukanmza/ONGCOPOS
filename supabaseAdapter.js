@@ -186,7 +186,8 @@ async function getSupabaseBootstrapData() {
     receipts,
     receiptItems,
     inventoryLogs,
-    expenses
+    expenses,
+    fetchedCustomers
   ] = await Promise.all([
     sbRest('categories?select=*&order=id.asc'),
     sbRest('products?select=*&is_active=eq.true&order=item_type.desc,id.asc'),
@@ -200,8 +201,17 @@ async function getSupabaseBootstrapData() {
     sbRest('stock_in_receipts?select=*&order=created_at.desc&limit=60'),
     sbRest('stock_in_items?select=*'),
     sbRest('inventory_logs?select=*&order=created_at.desc&limit=60'),
-    sbRest('expenses?select=*&order=created_at.desc&limit=60')
+    sbRest('expenses?select=*&order=created_at.desc&limit=60'),
+    sbRest('customers?select=*&order=total_spent.desc').catch(() => [
+      { id: 'CUS-001', name: 'ป้าสมศรี (ซอย 3)', phone: '081-234-5678', tier: 'VIP', points: 120, total_spent: 3450, note: 'ชอบสั่งกะเพราเผ็ดน้อย' },
+      { id: 'CUS-002', name: 'พี่เอก (ช่างแอร์)', phone: '089-876-5432', tier: 'ขาประจำ', points: 45, total_spent: 1120, note: 'ซื้อน้ำแข็งและเครื่องดื่มประจำ' }
+    ])
   ]);
+
+  const rawCustomers = Array.isArray(fetchedCustomers) && fetchedCustomers.length > 0 ? fetchedCustomers : [
+    { id: 'CUS-001', name: 'ป้าสมศรี (ซอย 3)', phone: '081-234-5678', tier: 'VIP', points: 120, total_spent: 3450, note: 'ชอบสั่งกะเพราเผ็ดน้อย' },
+    { id: 'CUS-002', name: 'พี่เอก (ช่างแอร์)', phone: '089-876-5432', tier: 'ขาประจำ', points: 45, total_spent: 1120, note: 'ซื้อน้ำแข็งและเครื่องดื่มประจำ' }
+  ];
 
   const openOrders = allValidOrders.filter(o => o.status === 'OPEN');
 
@@ -427,16 +437,6 @@ async function getSupabaseBootstrapData() {
     cost_per_unit: Number(i.cost_per_unit || 0),
     low_stock_threshold: Number(i.low_stock_threshold || 0)
   }));
-
-  let rawCustomers = [];
-  try {
-    rawCustomers = await sbRest('customers?select=*&order=total_spent.desc');
-  } catch {
-    rawCustomers = [
-      { id: 'CUS-001', name: 'ป้าสมศรี (ซอย 3)', phone: '081-234-5678', tier: 'VIP', points: 120, total_spent: 3450, note: 'ชอบสั่งกะเพราเผ็ดน้อย' },
-      { id: 'CUS-002', name: 'พี่เอก (ช่างแอร์)', phone: '089-876-5432', tier: 'ขาประจำ', points: 45, total_spent: 1120, note: 'ซื้อน้ำแข็งและเครื่องดื่มประจำ' }
-    ];
-  }
 
   let loyaltySettings = { ...DEFAULT_LOYALTY_SETTINGS };
   const sysCfgRow = rawCustomers.find(c => c.id === 'SYS-LOYALTY-CONFIG');
