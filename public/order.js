@@ -159,6 +159,111 @@ function getCartNetTotal() {
   return Math.max(0, sub - disc);
 }
 
+function getProductQtyInCart(productId) {
+  return orderState.cart
+    .filter(it => it.product_id === productId)
+    .reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+}
+
+// อัปเดตเฉพาะแถบตะกร้าด้านล่าง, หน้าต่างป๊อปอัป (Modal), และป้ายจำนวนบนการ์ดสินค้า โดยไม่รีเฟรชหน้าจอหลัก!
+function renderCartAndModals() {
+  const stickyRoot = document.getElementById('co-sticky-cart-root');
+  const modalsRoot = document.getElementById('co-modals-root');
+  if (!stickyRoot || !modalsRoot) {
+    render();
+    return;
+  }
+
+  stickyRoot.innerHTML = renderStickyCart();
+  modalsRoot.innerHTML = `
+    ${orderState.foodModalProduct ? renderFoodModifierModal() : ''}
+    ${orderState.showCartModal ? renderCartModal() : ''}
+    ${orderState.showCheckoutModal ? renderCheckoutModal() : ''}
+  `;
+
+  // อัปเดตป้ายจำนวนสินค้าที่อยู่ในตะกร้าบนการ์ดสินค้าแต่ละใบทันทีโดยไม่ขยับ Scroll
+  document.querySelectorAll('[data-prod-qty-badge]').forEach(el => {
+    const pid = el.getAttribute('data-prod-qty-badge');
+    const q = getProductQtyInCart(pid);
+    if (q > 0) {
+      el.textContent = `✓ ${q} ในตะกร้า`;
+      el.style.display = 'inline-block';
+    } else {
+      el.textContent = '';
+      el.style.display = 'none';
+    }
+  });
+}
+
+// อัปเดตเฉพาะโซนหน้าร้าน (#co-storefront-root) เมื่อกดเข้าตู้/ออกจากตู้ เพื่อไม่ให้หน้าจอกระตุกหรือเลื่อนขึ้น
+function renderStorefrontOnly() {
+  const sfRoot = document.getElementById('co-storefront-root');
+  if (!sfRoot || !orderState.data) {
+    render();
+    return;
+  }
+  const activeEl = document.activeElement;
+  const activeId = activeEl && activeEl.id ? activeEl.id : null;
+  let selStart = null;
+  let selEnd = null;
+  if (activeId && typeof activeEl.selectionStart === 'number') {
+    try {
+      selStart = activeEl.selectionStart;
+      selEnd = activeEl.selectionEnd;
+    } catch {}
+  }
+
+  const prevWinY = window.scrollY;
+  const prevRoomEl = document.querySelector('.co-room-floor');
+  const prevRoomLeft = prevRoomEl ? prevRoomEl.scrollLeft : 0;
+  const prevCatPillsEl = document.querySelector('.co-cat-pills');
+  const prevCatPillsLeft = prevCatPillsEl ? prevCatPillsEl.scrollLeft : 0;
+
+  const products = orderState.data.products || [];
+  sfRoot.innerHTML = orderState.viewMode === 'PIXEL'
+    ? renderPixelStorefront(products)
+    : renderListView(products);
+
+  const nextRoomEl = document.querySelector('.co-room-floor');
+  if (nextRoomEl && prevRoomLeft > 0) {
+    nextRoomEl.scrollLeft = prevRoomLeft;
+  }
+  const nextCatPillsEl = document.querySelector('.co-cat-pills');
+  if (nextCatPillsEl && prevCatPillsLeft > 0) {
+    nextCatPillsEl.scrollLeft = prevCatPillsLeft;
+  }
+  window.scrollTo(0, prevWinY);
+
+  if (activeId) {
+    const nextInput = document.getElementById(activeId);
+    if (nextInput) {
+      nextInput.focus();
+      if (selStart !== null && typeof nextInput.setSelectionRange === 'function') {
+        try { nextInput.setSelectionRange(selStart, selEnd); } catch {}
+      }
+    }
+  }
+}
+
+function enterStoreZone(zoneId) {
+  orderState.selectedStoreZoneId = zoneId;
+  orderState.activeZoneCategory = 'ALL';
+  renderStorefrontOnly();
+}
+
+function exitStoreZone() {
+  orderState.selectedStoreZoneId = null;
+  orderState.activeZoneCategory = 'ALL';
+  renderStorefrontOnly();
+}
+
+function addToCartById(productId, qty = 1) {
+  const products = orderState.data?.products || [];
+  const product = products.find(p => p.id === productId);
+  if (!product) return;
+  addToCartDirect(product, qty);
+}
+
 function addToCartDirect(product, qty = 1) {
   if (product.item_type === 'FOOD') {
     openFoodModifierModal(product);
@@ -173,12 +278,13 @@ function addToCartDirect(product, qty = 1) {
       name: product.name,
       item_type: product.item_type,
       unit_price: Number(product.price) || 0,
+      image_url: product.image_url || '',
       quantity: qty,
       modifiers: [],
       special_instructions: ''
     });
   }
-  render();
+  renderCartAndModals();
 }
 
 function openFoodModifierModal(product) {
@@ -186,11 +292,13 @@ function openFoodModifierModal(product) {
   orderState.foodModalModifiers = [];
   orderState.foodModalNote = '';
   orderState.foodModalQty = 1;
-  render();
+  renderCartAndModals();
 }
 
-function toggleModifierSelection(groupId, modObj, isSingle = false) {
+function toggleModifierSelection(groupId, modId, isSingle = false) {
   const allMods = orderState.data?.modifiers || [];
+  const modObj = allMods.find(m => m.id === modId);
+  if (!modObj) return;
   const groupModIds = allMods.filter(m => m.group_id === groupId).map(m => m.id);
 
   const idx = orderState.foodModalModifiers.findIndex(m => m.id === modObj.id);
@@ -202,7 +310,7 @@ function toggleModifierSelection(groupId, modObj, isSingle = false) {
     }
     orderState.foodModalModifiers.push(modObj);
   }
-  render();
+  renderCartAndModals();
 }
 
 function confirmFoodModifiers() {
@@ -214,13 +322,14 @@ function confirmFoodModifiers() {
     name: p.name,
     item_type: 'FOOD',
     unit_price: Number(p.price) || 0,
+    image_url: p.image_url || '',
     quantity: orderState.foodModalQty || 1,
     modifiers: [...orderState.foodModalModifiers],
     special_instructions: orderState.foodModalNote.trim()
   });
 
   orderState.foodModalProduct = null;
-  render();
+  renderCartAndModals();
 }
 
 function updateCartQty(index, delta) {
@@ -229,7 +338,7 @@ function updateCartQty(index, delta) {
   if (orderState.cart[index].quantity <= 0) {
     orderState.cart.splice(index, 1);
   }
-  render();
+  renderCartAndModals();
 }
 
 function getDeliveryPointName() {
@@ -388,6 +497,13 @@ function getSpriteIcon(item) {
   return item.item_type === 'FOOD' ? '🍽️' : '📦';
 }
 
+function getProductVisualHtml(item) {
+  if (item && item.image_url) {
+    return `<img src="${item.image_url}" alt="${(item.name || '').replace(/"/g, '&quot;')}" loading="lazy" />`;
+  }
+  return getSpriteIcon(item);
+}
+
 // ==========================================================================
 // RENDER VIEWS
 // ==========================================================================
@@ -412,6 +528,13 @@ function render() {
     return;
   }
 
+  // บันทึกตำแหน่ง Scroll ปัจจุบันก่อนวาดหน้าจอใหม่ เพื่อไม่ให้หน้าจอกระตุกหรือเด้งขึ้น
+  const prevWinY = window.scrollY;
+  const prevRoomEl = document.querySelector('.co-room-floor');
+  const prevRoomLeft = prevRoomEl ? prevRoomEl.scrollLeft : 0;
+  const prevCatPillsEl = document.querySelector('.co-cat-pills');
+  const prevCatPillsLeft = prevCatPillsEl ? prevCatPillsEl.scrollLeft : 0;
+
   const products = orderState.data.products || [];
 
   let contentHtml = '';
@@ -425,7 +548,7 @@ function render() {
     <!-- Header -->
     <header class="co-header">
       <div class="co-header-inner">
-        <a href="#" class="co-brand">
+        <a href="#" class="co-brand" onclick="event.preventDefault();">
           <div class="co-logo-badge">☕</div>
           <div>
             <div class="co-store-title">ONG CO POS • ร้านค้าและครัวอาหาร</div>
@@ -490,17 +613,30 @@ function render() {
       ${orderState.orderMode === 'DINE_IN' ? renderDineInSection() : ''}
 
       <!-- Main Storefront Content (Pixel or List) -->
-      ${contentHtml}
+      <div id="co-storefront-root">
+        ${contentHtml}
+      </div>
     </div>
 
     <!-- Sticky Cart Bar -->
-    ${renderStickyCart()}
+    <div id="co-sticky-cart-root">
+      ${renderStickyCart()}
+    </div>
 
     <!-- Modals -->
-    ${orderState.foodModalProduct ? renderFoodModifierModal() : ''}
-    ${orderState.showCartModal ? renderCartModal() : ''}
-    ${orderState.showCheckoutModal ? renderCheckoutModal() : ''}
+    <div id="co-modals-root">
+      ${orderState.foodModalProduct ? renderFoodModifierModal() : ''}
+      ${orderState.showCartModal ? renderCartModal() : ''}
+      ${orderState.showCheckoutModal ? renderCheckoutModal() : ''}
+    </div>
   `;
+
+  // คืนค่าตำแหน่ง Scroll เดิมทันที
+  const nextRoomEl = document.querySelector('.co-room-floor');
+  if (nextRoomEl && prevRoomLeft > 0) nextRoomEl.scrollLeft = prevRoomLeft;
+  const nextCatPillsEl = document.querySelector('.co-cat-pills');
+  if (nextCatPillsEl && prevCatPillsLeft > 0) nextCatPillsEl.scrollLeft = prevCatPillsLeft;
+  if (prevWinY > 0) window.scrollTo(0, prevWinY);
 }
 
 // Render Delivery Section with Indochina Market Pixel Map (Horizontal: North on Left, South on Right, Mekong River on Top)
@@ -1059,7 +1195,7 @@ function renderPixelStorefront(products = []) {
           <button
             type="button"
             class="co-zone-back-btn"
-            onclick="orderState.selectedStoreZoneId=null; orderState.activeZoneCategory='ALL'; render();"
+            onclick="exitStoreZone()"
           >
             ◀ กลับหน้าร้าน (เลือกตู้/จุดอื่น)
           </button>
@@ -1087,7 +1223,7 @@ function renderPixelStorefront(products = []) {
               type="button"
               class="co-pill"
               data-active="${orderState.activeZoneCategory === 'ALL'}"
-              onclick="orderState.activeZoneCategory='ALL'; render();"
+              onclick="orderState.activeZoneCategory='ALL'; renderStorefrontOnly();"
             >
               ทั้งหมด (${zoneAllProds.length})
             </button>
@@ -1096,7 +1232,7 @@ function renderPixelStorefront(products = []) {
                 type="button"
                 class="co-pill"
                 data-active="${orderState.activeZoneCategory === c.id}"
-                onclick="orderState.activeZoneCategory='${c.id}'; render();"
+                onclick="orderState.activeZoneCategory='${c.id}'; renderStorefrontOnly();"
               >
                 ${c.name.split('(')[0].trim()} (${c.count})
               </button>
@@ -1107,7 +1243,7 @@ function renderPixelStorefront(products = []) {
         <!-- Zone Products Showcase (Pixel Shelves) -->
         <div class="co-pixel-modules">
           <div class="co-pixel-zone">
-            <div class="${curZone.type === 'CHILLER' ? 'co-cooler-case' : (curZone.type === 'KITCHEN' ? 'co-kitchen-case' : 'co-shelf-case')}">
+            <div class="${(curZone.type || curZone.zone_type) === 'CHILLER' ? 'co-cooler-case' : ((curZone.type || curZone.zone_type) === 'KITCHEN' ? 'co-kitchen-case' : 'co-shelf-case')}">
               <div class="co-cooler-shelf">
                 ${displayedProds.length === 0 ? `
                   <div style="grid-column: 1 / -1; text-align:center; padding:40px 16px; color:#94a3b8;">
@@ -1118,14 +1254,18 @@ function renderPixelStorefront(products = []) {
                 ` : displayedProds.map(p => {
                   const isFood = p.item_type === 'FOOD';
                   const isOutOfStock = !isFood && p.track_stock && (p.stock_qty <= 0);
+                  const inCartQty = getProductQtyInCart(p.id);
 
                   return `
                     <div
                       class="co-pixel-item"
                       style="${isOutOfStock ? 'opacity:0.65;' : ''}"
-                      onclick="${isOutOfStock ? `alert('สินค้านี้หมดชั่วคราว');` : `addToCartDirect(${JSON.stringify(p).replace(/"/g, '&quot;')})`}"
+                      onclick="${isOutOfStock ? `alert('สินค้านี้หมดชั่วคราว');` : `addToCartById('${p.id}')`}"
                     >
-                      <div class="co-item-sprite">${getSpriteIcon(p)}</div>
+                      <span class="co-prod-qty-badge" data-prod-qty-badge="${p.id}" style="display:${inCartQty > 0 ? 'inline-block' : 'none'};">
+                        ${inCartQty > 0 ? `✓ ${inCartQty} ในตะกร้า` : ''}
+                      </span>
+                      <div class="co-item-sprite">${getProductVisualHtml(p)}</div>
                       <div class="co-item-name">${p.name}</div>
                       <div class="co-item-price">${formatMoney(p.price)}</div>
                       
@@ -1138,7 +1278,7 @@ function renderPixelStorefront(products = []) {
                         class="co-item-add-btn"
                         style="${isOutOfStock ? 'background:#64748b; cursor:not-allowed;' : ''}"
                       >
-                        ${isOutOfStock ? 'สินค้าหมด' : (isFood ? '+ สั่งจานนี้' : '+ หยิบ')}
+                        ${isOutOfStock ? 'สินค้าหมด' : (isFood ? '+ สั่งจานนี้' : '+ หยิบใส่ตะกร้า')}
                       </button>
                     </div>
                   `;
@@ -1159,18 +1299,44 @@ function renderPixelStorefront(products = []) {
   const cellOccupancy = {};
 
   activeZones.forEach((zone, idx) => {
-    let r = Number(zone.grid_row);
-    let c = Number(zone.grid_col);
-    if (!r || r < 1 || r > ROWS) {
-      r = Math.min(ROWS, Math.floor(idx / 3) + 1);
+    let r = Math.max(1, Math.min(ROWS, Number(zone.grid_row) || Math.min(ROWS, Math.floor(idx / 3) + 1)));
+    let c = Math.max(1, Math.min(COLS, Number(zone.grid_col) || (((idx % 3) * 2) + 1)));
+    let span = Math.max(1, Math.min(2, Number(zone.col_span) || 1));
+    if (c + span - 1 > COLS) c = COLS - span + 1;
+
+    const canFit = (tr, tc, tspan) => {
+      if (tc + tspan - 1 > COLS) return false;
+      for (let s = 0; s < tspan; s++) {
+        if (cellOccupancy[`${tr},${tc + s}`]) return false;
+      }
+      return true;
+    };
+
+    let placed = false;
+    if (canFit(r, c, span)) {
+      placed = true;
+    } else {
+      for (let tr = 1; tr <= ROWS && !placed; tr++) {
+        for (let tc = 1; tc <= COLS && !placed; tc++) {
+          if (canFit(tr, tc, span)) {
+            r = tr;
+            c = tc;
+            placed = true;
+          } else if (span > 1 && canFit(tr, tc, 1)) {
+            r = tr;
+            c = tc;
+            span = 1;
+            placed = true;
+          }
+        }
+      }
     }
-    if (!c || c < 1 || c > COLS) {
-      c = ((idx % 3) * 2) + 1;
-    }
-    const span = Math.max(1, Math.min(2, Number(zone.col_span) || 1));
-    cellOccupancy[`${r},${c}`] = { isStart: true, zone, span };
-    for (let s = 1; s < span; s++) {
-      cellOccupancy[`${r},${c + s}`] = { isCovered: true };
+
+    if (placed) {
+      cellOccupancy[`${r},${c}`] = { isStart: true, zone, span };
+      for (let s = 1; s < span; s++) {
+        cellOccupancy[`${r},${c + s}`] = { isCovered: true };
+      }
     }
   });
 
@@ -1186,7 +1352,7 @@ function renderPixelStorefront(products = []) {
             <div
               class="co-room-slot co-room-fixture"
               style="grid-column:${c} / span ${occ.span}; grid-row:${r};"
-              onclick="orderState.selectedStoreZoneId='${z.id}'; orderState.activeZoneCategory='ALL'; render(); window.scrollTo({ top: 380, behavior: 'smooth' });"
+              onclick="enterStoreZone('${z.id}')"
               title="คลิกเพื่อเดินไปดูสินค้าที่ ${z.name}"
             >
               <!-- Floating Retro Name Plate with Icon & Item Count -->
@@ -1296,7 +1462,7 @@ function renderPixelStorefront(products = []) {
             return `
               <div
                 class="co-zone-card"
-                onclick="orderState.selectedStoreZoneId='${zone.id}'; orderState.activeZoneCategory='ALL'; render(); window.scrollTo({ top: 380, behavior: 'smooth' });"
+                onclick="enterStoreZone('${zone.id}')"
               >
                 <!-- Zone Pixel Art Visual -->
                 <div class="co-zone-visual">
@@ -1367,11 +1533,12 @@ function renderListView(products) {
       <div class="co-search-bar">
         <span class="co-search-icon">🔍</span>
         <input
+          id="co-search-input"
           type="text"
           class="co-search-input"
           placeholder="ค้นหาชื่ออาหาร, เครื่องดื่ม, ขนม, ของชำ..."
           value="${orderState.searchQuery}"
-          oninput="orderState.searchQuery=this.value; render();"
+          oninput="orderState.searchQuery=this.value; renderStorefrontOnly();"
         />
       </div>
 
@@ -1381,7 +1548,7 @@ function renderListView(products) {
           type="button"
           class="co-pill"
           data-active="${orderState.activeCategory === 'ALL'}"
-          onclick="orderState.activeCategory='ALL'; render();"
+          onclick="orderState.activeCategory='ALL'; renderStorefrontOnly();"
         >
           ทั้งหมด
         </button>
@@ -1390,7 +1557,7 @@ function renderListView(products) {
             type="button"
             class="co-pill"
             data-active="${orderState.activeCategory === c.id}"
-            onclick="orderState.activeCategory='${c.id}'; render();"
+            onclick="orderState.activeCategory='${c.id}'; renderStorefrontOnly();"
           >
             ${c.name}
           </button>
@@ -1399,27 +1566,33 @@ function renderListView(products) {
 
       <!-- Products Grid -->
       <div class="co-product-grid">
-        ${filtered.map(p => `
-          <div class="co-prod-card">
-            <div>
-              <div class="co-prod-icon">${getSpriteIcon(p)}</div>
-              <span class="co-prod-type-tag ${p.item_type === 'FOOD' ? 'co-tag-food' : 'co-tag-grocery'}">
-                ${p.item_type === 'FOOD' ? '🍳 อาหารปรุงสด' : '📦 สินค้าของชำ'}
+        ${filtered.map(p => {
+          const inCartQty = getProductQtyInCart(p.id);
+          return `
+            <div class="co-prod-card" onclick="addToCartById('${p.id}')" style="cursor:pointer;">
+              <span class="co-prod-qty-badge" data-prod-qty-badge="${p.id}" style="display:${inCartQty > 0 ? 'inline-block' : 'none'};">
+                ${inCartQty > 0 ? `✓ ${inCartQty} ในตะกร้า` : ''}
               </span>
-              <div class="co-prod-name">${p.name}</div>
+              <div>
+                <div class="co-prod-icon">${getProductVisualHtml(p)}</div>
+                <span class="co-prod-type-tag ${p.item_type === 'FOOD' ? 'co-tag-food' : 'co-tag-grocery'}">
+                  ${p.item_type === 'FOOD' ? '🍳 อาหารปรุงสด' : '📦 สินค้าของชำ'}
+                </span>
+                <div class="co-prod-name">${p.name}</div>
+              </div>
+              <div class="co-prod-bottom">
+                <span class="co-prod-price">${formatMoney(p.price)}</span>
+                <button
+                  type="button"
+                  class="co-add-btn"
+                  onclick="event.stopPropagation(); addToCartById('${p.id}')"
+                >
+                  +
+                </button>
+              </div>
             </div>
-            <div class="co-prod-bottom">
-              <span class="co-prod-price">${formatMoney(p.price)}</span>
-              <button
-                type="button"
-                class="co-add-btn"
-                onclick="addToCartDirect(${JSON.stringify(p).replace(/"/g, '&quot;')})"
-              >
-                +
-              </button>
-            </div>
-          </div>
-        `).join('')}
+          `;
+        }).join('')}
       </div>
     </div>
   `;
@@ -1435,13 +1608,13 @@ function renderStickyCart() {
   return `
     <div class="co-sticky-cart">
       <div class="co-cart-inner">
-        <div class="co-cart-summary" onclick="orderState.showCartModal=true; render();">
+        <div class="co-cart-summary" onclick="orderState.showCartModal=true; renderCartAndModals();">
           <div class="co-cart-badge">
             🛒
             ${count > 0 ? `<span class="co-cart-count">${count}</span>` : ''}
           </div>
           <div class="co-cart-price-block">
-            <span class="co-cart-label">${count} รายการในตะกร้า</span>
+            <span class="co-cart-label">${count} รายการในตะกร้า (แตะเพื่อดูรายการ)</span>
             <span class="co-cart-total">${formatMoney(subtotal)}</span>
           </div>
         </div>
@@ -1450,7 +1623,7 @@ function renderStickyCart() {
           type="button"
           class="co-checkout-btn"
           ${count === 0 ? 'disabled' : ''}
-          onclick="orderState.showCheckoutModal=true; render();"
+          onclick="orderState.showCheckoutModal=true; renderCartAndModals();"
         >
           <span>สั่งสินค้า & ชำระเงิน</span>
           <span>➔</span>
@@ -1471,15 +1644,18 @@ function renderFoodModifierModal() {
   const allMods = orderState.data?.modifiers || [];
 
   return `
-    <div class="co-modal-backdrop" onclick="if(event.target===this){orderState.foodModalProduct=null; render();}">
+    <div class="co-modal-backdrop" onclick="if(event.target===this){orderState.foodModalProduct=null; renderCartAndModals();}">
       <div class="co-modal">
         <div class="co-modal-header">
-          <div>
-            <div style="font-size:11px; color:#0d9488; font-weight:800;">CUSTOMIZE DISH • เลือกตัวเลือกพิเศษ</div>
-            <h3 style="margin:2px 0 0; font-size:17px;">${p.name}</h3>
-            <div style="font-size:13px; color:var(--co-muted);">ราคาพื้นฐาน: ${formatMoney(p.price)}</div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            ${p.image_url ? `<img src="${p.image_url}" alt="" style="width:48px; height:48px; object-fit:cover; border-radius:8px; border:1px solid var(--co-border);" />` : ''}
+            <div>
+              <div style="font-size:11px; color:#0d9488; font-weight:800;">CUSTOMIZE DISH • เลือกตัวเลือกพิเศษ</div>
+              <h3 style="margin:2px 0 0; font-size:17px;">${p.name}</h3>
+              <div style="font-size:13px; color:var(--co-muted);">ราคาพื้นฐาน: ${formatMoney(p.price)}</div>
+            </div>
           </div>
-          <button type="button" class="co-close-btn" onclick="orderState.foodModalProduct=null; render();">✕</button>
+          <button type="button" class="co-close-btn" onclick="orderState.foodModalProduct=null; renderCartAndModals();">✕</button>
         </div>
 
         ${groups.map(grp => {
@@ -1503,7 +1679,7 @@ function renderFoodModifierModal() {
                       type="button"
                       class="co-mod-pill"
                       data-selected="${isSel}"
-                      onclick="toggleModifierSelection('${grp.id}', ${JSON.stringify(m).replace(/"/g, '&quot;')}, ${isSingle})"
+                      onclick="toggleModifierSelection('${grp.id}', '${m.id}', ${isSingle})"
                     >
                       ${m.name}${priceLabel}
                     </button>
@@ -1533,14 +1709,14 @@ function renderFoodModifierModal() {
               type="button"
               class="co-add-btn"
               style="width:30px; height:30px; background:#e2e8f0; color:#0f172a;"
-              onclick="orderState.foodModalQty = Math.max(1, orderState.foodModalQty - 1); render();"
+              onclick="orderState.foodModalQty = Math.max(1, orderState.foodModalQty - 1); renderCartAndModals();"
             >-</button>
             <b style="font-size:15px; width:24px; text-align:center;">${orderState.foodModalQty}</b>
             <button
               type="button"
               class="co-add-btn"
               style="width:30px; height:30px;"
-              onclick="orderState.foodModalQty++; render();"
+              onclick="orderState.foodModalQty++; renderCartAndModals();"
             >+</button>
           </div>
 
@@ -1565,14 +1741,14 @@ function renderCartModal() {
   const subtotal = getCartSubtotal();
 
   return `
-    <div class="co-modal-backdrop" onclick="if(event.target===this){orderState.showCartModal=false; render();}">
+    <div class="co-modal-backdrop" onclick="if(event.target===this){orderState.showCartModal=false; renderCartAndModals();}">
       <div class="co-modal">
         <div class="co-modal-header">
           <div>
             <div class="co-label" style="color:#0d9488;">MY CART</div>
             <h3 style="margin:2px 0 0; font-size:17px;">🛒 ตะกร้าสินค้าของคุณ</h3>
           </div>
-          <button type="button" class="co-close-btn" onclick="orderState.showCartModal=false; render();">✕</button>
+          <button type="button" class="co-close-btn" onclick="orderState.showCartModal=false; renderCartAndModals();">✕</button>
         </div>
 
         ${orderState.cart.length === 0 ? `
@@ -1586,14 +1762,17 @@ function renderCartModal() {
               const lineTotal = (it.unit_price + modExtra) * it.quantity;
               const modList = (it.modifiers || []).map(m => m.name).join(', ');
               return `
-                <div style="padding:10px 12px; background:#f8fafc; border:1px solid var(--co-border); border-radius:10px; display:flex; justify-content:space-between; align-items:center;">
-                  <div>
-                    <div style="font-weight:700; font-size:13px;">${it.name}</div>
-                    ${modList ? `<div style="font-size:11px; color:#0d9488;">+ ${modList}</div>` : ''}
-                    ${it.special_instructions ? `<div style="font-size:10.5px; color:#b45309;">📝 ${it.special_instructions}</div>` : ''}
-                    <div style="font-size:12px; font-weight:800; color:#0f3238; margin-top:2px;">${formatMoney(lineTotal)}</div>
+                <div style="padding:10px 12px; background:#f8fafc; border:1px solid var(--co-border); border-radius:10px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    ${it.image_url ? `<img src="${it.image_url}" alt="" style="width:40px; height:40px; object-fit:cover; border-radius:6px; border:1px solid var(--co-border); flex-shrink:0;" />` : ''}
+                    <div>
+                      <div style="font-weight:700; font-size:13px;">${it.name}</div>
+                      ${modList ? `<div style="font-size:11px; color:#0d9488;">+ ${modList}</div>` : ''}
+                      ${it.special_instructions ? `<div style="font-size:10.5px; color:#b45309;">📝 ${it.special_instructions}</div>` : ''}
+                      <div style="font-size:12px; font-weight:800; color:#0f3238; margin-top:2px;">${formatMoney(lineTotal)}</div>
+                    </div>
                   </div>
-                  <div style="display:flex; align-items:center; gap:6px;">
+                  <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
                     <button type="button" class="co-add-btn" style="width:26px; height:26px; font-size:13px; background:#e2e8f0; color:#0f172a;" onclick="updateCartQty(${idx}, -1)">-</button>
                     <b style="font-size:13px; width:18px; text-align:center;">${it.quantity}</b>
                     <button type="button" class="co-add-btn" style="width:26px; height:26px; font-size:13px;" onclick="updateCartQty(${idx}, 1)">+</button>
@@ -1612,7 +1791,7 @@ function renderCartModal() {
             type="button"
             class="co-checkout-btn"
             style="width:100%; justify-content:center;"
-            onclick="orderState.showCartModal=false; orderState.showCheckoutModal=true; render();"
+            onclick="orderState.showCartModal=false; orderState.showCheckoutModal=true; renderCartAndModals();"
           >
             ไปที่หน้าชำระเงิน ➔
           </button>
@@ -1632,14 +1811,14 @@ function renderCheckoutModal() {
   const m = orderState.member;
 
   return `
-    <div class="co-modal-backdrop" onclick="if(event.target===this){orderState.showCheckoutModal=false; render();}">
+    <div class="co-modal-backdrop" onclick="if(event.target===this){orderState.showCheckoutModal=false; renderCartAndModals();}">
       <div class="co-modal">
         <div class="co-modal-header">
           <div>
             <div class="co-label" style="color:#0d9488;">CHECKOUT & PAYMENT</div>
             <h3 style="margin:2px 0 0; font-size:17px;">💳 ชำระเงิน & ยืนยันคำสั่งซื้อ</h3>
           </div>
-          <button type="button" class="co-close-btn" onclick="orderState.showCheckoutModal=false; render();">✕</button>
+          <button type="button" class="co-close-btn" onclick="orderState.showCheckoutModal=false; renderCartAndModals();">✕</button>
         </div>
 
         <!-- Loyalty Points Redemption Block -->
@@ -1653,7 +1832,7 @@ function renderCheckoutModal() {
               <button
                 type="button"
                 style="background:#b45309; color:#fff; border:none; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer;"
-                onclick="orderState.redeemPoints = Math.min(${m.points}, Math.floor(${subtotal} * 4)); render();"
+                onclick="orderState.redeemPoints = Math.min(${m.points}, Math.floor(${subtotal} * 4)); renderCartAndModals();"
               >
                 ใช้แต้มสูงสุด
               </button>
@@ -1675,7 +1854,7 @@ function renderCheckoutModal() {
               type="button"
               class="co-mode-tab"
               data-active="${orderState.paymentMethod === 'QR_PROMPTPAY'}"
-              onclick="orderState.paymentMethod='QR_PROMPTPAY'; render();"
+              onclick="orderState.paymentMethod='QR_PROMPTPAY'; renderCartAndModals();"
             >
               <span style="font-size:22px;">📱</span>
               <span class="co-mode-title">สแกนจ่ายทันที</span>
@@ -1685,7 +1864,7 @@ function renderCheckoutModal() {
               type="button"
               class="co-mode-tab"
               data-active="${orderState.paymentMethod === 'CASH'}"
-              onclick="orderState.paymentMethod='CASH'; render();"
+              onclick="orderState.paymentMethod='CASH'; renderCartAndModals();"
             >
               <span style="font-size:22px;">💵</span>
               <span class="co-mode-title">ชำระเงินสด</span>

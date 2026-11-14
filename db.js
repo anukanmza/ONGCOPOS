@@ -217,6 +217,7 @@ function initSchema() {
   ensureColumn('orders', 'customer_id', 'TEXT');
   ensureColumn('orders', 'customer_name', "TEXT DEFAULT ''");
   ensureColumn('products', 'modifier_group_ids', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn('products', 'image_url', "TEXT DEFAULT ''");
   ensureColumn('product_modifiers', 'group_id', 'TEXT');
 
   // Seed default modifier groups if empty

@@ -27,9 +27,11 @@ CREATE TABLE IF NOT EXISTS products (
   stock_qty NUMERIC(12,2) NOT NULL DEFAULT 0,
   low_stock_threshold NUMERIC(12,2) NOT NULL DEFAULT 5,
   modifier_group_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+  image_url TEXT DEFAULT '',
   send_to_kitchen BOOLEAN NOT NULL DEFAULT false,
   is_active BOOLEAN NOT NULL DEFAULT true
 );
+ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT '';
 
 -- 2.1 ตารางกลุ่มตัวเลือกพิเศษ (Modifier Groups)
 CREATE TABLE IF NOT EXISTS modifier_groups (

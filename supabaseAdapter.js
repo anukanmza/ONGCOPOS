@@ -387,6 +387,15 @@ async function getSupabaseBootstrapData() {
     };
   });
 
+  let productImagesMap = {};
+  const sysProdImgRow = rawCustomers.find(c => c.id === 'SYS-PRODUCT-IMAGES');
+  if (sysProdImgRow && sysProdImgRow.note) {
+    try {
+      const parsed = JSON.parse(sysProdImgRow.note);
+      if (parsed && typeof parsed === 'object') productImagesMap = parsed;
+    } catch {}
+  }
+
   const products = rawProducts.map(p => {
     const prodRecipes = recipeItems.filter(r => r.product_id === p.id);
     const calcCost = p.item_type === 'FOOD' && prodRecipes.length > 0
@@ -398,6 +407,7 @@ async function getSupabaseBootstrapData() {
     }
     return {
       ...p,
+      image_url: productImagesMap[p.id] || p.image_url || '',
       price: Number(p.price),
       cost: calcCost,
       conversion_rate: Number(p.conversion_rate || 1),
@@ -600,13 +610,25 @@ async function getSupabaseBootstrapData() {
   if (sysZoneRow && sysZoneRow.note) {
     try {
       const parsed = JSON.parse(sysZoneRow.note);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        storeZones = parsed;
+      if (Array.isArray(parsed)) {
+        storeZones = parsed.map((z, idx) => {
+          const defMatch = DEFAULT_STORE_ZONES.find(d => d.id === z.id) || DEFAULT_STORE_ZONES[idx] || {};
+          const zType = z.type || z.zone_type || defMatch.type || 'CHILLER';
+          return {
+            ...z,
+            type: zType,
+            zone_type: zType,
+            grid_row: Number(z.grid_row) || defMatch.grid_row || Math.min(4, Math.floor(idx / 3) + 1),
+            grid_col: Number(z.grid_col) || defMatch.grid_col || (((idx % 3) * 2) + 1),
+            col_span: Number(z.col_span) || defMatch.col_span || 1,
+            row_span: Number(z.row_span) || defMatch.row_span || 1
+          };
+        });
       }
     } catch {}
   }
 
-  const customers = rawCustomers.filter(c => c.id !== 'SYS-LOYALTY-CONFIG' && c.id !== 'SYS-MODIFIER-GROUPS' && c.id !== 'SYS-DELIVERY-POINTS' && c.id !== 'SYS-DELIVERY-MAP-CONFIG' && c.id !== 'SYS-STORE-ZONES');
+  const customers = rawCustomers.filter(c => !String(c.id || '').startsWith('SYS-'));
 
   const allBills = allValidOrders.map(o => {
     const tbl = o.table_id ? tableMap.get(o.table_id) : null;

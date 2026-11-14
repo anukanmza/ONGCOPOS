@@ -353,6 +353,7 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
   if (endpoint === '/api/delivery-map/save-config') return eng.saveDeliveryMapConfig(bodyObj || {});
   if (endpoint === '/api/store-zones/save') return eng.saveStoreZone(bodyObj || {});
   if (endpoint === '/api/store-zones/delete') return eng.deleteStoreZone(bodyObj || {});
+  if (endpoint === '/api/store-zones/reset') return eng.resetStoreZones ? eng.resetStoreZones() : eng.getBootstrap();
   return eng.getBootstrap();
 }
 
@@ -992,11 +993,162 @@ function openStoreZonesModal(zoneId = null) {
   state.showStoreZonesModal = true;
   if (zoneId) {
     const zones = state.data?.storeZones || [];
-    state.editingStoreZone = zones.find(z => z.id === zoneId) || null;
+    const found = zones.find(z => z.id === zoneId);
+    state.editingStoreZone = found ? JSON.parse(JSON.stringify(found)) : null;
   } else {
     state.editingStoreZone = null;
   }
   render();
+}
+
+function selectStoreZoneForEdit(zoneId) {
+  const zones = state.data?.storeZones || [];
+  const found = zones.find(z => z.id === zoneId);
+  if (!found) return;
+  state.editingStoreZone = JSON.parse(JSON.stringify(found));
+  render();
+  showToast(`✏️ เลือก "${found.name}" แล้ว (คลิกช่องว่างบนผังเพื่อย้ายไปช่องนั้นได้ทันที หรือแก้ไขด้านล่าง)`);
+}
+
+async function onAdminGridEmptyCellClick(r, c) {
+  const ez = state.editingStoreZone;
+  // หากกำลังเลือกตู้ที่มีอยู่แล้ว ให้ย้ายตู้นั้นไปช่องที่คลิกและบันทึกทันที!
+  if (ez && ez.id) {
+    const zType = ez.type || ez.zone_type || 'CHILLER';
+    const payload = {
+      ...ez,
+      type: zType,
+      zone_type: zType,
+      grid_row: Number(r) || 1,
+      grid_col: Number(c) || 1
+    };
+    const out = await apiCall('/api/store-zones/save', 'POST', payload);
+    if (out && out.data) {
+      state.data = out.data;
+    } else if (state.data && Array.isArray(state.data.storeZones)) {
+      const idx = state.data.storeZones.findIndex(z => z.id === ez.id);
+      if (idx >= 0) state.data.storeZones[idx] = payload;
+    }
+    state.editingStoreZone = { ...payload };
+    render();
+    showToast(`📦 ย้าย "${ez.name}" ไปที่ แถว ${r} ช่อง ${c} เรียบร้อยแล้ว!`);
+    return;
+  }
+
+  // หากกำลังจะเพิ่มพื้นที่ใหม่ ให้เก็บค่าที่พิมพ์ค้างไว้ในฟอร์ม แล้วเปลี่ยนพิกัดแถว/คอลัมน์ตามช่องที่คลิก
+  const formEl = document.getElementById('ttl-store-zone-form');
+  let draft = { ...(ez || {}) };
+  if (formEl && formEl.elements) {
+    const f = formEl.elements;
+    draft.name = f.zone_name ? f.zone_name.value : (draft.name || '');
+    draft.zone_type = f.zone_type ? f.zone_type.value : (draft.zone_type || draft.type || 'CHILLER');
+    draft.type = draft.zone_type;
+    draft.icon = f.zone_icon ? f.zone_icon.value : (draft.icon || '🏪');
+    draft.pixel_sprite = f.zone_pixel_sprite ? f.zone_pixel_sprite.value : (draft.pixel_sprite || 'chiller');
+    draft.custom_image_url = f.zone_custom_image_url ? f.zone_custom_image_url.value : (draft.custom_image_url || '');
+    draft.col_span = f.zone_col_span ? Number(f.zone_col_span.value) || 1 : (draft.col_span || 1);
+    draft.sort_order = f.zone_sort_order ? Number(f.zone_sort_order.value) || 1 : (draft.sort_order || 1);
+    draft.description = f.zone_desc ? f.zone_desc.value : (draft.description || '');
+    const catCbs = formEl.querySelectorAll('input[name="zone_category_ids"]:checked');
+    draft.category_ids = Array.from(catCbs).map(cb => cb.value);
+  }
+  draft.grid_row = Number(r) || 1;
+  draft.grid_col = Number(c) || 1;
+  state.editingStoreZone = draft;
+  render();
+  const nameInput = document.querySelector('#ttl-store-zone-form input[name="zone_name"]');
+  if (nameInput && !nameInput.value) nameInput.focus();
+  showToast(`📍 เลือกตำแหน่ง แถว ${r} ช่อง ${c} สำหรับวางพื้นที่ใหม่แล้ว`);
+}
+
+async function resetStoreZonesToDefault() {
+  if (!confirm('ต้องการรีเซ็ตผังพื้นที่จัดวางสินค้ากลับเป็นค่าเริ่มต้น (6 โซนมาตรฐาน) หรือไม่?')) return;
+  const out = await apiCall('/api/store-zones/reset', 'POST', {});
+  if (out && out.data) state.data = out.data;
+  state.editingStoreZone = null;
+  render();
+  showToast('🔄 รีเซ็ตผังร้านกลับเป็นค่าเริ่มต้นเรียบร้อยแล้ว');
+}
+
+function openEditProductModal(productId) {
+  const prod = (state.data?.products || []).find(p => p.id === productId);
+  if (!prod) return;
+  let pGroupIds = [];
+  try {
+    pGroupIds = Array.isArray(prod.modifier_group_ids) ? prod.modifier_group_ids : JSON.parse(prod.modifier_group_ids || '[]');
+  } catch { pGroupIds = []; }
+  state.editingProduct = {
+    id: prod.id,
+    name: prod.name,
+    item_type: prod.item_type,
+    category_id: prod.category_id || '',
+    modifier_group_ids: pGroupIds,
+    barcode: prod.barcode || '',
+    price: prod.price,
+    cost: prod.cost,
+    unit: prod.unit,
+    purchase_unit: prod.purchase_unit,
+    conversion_rate: prod.conversion_rate,
+    stock_qty: prod.stock_qty,
+    low_stock_threshold: prod.low_stock_threshold ?? 5,
+    image_url: prod.image_url || '',
+    voice_aliases: Array.isArray(prod.voice_aliases) ? prod.voice_aliases.join(', ') : (prod.voice_aliases || '')
+  };
+  state.showNewProductModal = true;
+  render();
+}
+
+function uploadProductImage(fileInput) {
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) return;
+  if (!file.type.startsWith('image/')) {
+    alert('กรุณาเลือกไฟล์รูปภาพ (PNG, JPG, WebP)');
+    return;
+  }
+  showToast('⏳ กำลังย่อและเตรียมรูปสินค้า...');
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const img = new Image();
+    img.onload = function() {
+      const maxDim = 320;
+      let w = img.width;
+      let h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round((h * maxDim) / w);
+          w = maxDim;
+        } else {
+          w = Math.round((w * maxDim) / h);
+          h = maxDim;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.84);
+
+      const urlInput = document.getElementById('ttl-prod-image-url');
+      if (urlInput) urlInput.value = dataUrl;
+      const previewEl = document.getElementById('ttl-prod-img-preview');
+      if (previewEl) {
+        previewEl.innerHTML = `<img src="${dataUrl}" style="width:56px; height:56px; object-fit:cover; border-radius:8px; border:1px solid var(--ttl-rule);" />`;
+      }
+      showToast('🖼️ อัปโหลดรูปสินค้าเรียบร้อย (กด "บันทึกสินค้า/เมนู" เพื่อยืนยัน)');
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearProductImageInModal() {
+  const urlInput = document.getElementById('ttl-prod-image-url');
+  if (urlInput) urlInput.value = '';
+  const previewEl = document.getElementById('ttl-prod-img-preview');
+  if (previewEl) {
+    previewEl.innerHTML = `<div style="width:56px; height:56px; border-radius:8px; border:1px dashed var(--ttl-rule); display:flex; align-items:center; justify-content:center; font-size:20px; color:var(--ttl-muted);">📷</div>`;
+  }
 }
 
 async function uploadCustomZoneImage(fileInput) {
@@ -1050,7 +1202,7 @@ async function saveStoreZoneForm(formEl) {
   const f = formEl.elements;
   const zoneId = f.zone_id.value || undefined;
   const name = (f.zone_name.value || '').trim();
-  const zone_type = f.zone_type.value || 'OTHER';
+  const zone_type = f.zone_type.value || 'CHILLER';
   const icon = (f.zone_icon.value || '🏪').trim();
   const pixel_sprite = f.zone_pixel_sprite.value || 'chiller';
   const custom_image_url = (f.zone_custom_image_url.value || '').trim();
@@ -1072,6 +1224,7 @@ async function saveStoreZoneForm(formEl) {
   const payload = {
     id: zoneId,
     name,
+    type: zone_type,
     zone_type,
     icon,
     pixel_sprite,
@@ -1092,18 +1245,19 @@ async function saveStoreZoneForm(formEl) {
     if (!state.data.storeZones) state.data.storeZones = [];
     const newId = zoneId || `ZONE-${Date.now().toString().slice(-4)}`;
     const exIdx = state.data.storeZones.findIndex(z => z.id === newId);
-    const zObj = { ...payload, id: newId, is_active: 1 };
+    const zObj = { ...payload, id: newId, is_active: true };
     if (exIdx >= 0) state.data.storeZones[exIdx] = zObj;
     else state.data.storeZones.push(zObj);
   }
 
   state.editingStoreZone = null;
   render();
-  showToast(zoneId ? '✏️ บันทึกการแก้ไขพื้นที่จัดวางสินค้าเรียบร้อย' : '+ เพิ่มพื้นที่จัดวางสินค้าใหม่เรียบร้อย');
+  showToast(zoneId ? `✏️ บันทึกการแก้ไข "${name}" เรียบร้อยแล้ว` : `✅ เพิ่มพื้นที่จัดวาง "${name}" เรียบร้อยแล้ว`);
 }
 
 async function deleteStoreZoneById(zoneId, zoneName) {
-  if (!confirm(`ต้องการลบพื้นที่จัดวาง "${zoneName}" หรือไม่?`)) return;
+  if (!zoneId) return;
+  if (!confirm(`🗑️ ต้องการลบพื้นที่จัดวาง "${zoneName || zoneId}" ออกจากผังร้านหรือไม่?`)) return;
   const out = await apiCall('/api/store-zones/delete', 'POST', { id: zoneId });
   if (out && out.data) {
     state.data = out.data;
@@ -1114,7 +1268,7 @@ async function deleteStoreZoneById(zoneId, zoneName) {
   }
   if (state.editingStoreZone && state.editingStoreZone.id === zoneId) state.editingStoreZone = null;
   render();
-  showToast(`🗑️ ลบพื้นที่จัดวาง "${zoneName}" เรียบร้อยแล้ว`);
+  showToast(`🗑️ ลบพื้นที่จัดวาง "${zoneName || zoneId}" เรียบร้อยแล้ว`);
 }
 
 function getActiveContextOrder() {
@@ -2609,8 +2763,13 @@ function renderPosView() {
                 `)}
               </div>
 
-              <div style="font-weight:600; font-size:14.5px; color:var(--ttl-ink); line-height:1.35; margin-top:2px;">
-                ${p.name}
+              <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+                ${p.image_url ? `
+                  <img src="${p.image_url}" alt="${p.name.replace(/"/g, '&quot;')}" style="width:42px; height:42px; object-fit:cover; border-radius:8px; border:1px solid var(--ttl-rule); flex-shrink:0;" />
+                ` : ''}
+                <div style="font-weight:600; font-size:14.5px; color:var(--ttl-ink); line-height:1.35;">
+                  ${p.name}
+                </div>
               </div>
 
               <div style="display:flex; justify-content:space-between; align-items:baseline; width:100%; margin-top:auto; padding-top:8px; border-top:1px solid var(--ttl-rule);">
@@ -4060,8 +4219,17 @@ function renderInventoryView() {
                     <tr style="${sInfo.rowStyle}">
                       <td style="font-family:monospace; font-size:12px;">${p.id}</td>
                       <td>
-                        <b>${p.name}</b>
-                        ${sInfo.label ? `<br><span class="ttl-tag ${sInfo.badgeClass}" style="margin-top:2px;">${sInfo.label}</span>` : ''}
+                        <div style="display:flex; align-items:center; gap:8px;">
+                          ${p.image_url ? `
+                            <img src="${p.image_url}" alt="" style="width:36px; height:36px; object-fit:cover; border-radius:6px; border:1px solid var(--ttl-rule); flex-shrink:0;" />
+                          ` : `
+                            <div style="width:36px; height:36px; border-radius:6px; background:var(--ttl-page); border:1px dashed var(--ttl-rule); display:flex; align-items:center; justify-content:center; font-size:14px; flex-shrink:0;">${p.item_type === 'FOOD' ? '🍳' : '📦'}</div>
+                          `}
+                          <div>
+                            <b>${p.name}</b>
+                            ${sInfo.label ? `<br><span class="ttl-tag ${sInfo.badgeClass}" style="margin-top:2px;">${sInfo.label}</span>` : ''}
+                          </div>
+                        </div>
                       </td>
                       <td>
                         ${catObj ? `<span class="ttl-tag" style="background:var(--ttl-page); border:1px solid var(--ttl-rule);">🏷️ ${catObj.name}</span>` : '<span style="color:var(--ttl-muted); font-size:11px;">-</span>'}
@@ -4098,7 +4266,7 @@ function renderInventoryView() {
                       </td>
                       <td>
                         <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; padding:0 8px; font-size:11px;" onclick="state.editingProduct=${safeProdJson}; state.showNewProductModal=true; render();">✏️ แก้ไข</button>
+                          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:26px; padding:0 8px; font-size:11px;" onclick="openEditProductModal('${p.id}')">✏️ แก้ไข/รูป</button>
                           <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-danger-outline" style="height:26px; padding:0 8px; font-size:11px;" onclick="deleteEntity('PRODUCT', '${p.id}', '${p.name.replace(/'/g, "\\'")}')">🗑️ ลบ</button>
                         </div>
                       </td>
@@ -5100,6 +5268,7 @@ function renderModals() {
             conversion_rate: Number(f.pconv.value) || 1,
             stock_qty: Number(f.pstock.value) || 0,
             low_stock_threshold: Number(f.plowstock.value) || 5,
+            image_url: f.pimage_url ? f.pimage_url.value : '',
             voice_aliases: f.paliases.value
           }).then(out=>{
             if(out && out.data) state.data = out.data;
@@ -5172,6 +5341,28 @@ function renderModals() {
             <div style="grid-column: span 2;">
               <label style="font-size:12px; font-weight:600;">🔔 จำนวนขั้นต่ำแจ้งเตือนสต็อกต่ำ (แจ้งเตือนเมื่อสต็อกเหลือน้อยกว่าหรือเท่ากับค่านี้)</label>
               <input name="plowstock" type="number" step="any" class="ttl-input" value="${ep ? (ep.low_stock_threshold ?? 5) : 5}" />
+            </div>
+
+            <!-- อัปโหลดรูปภาพสินค้า / เมนูอาหาร -->
+            <div style="grid-column: span 2; padding:12px; border-radius:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule);">
+              <label style="font-size:12px; font-weight:700; display:block; margin-bottom:6px;">🖼️ รูปภาพสินค้า / เมนูอาหาร (แสดงในหน้าร้านลูกค้า & แคชเชียร์)</label>
+              <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                <div id="ttl-prod-img-preview" style="flex-shrink:0;">
+                  ${ep?.image_url ? `
+                    <img src="${ep.image_url}" alt="Preview" style="width:56px; height:56px; object-fit:cover; border-radius:8px; border:1px solid var(--ttl-rule);" />
+                  ` : `
+                    <div style="width:56px; height:56px; border-radius:8px; border:1px dashed var(--ttl-rule); display:flex; align-items:center; justify-content:center; font-size:20px; color:var(--ttl-muted);">📷</div>
+                  `}
+                </div>
+                <div style="flex:1; min-width:200px; display:flex; flex-direction:column; gap:6px;">
+                  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <input type="file" accept="image/*" class="ttl-input" style="padding:4px; flex:1;" onchange="uploadProductImage(this)" />
+                    <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="clearProductImageInModal()">ล้างรูป</button>
+                  </div>
+                  <input type="hidden" id="ttl-prod-image-url" name="pimage_url" value="${(ep?.image_url || '').replace(/"/g, '&quot;')}" />
+                  <div style="font-size:11px; color:var(--ttl-muted);">รองรับไฟล์รูปจากมือถือหรือคอมพิวเตอร์ (ระบบย่อขนาดให้อัตโนมัติ)</div>
+                </div>
+              </div>
             </div>
 
             <!-- ส่วนติ๊กเลือกกลุ่มตัวเลือกพิเศษสำหรับเมนูอาหารส่งครัว -->
@@ -6837,44 +7028,91 @@ function renderStoreZonesModal() {
   const zones = (state.data?.storeZones || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const categories = state.data?.categories || [];
   const ez = state.editingStoreZone;
+  const isEditingExisting = Boolean(ez && ez.id);
+  const ezType = (ez && (ez.zone_type || ez.type)) || 'CHILLER';
+  const ezRow = Number(ez && ez.grid_row) || 1;
+  const ezCol = Number(ez && ez.grid_col) || 1;
+  const ezSpan = Number(ez && ez.col_span) || 1;
   const products = state.data?.products || [];
 
   return `
     <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showStoreZonesModal=false; state.editingStoreZone=null; render();}">
-      <div class="ttl-modal" style="max-width:850px; max-height:90vh; overflow-y:auto;">
+      <div class="ttl-modal" style="max-width:860px; max-height:92vh; overflow-y:auto;">
         <!-- Header -->
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--ttl-rule);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--ttl-rule); flex-wrap:wrap; gap:8px;">
           <div>
             <div class="ttl-k">STOREFRONT DISPLAY & FIXTURES</div>
             <h3 style="margin:2px 0 0; font-size:18px;">🏪 จัดการพื้นที่จัดวางสินค้าหน้าร้าน (ตู้แช่ / ชั้นวาง / ครัว / บาร์น้ำ)</h3>
             <div style="font-size:12px; color:var(--ttl-muted); margin-top:2px;">
-              สำหรับแสดงบนหน้าร้านเสมือนจริง Pixel Art (/order) โดยผูกกับหมวดหมู่สินค้าในสต็อกจริง (แบบ A)
+              คลิกที่ตู้บนผังแล้วคลิกช่องว่างเพื่อ <b>ย้ายตำแหน่งทันที</b> • กดปุ่ม 🗑️ เพื่อลบ • หรือกรอกฟอร์มด้านล่างเพื่อเพิ่มตู้ใหม่
             </div>
           </div>
-          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showStoreZonesModal=false; state.editingStoreZone=null; render();">✕ ปิด</button>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="font-size:11.5px;" onclick="resetStoreZonesToDefault()">🔄 รีเซ็ตผังเริ่มต้น</button>
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showStoreZonesModal=false; state.editingStoreZone=null; render();">✕ ปิด</button>
+          </div>
         </div>
 
         <!-- ผังจัดวางพื้นที่ในร้าน (Floor Plan Grid Editor 6 คอลัมน์ x 4 แถว) -->
         <div style="background:#0f172a; border:2px solid #334155; border-radius:12px; padding:14px; margin-bottom:16px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
             <div style="color:#fde047; font-size:12.5px; font-weight:800; display:flex; align-items:center; gap:6px;">
               <span>🗺️ ผังจัดวางหน้าร้านพิกเซล (Floor Plan Grid 6×4)</span>
             </div>
-            <span style="font-size:11px; color:#94a3b8;">คลิกช่องว่างเพื่อย้าย/วางของที่นั่น หรือคลิกตู้เพื่อแก้ไข</span>
+            <span style="font-size:11.5px; color:${isEditingExisting ? '#fde047' : '#94a3b8'}; font-weight:${isEditingExisting ? '700' : '400'};">
+              ${isEditingExisting
+                ? `🎯 กำลังเลือก "${ez.name}" — คลิกช่องว่าง (+ R:C) เพื่อย้ายไปช่องนั้นทันที!`
+                : '💡 คลิกที่ตู้เพื่อแก้ไข/ย้าย หรือคลิกช่องว่างเพื่อเลือกจุดวางตู้ใหม่'}
+            </span>
           </div>
 
-          <div style="display:grid; grid-template-columns:repeat(6, 1fr); gap:8px;">
+          <div style="display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:8px;">
             ${(function() {
               const COLS = 6;
               const ROWS = 4;
               const adminCells = {};
+
+              // วางแต่ละโซนลงตารางโดยป้องกันการทับซ้อนกัน
               zones.forEach(z => {
-                const r = Math.max(1, Math.min(ROWS, Number(z.grid_row) || 1));
-                const c = Math.max(1, Math.min(COLS, Number(z.grid_col) || 1));
-                const span = Math.max(1, Math.min(2, Number(z.col_span) || 1));
-                adminCells[`${r},${c}`] = { isStart: true, zone: z, span };
-                for (let s = 1; s < span; s++) {
-                  adminCells[`${r},${c + s}`] = { isCovered: true };
+                let r = Math.max(1, Math.min(ROWS, Number(z.grid_row) || 1));
+                let c = Math.max(1, Math.min(COLS, Number(z.grid_col) || 1));
+                let span = Math.max(1, Math.min(2, Number(z.col_span) || 1));
+                if (c + span - 1 > COLS) c = COLS - span + 1;
+
+                // หากช่องนี้ถูกใช้ไปแล้ว ให้หาช่องว่างถัดไปเพื่อไม่ให้ตู้หายไปจากผัง
+                let placed = false;
+                const canFit = (tr, tc, tspan) => {
+                  if (tc + tspan - 1 > COLS) return false;
+                  for (let s = 0; s < tspan; s++) {
+                    if (adminCells[`${tr},${tc + s}`]) return false;
+                  }
+                  return true;
+                };
+
+                if (canFit(r, c, span)) {
+                  placed = true;
+                } else {
+                  for (let tr = 1; tr <= ROWS && !placed; tr++) {
+                    for (let tc = 1; tc <= COLS && !placed; tc++) {
+                      if (canFit(tr, tc, span)) {
+                        r = tr;
+                        c = tc;
+                        placed = true;
+                      } else if (span > 1 && canFit(tr, tc, 1)) {
+                        r = tr;
+                        c = tc;
+                        span = 1;
+                        placed = true;
+                      }
+                    }
+                  }
+                }
+
+                if (placed) {
+                  adminCells[`${r},${c}`] = { isStart: true, zone: z, span, actualRow: r, actualCol: c };
+                  for (let s = 1; s < span; s++) {
+                    adminCells[`${r},${c + s}`] = { isCovered: true };
+                  }
                 }
               });
 
@@ -6885,37 +7123,46 @@ function renderStoreZonesModal() {
                   if (cell) {
                     if (cell.isStart) {
                       const z = cell.zone;
-                      const isCurrentEdit = ez && ez.id === z.id;
-                      const safeZ = JSON.stringify(z).replace(/"/g, '&quot;');
+                      const isCurrentEdit = isEditingExisting && ez.id === z.id;
+                      const safeName = (z.name || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
                       adminGridHtml += `
                         <div
-                          style="grid-column:${c} / span ${cell.span}; grid-row:${r}; background:${isCurrentEdit ? '#fef3c7' : '#fff'}; border:2px solid ${isCurrentEdit ? '#f59e0b' : '#38bdf8'}; border-radius:8px; padding:6px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer; box-shadow:0 2px 4px rgba(0,0,0,0.15);"
-                          onclick="state.editingStoreZone=${safeZ}; render();"
-                          title="คลิกเพื่อแก้ไข ${z.name}"
+                          style="grid-column:${c} / span ${cell.span}; grid-row:${r}; background:${isCurrentEdit ? '#fef3c7' : '#ffffff'}; border:2.5px solid ${isCurrentEdit ? '#f59e0b' : '#38bdf8'}; border-radius:8px; padding:6px 8px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.2); position:relative; min-height:64px;"
+                          onclick="selectStoreZoneForEdit('${z.id}')"
+                          title="คลิกเพื่อเลือก/แก้ไข ${safeName}"
                         >
-                          <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <span style="font-size:14px;">${z.icon || '🏪'}</span>
-                            <span style="font-size:9.5px; background:#eff6ff; color:#2563eb; font-weight:700; padding:1px 4px; border-radius:4px;">R${r}:C${c}</span>
+                          <div style="display:flex; justify-content:space-between; align-items:center; gap:4px;">
+                            <div style="display:flex; align-items:center; gap:4px;">
+                              <span style="font-size:15px;">${z.icon || '🏪'}</span>
+                              <span style="font-size:9.5px; background:#eff6ff; color:#2563eb; font-weight:700; padding:1px 4px; border-radius:4px;">R${r}:C${c}</span>
+                            </div>
+                            <button
+                              type="button"
+                              style="border:none; background:#fee2e2; color:#dc2626; border-radius:4px; padding:1px 5px; font-size:10px; font-weight:700; cursor:pointer;"
+                              onclick="event.stopPropagation(); deleteStoreZoneById('${z.id}', '${safeName}')"
+                              title="ลบ ${safeName}"
+                            >🗑️</button>
                           </div>
-                          <div style="font-weight:700; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; color:#0f172a;">
+                          <div style="font-weight:700; font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:3px; color:#0f172a;">
                             ${z.name}
                           </div>
-                          <div style="font-size:9.5px; color:#64748b;">
-                            ${z.pixel_sprite || 'chiller'} ${cell.span > 1 ? '(2 ช่อง)' : ''}
+                          <div style="font-size:9.5px; color:#64748b; display:flex; justify-content:space-between;">
+                            <span>${z.pixel_sprite || 'chiller'} ${cell.span > 1 ? '(2 ช่อง)' : ''}</span>
+                            ${isCurrentEdit ? '<span style="color:#d97706; font-weight:800;">● กำลังเลือก</span>' : ''}
                           </div>
                         </div>
                       `;
                     }
                   } else {
-                    const isSelectedSlot = ez && ez.grid_row === r && ez.grid_col === c;
+                    const isSelectedSlot = ezRow === r && ezCol === c;
                     adminGridHtml += `
                       <div
-                        style="grid-column:${c}; grid-row:${r}; background:${isSelectedSlot ? '#1e3a8a' : '#1e293b'}; border:1.5px dashed ${isSelectedSlot ? '#60a5fa' : '#475569'}; border-radius:8px; min-height:55px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; padding:2px;"
-                        onclick="state.editingStoreZone = { ...(state.editingStoreZone || {}), grid_row:${r}, grid_col:${c} }; render();"
-                        title="คลิกเพื่อเลือกตำแหน่งนี้ (แถว ${r}, ช่อง ${c})"
+                        style="grid-column:${c}; grid-row:${r}; background:${isSelectedSlot ? '#1e3a8a' : '#1e293b'}; border:1.5px dashed ${isSelectedSlot ? '#60a5fa' : '#475569'}; border-radius:8px; min-height:64px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; padding:4px; transition:all 0.15s;"
+                        onclick="onAdminGridEmptyCellClick(${r}, ${c})"
+                        title="${isEditingExisting ? `คลิกเพื่อย้าย ${ez.name} มาที่ แถว ${r} ช่อง ${c}` : `คลิกเพื่อเลือกตำแหน่ง แถว ${r} ช่อง ${c}`}"
                       >
-                        <span style="font-size:10px; color:${isSelectedSlot ? '#93c5fd' : '#94a3b8'};">+ R${r}:C${c}</span>
-                        <span style="font-size:9px; color:#64748b;">(ว่าง)</span>
+                        <span style="font-size:10.5px; font-weight:700; color:${isSelectedSlot ? '#93c5fd' : '#94a3b8'};">${isEditingExisting ? `➔ ย้ายมา R${r}:C${c}` : `+ R${r}:C${c}`}</span>
+                        <span style="font-size:9px; color:${isSelectedSlot ? '#bfdbfe' : '#64748b'};">${isSelectedSlot ? '(ตำแหน่งที่เลือก)' : '(ว่าง)'}</span>
                       </div>
                     `;
                   }
@@ -6928,15 +7175,15 @@ function renderStoreZonesModal() {
 
         <!-- ฟอร์มเพิ่ม / แก้ไขพื้นที่จัดวาง -->
         <div style="background:var(--ttl-page); border:1px solid var(--ttl-rule); border-radius:12px; padding:16px; margin-bottom:20px;">
-          <div style="font-weight:700; font-size:14px; margin-bottom:12px; color:var(--ttl-ink); display:flex; justify-content:space-between; align-items:center;">
-            <span>${ez ? `✏️ แก้ไขพื้นที่จัดวาง: ${ez.name}` : '+ เพิ่มพื้นที่จัดวางสินค้าใหม่'}</span>
-            ${ez ? `<button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.editingStoreZone=null; render();">ยกเลิกการแก้ไข</button>` : ''}
+          <div style="font-weight:700; font-size:14px; margin-bottom:12px; color:var(--ttl-ink); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <span>${isEditingExisting ? `✏️ แก้ไขพื้นที่จัดวาง: "${ez.name}" (แถว ${ezRow}, ช่อง ${ezCol})` : `+ เพิ่มพื้นที่จัดวางสินค้าใหม่ (ตำแหน่ง แถว ${ezRow}, ช่อง ${ezCol})`}</span>
+            ${ez ? `<button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.editingStoreZone=null; render();">+ สลับเป็นโหมดเพิ่มตู้ใหม่</button>` : ''}
           </div>
 
-          <form onsubmit="event.preventDefault(); saveStoreZoneForm(this);">
-            <input type="hidden" name="zone_id" value="${ez ? ez.id : ''}" />
+          <form id="ttl-store-zone-form" onsubmit="event.preventDefault(); saveStoreZoneForm(this);">
+            <input type="hidden" name="zone_id" value="${isEditingExisting ? ez.id : ''}" />
 
-            <div style="display:grid; grid-template-columns:1.5fr 1fr 100px; gap:12px; margin-bottom:12px;">
+            <div style="display:grid; grid-template-columns:1.5fr 1fr 90px; gap:12px; margin-bottom:12px;">
               <div>
                 <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ชื่อพื้นที่จัดวาง *</label>
                 <input
@@ -6944,21 +7191,26 @@ function renderStoreZonesModal() {
                   name="zone_name"
                   class="ttl-input"
                   placeholder="เช่น ตู้แช่ 1 (เครื่องดื่มเย็น), ชั้นวางขนม 1"
-                  value="${(ez ? ez.name : '').replace(/"/g, '&quot;')}"
+                  value="${((ez && ez.name) || '').replace(/"/g, '&quot;')}"
                   required
                 />
               </div>
 
               <div>
                 <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ประเภทพื้นที่ (Type)</label>
-                <select name="zone_type" class="ttl-input">
-                  <option value="CHILLER" ${ez && ez.zone_type === 'CHILLER' ? 'selected' : ''}>🧊 ตู้แช่ (Chiller)</option>
-                  <option value="SHELF" ${ez && ez.zone_type === 'SHELF' ? 'selected' : ''}>🧺 ชั้นวางสินค้า (Shelf)</option>
-                  <option value="KITCHEN" ${ez && ez.zone_type === 'KITCHEN' ? 'selected' : ''}>🍳 ครัวอาหาร (Kitchen)</option>
-                  <option value="BAR" ${ez && ez.zone_type === 'BAR' ? 'selected' : ''}>☕ บาร์น้ำ/ชงดื่ม (Bar)</option>
-                  <option value="FRUIT" ${ez && ez.zone_type === 'FRUIT' ? 'selected' : ''}>🍉 กระบะผลไม้ & ของสด (Fruit)</option>
-                  <option value="CASHIER" ${ez && ez.zone_type === 'CASHIER' ? 'selected' : ''}>🏪 แคชเชียร์ (Cashier)</option>
-                  <option value="OTHER" ${ez && ez.zone_type === 'OTHER' ? 'selected' : ''}>📦 อื่นๆ (Other)</option>
+                <select name="zone_type" class="ttl-input" onchange="
+                  const spMap = { CHILLER:'chiller', SHELF:'shelf', KITCHEN:'kitchen', BAR:'bar', FRUIT:'fruit', CASHIER:'cashier', OTHER:'shelf' };
+                  const icMap = { CHILLER:'🧊', SHELF:'🧺', KITCHEN:'🍳', BAR:'☕', FRUIT:'🍉', CASHIER:'🏪', OTHER:'📦' };
+                  if (this.form.zone_pixel_sprite && spMap[this.value]) this.form.zone_pixel_sprite.value = spMap[this.value];
+                  if (this.form.zone_icon && icMap[this.value]) this.form.zone_icon.value = icMap[this.value];
+                ">
+                  <option value="CHILLER" ${ezType === 'CHILLER' ? 'selected' : ''}>🧊 ตู้แช่ (Chiller)</option>
+                  <option value="SHELF" ${ezType === 'SHELF' ? 'selected' : ''}>🧺 ชั้นวางสินค้า (Shelf)</option>
+                  <option value="KITCHEN" ${ezType === 'KITCHEN' ? 'selected' : ''}>🍳 ครัวอาหาร (Kitchen)</option>
+                  <option value="BAR" ${ezType === 'BAR' ? 'selected' : ''}>☕ บาร์น้ำ/ชงดื่ม (Bar)</option>
+                  <option value="FRUIT" ${ezType === 'FRUIT' ? 'selected' : ''}>🍉 กระบะผลไม้ & ของสด (Fruit)</option>
+                  <option value="CASHIER" ${ezType === 'CASHIER' ? 'selected' : ''}>🏪 แคชเชียร์ (Cashier)</option>
+                  <option value="OTHER" ${ezType === 'OTHER' ? 'selected' : ''}>📦 อื่นๆ (Other)</option>
                 </select>
               </div>
 
@@ -6970,7 +7222,7 @@ function renderStoreZonesModal() {
                   class="ttl-input"
                   style="text-align:center; font-size:16px;"
                   placeholder="🧊"
-                  value="${(ez ? ez.icon : '🏪').replace(/"/g, '&quot;')}"
+                  value="${((ez && ez.icon) || '🧊').replace(/"/g, '&quot;')}"
                 />
               </div>
             </div>
@@ -6980,30 +7232,30 @@ function renderStoreZonesModal() {
               <div>
                 <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ตำแหน่งแถว (Row 1-4)</label>
                 <select name="zone_grid_row" class="ttl-input">
-                  <option value="1" ${ez && ez.grid_row === 1 ? 'selected' : ''}>แถว 1 (ผนังหลังร้าน: ตู้แช่/ครัว/บาร์)</option>
-                  <option value="2" ${ez && ez.grid_row === 2 ? 'selected' : ''}>แถว 2 (ทางเดินกลางร้าน: ชั้นวางกลาง)</option>
-                  <option value="3" ${ez && ez.grid_row === 3 ? 'selected' : ''}>แถว 3 (ทางเดินหน้าร้าน: ผลไม้/ของสด)</option>
-                  <option value="4" ${ez && ez.grid_row === 4 ? 'selected' : ''}>แถว 4 (โซนหน้าร้าน / ทางเข้า)</option>
+                  <option value="1" ${ezRow === 1 ? 'selected' : ''}>แถว 1 (ผนังหลังร้าน: ตู้แช่/ครัว/บาร์)</option>
+                  <option value="2" ${ezRow === 2 ? 'selected' : ''}>แถว 2 (ทางเดินกลางร้าน: ชั้นวางกลาง)</option>
+                  <option value="3" ${ezRow === 3 ? 'selected' : ''}>แถว 3 (ทางเดินหน้าร้าน: ผลไม้/ของสด)</option>
+                  <option value="4" ${ezRow === 4 ? 'selected' : ''}>แถว 4 (โซนหน้าร้าน / ทางเข้า)</option>
                 </select>
               </div>
 
               <div>
                 <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ตำแหน่งคอลัมน์ (Column 1-6)</label>
                 <select name="zone_grid_col" class="ttl-input">
-                  <option value="1" ${ez && ez.grid_col === 1 ? 'selected' : ''}>คอลัมน์ 1 (ซ้ายสุด)</option>
-                  <option value="2" ${ez && ez.grid_col === 2 ? 'selected' : ''}>คอลัมน์ 2</option>
-                  <option value="3" ${ez && ez.grid_col === 3 ? 'selected' : ''}>คอลัมน์ 3</option>
-                  <option value="4" ${ez && ez.grid_col === 4 ? 'selected' : ''}>คอลัมน์ 4</option>
-                  <option value="5" ${ez && ez.grid_col === 5 ? 'selected' : ''}>คอลัมน์ 5</option>
-                  <option value="6" ${ez && ez.grid_col === 6 ? 'selected' : ''}>คอลัมน์ 6 (ขวาสุด)</option>
+                  <option value="1" ${ezCol === 1 ? 'selected' : ''}>คอลัมน์ 1 (ซ้ายสุด)</option>
+                  <option value="2" ${ezCol === 2 ? 'selected' : ''}>คอลัมน์ 2</option>
+                  <option value="3" ${ezCol === 3 ? 'selected' : ''}>คอลัมน์ 3</option>
+                  <option value="4" ${ezCol === 4 ? 'selected' : ''}>คอลัมน์ 4</option>
+                  <option value="5" ${ezCol === 5 ? 'selected' : ''}>คอลัมน์ 5</option>
+                  <option value="6" ${ezCol === 6 ? 'selected' : ''}>คอลัมน์ 6 (ขวาสุด)</option>
                 </select>
               </div>
 
               <div>
                 <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ความกว้าง (Span)</label>
                 <select name="zone_col_span" class="ttl-input">
-                  <option value="1" ${!ez || ez.col_span === 1 ? 'selected' : ''}>1 ช่องปกติ</option>
-                  <option value="2" ${ez && ez.col_span === 2 ? 'selected' : ''}>2 ช่องกว้าง (ตู้คู่ / เคาน์เตอร์ยาว)</option>
+                  <option value="1" ${ezSpan === 1 ? 'selected' : ''}>1 ช่องปกติ</option>
+                  <option value="2" ${ezSpan === 2 ? 'selected' : ''}>2 ช่องกว้าง (ตู้คู่ / เคาน์เตอร์ยาว)</option>
                 </select>
               </div>
             </div>
@@ -7013,7 +7265,7 @@ function renderStoreZonesModal() {
               <div>
                 <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">รูป Pixel Art เริ่มต้น (Sprite)</label>
                 <select name="zone_pixel_sprite" class="ttl-input">
-                  <option value="chiller" ${!ez || ez.pixel_sprite === 'chiller' ? 'selected' : ''}>🧊 ตู้แช่กระจกใส (Chiller)</option>
+                  <option value="chiller" ${!ez || !ez.pixel_sprite || ez.pixel_sprite === 'chiller' ? 'selected' : ''}>🧊 ตู้แช่กระจกใส (Chiller)</option>
                   <option value="shelf" ${ez && ez.pixel_sprite === 'shelf' ? 'selected' : ''}>🧺 ชั้นวางของไม้ 3 ชั้น (Shelf)</option>
                   <option value="kitchen" ${ez && ez.pixel_sprite === 'kitchen' ? 'selected' : ''}>🍳 ครัวกระทะ & หม้อต้ม (Kitchen)</option>
                   <option value="bar" ${ez && ez.pixel_sprite === 'bar' ? 'selected' : ''}>☕ เคาน์เตอร์บาร์น้ำชง (Bar)</option>
@@ -7027,7 +7279,7 @@ function renderStoreZonesModal() {
                 <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">หรืออัปโหลดรูปภาพที่วาดเอง</label>
                 <div style="display:flex; gap:8px; align-items:center;">
                   <input type="file" accept="image/*" class="ttl-input" style="padding:4px;" onchange="uploadCustomZoneImage(this)" />
-                  <input type="hidden" id="ttl-zone-custom-img-url" name="zone_custom_image_url" value="${(ez ? ez.custom_image_url || '' : '').replace(/"/g, '&quot;')}" />
+                  <input type="hidden" id="ttl-zone-custom-img-url" name="zone_custom_image_url" value="${((ez && ez.custom_image_url) || '').replace(/"/g, '&quot;')}" />
                   <div id="ttl-zone-img-preview" style="min-width:36px; min-height:36px; display:flex; align-items:center; justify-content:center;">
                     ${ez && ez.custom_image_url ? `<img src="${ez.custom_image_url}" style="max-height:36px; max-width:36px; object-fit:contain; image-rendering:pixelated;" />` : ''}
                   </div>
@@ -7041,24 +7293,7 @@ function renderStoreZonesModal() {
                   name="zone_sort_order"
                   class="ttl-input"
                   style="text-align:center;"
-                  value="${ez ? ez.sort_order || 1 : zones.length + 1}"
-                />
-              </div>
-            </div>
-                  <div id="ttl-zone-img-preview" style="min-width:36px; min-height:36px; display:flex; align-items:center; justify-content:center;">
-                    ${ez && ez.custom_image_url ? `<img src="${ez.custom_image_url}" style="max-height:36px; max-width:36px; object-fit:contain; image-rendering:pixelated;" />` : ''}
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ลำดับ</label>
-                <input
-                  type="number"
-                  name="zone_sort_order"
-                  class="ttl-input"
-                  style="text-align:center;"
-                  value="${ez ? ez.sort_order || 1 : zones.length + 1}"
+                  value="${ez && ez.sort_order ? ez.sort_order : zones.length + 1}"
                 />
               </div>
             </div>
@@ -7093,14 +7328,28 @@ function renderStoreZonesModal() {
                 name="zone_desc"
                 class="ttl-input"
                 placeholder="เช่น เครื่องดื่มเย็นชื่นใจ น้ำอัดลม ชา กาแฟกระป๋อง"
-                value="${(ez ? ez.description || '' : '').replace(/"/g, '&quot;')}"
+                value="${((ez && ez.description) || '').replace(/"/g, '&quot;')}"
               />
             </div>
 
-            <div style="display:flex; justify-content:flex-end; gap:8px;">
-              <button type="submit" class="ttl-btn ttl-btn-dark">
-                💾 ${ez ? 'บันทึกการแก้ไขพื้นที่' : '+ เพิ่มพื้นที่จัดวาง'}
-              </button>
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+              <div>
+                ${isEditingExisting ? `
+                  <button
+                    type="button"
+                    class="ttl-btn ttl-btn-danger-outline"
+                    onclick="deleteStoreZoneById('${ez.id}', '${(ez.name || '').replace(/'/g, "\\'")}')"
+                  >
+                    🗑️ ลบพื้นที่ "${ez.name}"
+                  </button>
+                ` : ''}
+              </div>
+              <div style="display:flex; gap:8px;">
+                ${ez ? `<button type="button" class="ttl-btn ttl-btn-ghost" onclick="state.editingStoreZone=null; render();">ยกเลิก</button>` : ''}
+                <button type="submit" class="ttl-btn ttl-btn-dark">
+                  💾 ${isEditingExisting ? 'บันทึกการแก้ไขพื้นที่' : '+ เพิ่มพื้นที่จัดวางใหม่'}
+                </button>
+              </div>
             </div>
           </form>
         </div>
@@ -7112,16 +7361,16 @@ function renderStoreZonesModal() {
             const boundCats = categories.filter(c => Array.isArray(z.category_ids) && z.category_ids.includes(c.id));
             const boundCatIds = boundCats.map(c => c.id);
             const prodCount = products.filter(p => boundCatIds.includes(p.category_id)).length;
-            const safeZJson = JSON.stringify(z).replace(/"/g, '&quot;');
+            const zTypeLabel = z.zone_type || z.type || 'CHILLER';
             return `
-              <div style="background:#fff; border:1px solid var(--ttl-rule); border-radius:10px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+              <div style="background:#fff; border:1.5px solid ${isEditingExisting && ez.id === z.id ? '#f59e0b' : 'var(--ttl-rule)'}; border-radius:10px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
                 <div>
                   <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
                     <div style="display:flex; align-items:center; gap:8px;">
                       <span style="font-size:20px;">${z.icon || '🏪'}</span>
                       <div>
                         <div style="font-weight:700; font-size:13.5px; color:var(--ttl-ink);">${z.name}</div>
-                        <div style="font-size:10.5px; color:var(--ttl-muted);">${z.zone_type} • Sprite: ${z.pixel_sprite || 'chiller'} • 📍 แถว ${z.grid_row || 1}:C${z.grid_col || 1}</div>
+                        <div style="font-size:10.5px; color:var(--ttl-muted);">${zTypeLabel} • Sprite: ${z.pixel_sprite || 'chiller'} • 📍 แถว ${z.grid_row || 1}:C${z.grid_col || 1}</div>
                       </div>
                     </div>
                     <span style="font-size:11px; font-weight:700; color:#2563eb; background:#eff6ff; padding:2px 6px; border-radius:6px;">
@@ -7138,7 +7387,7 @@ function renderStoreZonesModal() {
                     <div style="display:flex; flex-wrap:wrap; gap:4px;">
                       ${boundCats.length > 0 ? boundCats.map(c => `
                         <span style="font-size:10px; background:var(--ttl-page); border:1px solid var(--ttl-rule); padding:2px 6px; border-radius:4px;">${c.name}</span>
-                      `).join('') : '<span style="font-size:10px; color:#f59e0b;">(ยังไม่ได้ผูกหมวดหมู่)</span>'}
+                      `).join('') : '<span style="font-size:10px; color:#f59e0b;">(แสดงตามประเภทพื้นที่)</span>'}
                     </div>
                   </div>
                 </div>
@@ -7147,14 +7396,14 @@ function renderStoreZonesModal() {
                   <button
                     type="button"
                     class="ttl-btn ttl-btn-sm ttl-btn-ghost"
-                    onclick="state.editingStoreZone=${safeZJson}; render();"
+                    onclick="selectStoreZoneForEdit('${z.id}')"
                   >
-                    ✏️ แก้ไข
+                    ✏️ แก้ไข / ย้าย
                   </button>
                   <button
                     type="button"
                     class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
-                    onclick="deleteStoreZoneById('${z.id}', '${z.name.replace(/'/g, "\\'")}')"
+                    onclick="deleteStoreZoneById('${z.id}', '${(z.name || '').replace(/'/g, "\\'")}')"
                   >
                     🗑️ ลบ
                   </button>

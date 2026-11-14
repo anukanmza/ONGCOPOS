@@ -989,6 +989,38 @@ module.exports = async (req, res) => {
         }
       }
 
+      if (body.image_url !== undefined) {
+        try {
+          let imgMap = {};
+          const imgRows = await sbRest("customers?select=note&id=eq.SYS-PRODUCT-IMAGES");
+          if (imgRows && imgRows[0] && imgRows[0].note) {
+            const parsed = JSON.parse(imgRows[0].note);
+            if (parsed && typeof parsed === 'object') imgMap = parsed;
+          }
+          const cleanImg = String(body.image_url || '').trim();
+          if (cleanImg) {
+            imgMap[prodId] = cleanImg;
+          } else {
+            delete imgMap[prodId];
+          }
+          await sbRest('customers', {
+            method: 'POST',
+            prefer: 'resolution=merge-duplicates,return=representation',
+            body: {
+              id: 'SYS-PRODUCT-IMAGES',
+              name: '__PRODUCT_IMAGES__',
+              phone: '',
+              tier: 'SYSTEM',
+              points: 0,
+              total_spent: 0,
+              note: JSON.stringify(imgMap)
+            }
+          });
+        } catch (err) {
+          console.warn('Saving SYS-PRODUCT-IMAGES error:', err.message);
+        }
+      }
+
       return send(200, { success: true, prodId, data: await getSupabaseBootstrapData() });
     }
 
@@ -1384,7 +1416,8 @@ module.exports = async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/store-zones/save') {
-      const { id, name, type = 'CHILLER', icon = '❄️', pixel_sprite = 'chiller', custom_image_url = '', category_ids = [], description = '', grid_row = 1, grid_col = 1, col_span = 1, row_span = 1, sort_order = 1, is_active = true } = body;
+      const { id, name, icon = '❄️', pixel_sprite = 'chiller', custom_image_url = '', category_ids = [], description = '', grid_row = 1, grid_col = 1, col_span = 1, row_span = 1, sort_order = 1, is_active = true } = body;
+      const zType = body.type || body.zone_type || 'CHILLER';
       if (!name || !name.trim()) return send(400, { error: 'กรุณาระบุชื่อพื้นที่จัดวางสินค้า' });
 
       let storeZones = [...DEFAULT_STORE_ZONES];
@@ -1392,7 +1425,7 @@ module.exports = async (req, res) => {
         const rows = await sbRest("customers?select=note&id=eq.SYS-STORE-ZONES");
         if (rows && rows[0] && rows[0].note) {
           const parsed = JSON.parse(rows[0].note);
-          if (Array.isArray(parsed) && parsed.length > 0) storeZones = parsed;
+          if (Array.isArray(parsed)) storeZones = parsed;
         }
       } catch {}
 
@@ -1401,7 +1434,8 @@ module.exports = async (req, res) => {
       const zoneObj = {
         id: zoneId,
         name: name.trim(),
-        type,
+        type: zType,
+        zone_type: zType,
         icon: icon || '❄️',
         pixel_sprite: pixel_sprite || 'chiller',
         custom_image_url: custom_image_url || '',
@@ -1433,11 +1467,12 @@ module.exports = async (req, res) => {
             tier: 'SYSTEM',
             points: 0,
             total_spent: 0,
-            note: JSON.stringify(storeZones),
-            created_at: new Date().toISOString()
+            note: JSON.stringify(storeZones)
           }
         });
-      } catch {}
+      } catch (err) {
+        console.warn('Saving SYS-STORE-ZONES error:', err.message);
+      }
 
       return send(200, { success: true, zoneId, storeZones, data: await getSupabaseBootstrapData() });
     }
@@ -1449,7 +1484,7 @@ module.exports = async (req, res) => {
         const rows = await sbRest("customers?select=note&id=eq.SYS-STORE-ZONES");
         if (rows && rows[0] && rows[0].note) {
           const parsed = JSON.parse(rows[0].note);
-          if (Array.isArray(parsed) && parsed.length > 0) storeZones = parsed;
+          if (Array.isArray(parsed)) storeZones = parsed;
         }
       } catch {}
 
@@ -1465,12 +1500,33 @@ module.exports = async (req, res) => {
             tier: 'SYSTEM',
             points: 0,
             total_spent: 0,
-            note: JSON.stringify(storeZones),
-            created_at: new Date().toISOString()
+            note: JSON.stringify(storeZones)
+          }
+        });
+      } catch (err) {
+        console.warn('Deleting SYS-STORE-ZONES error:', err.message);
+      }
+
+      return send(200, { success: true, storeZones, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/store-zones/reset') {
+      const storeZones = [...DEFAULT_STORE_ZONES];
+      try {
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-STORE-ZONES',
+            name: '__STORE_ZONES__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(storeZones)
           }
         });
       } catch {}
-
       return send(200, { success: true, storeZones, data: await getSupabaseBootstrapData() });
     }
 

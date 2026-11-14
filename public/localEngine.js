@@ -1336,7 +1336,8 @@ window.LocalPosEngine = {
         stock_qty: body.stock_qty !== undefined ? Number(body.stock_qty) : existing.stock_qty,
         low_stock_threshold: body.low_stock_threshold !== undefined ? Number(body.low_stock_threshold) : (existing.low_stock_threshold ?? 5),
         modifier_group_ids: modGrpIds,
-        voice_aliases: aliases
+        voice_aliases: aliases,
+        image_url: body.image_url !== undefined ? String(body.image_url || '') : (existing.image_url || '')
       });
     } else {
       db.products.push({
@@ -1355,7 +1356,8 @@ window.LocalPosEngine = {
         stock_qty: Number(body.stock_qty) || 0,
         low_stock_threshold: Number(body.low_stock_threshold) || 5,
         modifier_group_ids: modGrpIds,
-        send_to_kitchen: body.item_type === 'FOOD'
+        send_to_kitchen: body.item_type === 'FOOD',
+        image_url: String(body.image_url || '')
       });
     }
     if (body.item_type === 'FOOD' && Array.isArray(body.recipe_items)) {
@@ -1621,10 +1623,12 @@ window.LocalPosEngine = {
     if (!Array.isArray(db.storeZones)) db.storeZones = [];
     const zoneId = body.id || `ZONE-${Date.now().toString().slice(-4)}`;
     const existingIdx = db.storeZones.findIndex(z => z.id === zoneId);
+    const zType = body.type || body.zone_type || 'CHILLER';
     const zoneObj = {
       id: zoneId,
       name: (body.name || '').trim(),
-      type: body.type || 'CHILLER',
+      type: zType,
+      zone_type: zType,
       icon: body.icon || '❄️',
       pixel_sprite: body.pixel_sprite || 'chiller',
       custom_image_url: body.custom_image_url || '',
@@ -1653,6 +1657,13 @@ window.LocalPosEngine = {
     db.storeZones = db.storeZones.filter(z => z.id !== body.id);
     saveLocalDb(db);
     return { success: true, storeZones: db.storeZones, data: buildLocalBootstrap() };
+  },
+
+  resetStoreZones() {
+    const db = loadLocalDb();
+    delete db.storeZones;
+    saveLocalDb(db);
+    return { success: true, data: buildLocalBootstrap() };
   }
 };
 

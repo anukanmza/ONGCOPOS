@@ -129,7 +129,18 @@ function getFullBootstrapData() {
 
   const rawTables = db.prepare('SELECT * FROM dining_tables ORDER BY id').all();
   const rawCustomers = db.prepare('SELECT * FROM customers ORDER BY total_spent DESC, created_at DESC').all();
-  const customers = rawCustomers.filter(c => !c.id.startsWith('SYS-'));
+  const customers = rawCustomers.filter(c => !String(c.id || '').startsWith('SYS-'));
+  let prodImgMap = {};
+  try {
+    const imgRow = db.prepare("SELECT note FROM customers WHERE id = 'SYS-PRODUCT-IMAGES'").get();
+    if (imgRow && imgRow.note) {
+      const parsed = JSON.parse(imgRow.note);
+      if (parsed && typeof parsed === 'object') prodImgMap = parsed;
+    }
+  } catch {}
+  for (const p of products) {
+    p.image_url = prodImgMap[p.id] || p.image_url || '';
+  }
   const loyaltySettings = getLoyaltySettingsFromDb();
   let deliveryMapConfig = {
     custom_image_url: '',
@@ -145,54 +156,12 @@ function getFullBootstrapData() {
   } catch {}
 
   const DEFAULT_STORE_ZONES = [
-    {
-      id: 'ZONE-CHILLER-1',
-      name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)',
-      type: 'CHILLER',
-      icon: '❄️',
-      pixel_sprite: 'chiller',
-      custom_image_url: '',
-      category_ids: ['CAT-DRINK'],
-      description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น',
-      sort_order: 1,
-      is_active: true
-    },
-    {
-      id: 'ZONE-SHELF-1',
-      name: 'ชั้นวางขนม & ของชำทั่วไป',
-      type: 'SHELF',
-      icon: '🧺',
-      pixel_sprite: 'shelf',
-      custom_image_url: '',
-      category_ids: ['CAT-SNACK', 'CAT-PANTRY'],
-      description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน',
-      sort_order: 2,
-      is_active: true
-    },
-    {
-      id: 'ZONE-KITCHEN-1',
-      name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)',
-      type: 'KITCHEN',
-      icon: '🍳',
-      pixel_sprite: 'kitchen',
-      custom_image_url: '',
-      category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'],
-      description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน',
-      sort_order: 3,
-      is_active: true
-    },
-    {
-      id: 'ZONE-BAR-1',
-      name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ',
-      type: 'BAR',
-      icon: '🥤',
-      pixel_sprite: 'bar',
-      custom_image_url: '',
-      category_ids: [],
-      description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ',
-      sort_order: 4,
-      is_active: true
-    }
+    { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', zone_type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', grid_row: 1, grid_col: 1, col_span: 1, row_span: 1, sort_order: 1, is_active: true },
+    { id: 'ZONE-CHILLER-2', name: 'ตู้แช่ 2 (นมสด & เครื่องดื่มชูกำลัง)', type: 'CHILLER', zone_type: 'CHILLER', icon: '🧊', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'นมพร้อมดื่ม ชา กาแฟกระป๋อง และเครื่องดื่มชูกำลัง', grid_row: 1, grid_col: 2, col_span: 1, row_span: 1, sort_order: 2, is_active: true },
+    { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', zone_type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', grid_row: 2, grid_col: 2, col_span: 2, row_span: 1, sort_order: 3, is_active: true },
+    { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', zone_type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', grid_row: 1, grid_col: 4, col_span: 1, row_span: 1, sort_order: 4, is_active: true },
+    { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', zone_type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', grid_row: 1, grid_col: 5, col_span: 2, row_span: 1, sort_order: 5, is_active: true },
+    { id: 'ZONE-FRUIT-1', name: 'กระบะผลไม้ & ของสด', type: 'FRUIT', zone_type: 'FRUIT', icon: '🍉', pixel_sprite: 'fruit', custom_image_url: '', category_ids: [], description: 'แตงโม กล้วย แอปเปิ้ล ผลไม้สดตามฤดูกาล', grid_row: 3, grid_col: 5, col_span: 2, row_span: 1, sort_order: 6, is_active: true }
   ];
 
   let storeZones = [...DEFAULT_STORE_ZONES];
@@ -200,7 +169,17 @@ function getFullBootstrapData() {
     const row = db.prepare("SELECT note FROM customers WHERE id = 'SYS-STORE-ZONES'").get();
     if (row && row.note) {
       const parsed = JSON.parse(row.note);
-      if (Array.isArray(parsed) && parsed.length > 0) storeZones = parsed;
+      if (Array.isArray(parsed)) {
+        storeZones = parsed.map((z, idx) => ({
+          ...z,
+          type: z.type || z.zone_type || 'CHILLER',
+          zone_type: z.zone_type || z.type || 'CHILLER',
+          grid_row: Number(z.grid_row) || (idx < 3 ? 1 : 2),
+          grid_col: Number(z.grid_col) || ((idx % 3) * 2 + 1),
+          col_span: Number(z.col_span) || 1,
+          row_span: Number(z.row_span) || 1
+        }));
+      }
     }
   } catch {}
   const openOrders = db.prepare("SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at DESC").all();
@@ -1618,6 +1597,7 @@ const server = http.createServer(async (req, res) => {
         item_type = 'GROCERY',
         stock_qty = 0,
         low_stock_threshold = 5,
+        image_url = '',
         recipe_items = []
       } = body;
 
@@ -1630,6 +1610,7 @@ const server = http.createServer(async (req, res) => {
       const trackStock = item_type === 'GROCERY' ? 1 : 0;
       const aliasesJson = JSON.stringify(Array.isArray(voice_aliases) ? voice_aliases : String(voice_aliases || '').split(',').map(s => s.trim()).filter(Boolean));
       const modGrpJson = JSON.stringify(Array.isArray(body.modifier_group_ids) ? body.modifier_group_ids : []);
+      const cleanImgUrl = image_url ? String(image_url) : '';
 
       const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(prodId);
       if (existing) {
@@ -1637,23 +1618,23 @@ const server = http.createServer(async (req, res) => {
           UPDATE products
           SET category_id = ?, barcode = ?, name = ?, voice_aliases = ?, price = ?, cost = ?,
               unit = ?, purchase_unit = ?, conversion_rate = ?, item_type = ?, track_stock = ?,
-              stock_qty = ?, low_stock_threshold = ?, modifier_group_ids = ?, send_to_kitchen = ?
+              stock_qty = ?, low_stock_threshold = ?, modifier_group_ids = ?, send_to_kitchen = ?, image_url = ?
           WHERE id = ?
         `).run(
           category_id || defaultCat, cleanBarcode, name, aliasesJson, Number(price), Number(cost),
           unit, purchase_unit, Number(conversion_rate) || 1, item_type, trackStock,
-          Number(stock_qty) || 0, Number(low_stock_threshold) || 5, modGrpJson, sendToKitchen, prodId
+          Number(stock_qty) || 0, Number(low_stock_threshold) || 5, modGrpJson, sendToKitchen, cleanImgUrl, prodId
         );
       } else {
         db.prepare(`
           INSERT INTO products (
             id, category_id, barcode, name, voice_aliases, price, cost, unit, purchase_unit, conversion_rate,
-            item_type, track_stock, stock_qty, low_stock_threshold, modifier_group_ids, send_to_kitchen, is_active
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            item_type, track_stock, stock_qty, low_stock_threshold, modifier_group_ids, send_to_kitchen, image_url, is_active
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         `).run(
           prodId, category_id || defaultCat, cleanBarcode, name, aliasesJson, Number(price), Number(cost),
           unit, purchase_unit, Number(conversion_rate) || 1, item_type, trackStock,
-          Number(stock_qty) || 0, Number(low_stock_threshold) || 5, modGrpJson, sendToKitchen
+          Number(stock_qty) || 0, Number(low_stock_threshold) || 5, modGrpJson, sendToKitchen, cleanImgUrl
         );
       }
 
@@ -1918,23 +1899,24 @@ const server = http.createServer(async (req, res) => {
     // Store Zones Management (พื้นที่จัดวางสินค้าหน้าร้าน: ตู้แช่, ชั้นวาง, ครัว, บาร์น้ำ)
     if (req.method === 'POST' && pathname === '/api/store-zones/save') {
       const body = await parseJsonBody(req);
-      const { id, name, type = 'CHILLER', icon = '❄️', pixel_sprite = 'chiller', custom_image_url = '', category_ids = [], description = '', grid_row = 1, grid_col = 1, col_span = 1, row_span = 1, sort_order = 1, is_active = true } = body;
+      const zType = body.type || body.zone_type || 'CHILLER';
+      const { id, name, icon = '❄️', pixel_sprite = 'chiller', custom_image_url = '', category_ids = [], description = '', grid_row = 1, grid_col = 1, col_span = 1, row_span = 1, sort_order = 1, is_active = true } = body;
       if (!name || !name.trim()) return sendJson(res, 400, { error: 'กรุณาระบุชื่อพื้นที่จัดวางสินค้า' });
 
       let storeZones = [
-        { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', grid_row: 1, grid_col: 1, col_span: 1, row_span: 1, sort_order: 1, is_active: true },
-        { id: 'ZONE-CHILLER-2', name: 'ตู้แช่ 2 (นมสด & เครื่องดื่มชูกำลัง)', type: 'CHILLER', icon: '🧊', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'นมพร้อมดื่ม ชา กาแฟกระป๋อง และเครื่องดื่มชูกำลัง', grid_row: 1, grid_col: 2, col_span: 1, row_span: 1, sort_order: 2, is_active: true },
-        { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', grid_row: 2, grid_col: 2, col_span: 2, row_span: 1, sort_order: 3, is_active: true },
-        { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', grid_row: 1, grid_col: 4, col_span: 1, row_span: 1, sort_order: 4, is_active: true },
-        { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', grid_row: 1, grid_col: 5, col_span: 2, row_span: 1, sort_order: 5, is_active: true },
-        { id: 'ZONE-FRUIT-1', name: 'กระบะผลไม้ & ของสด', type: 'FRUIT', icon: '🍉', pixel_sprite: 'fruit', custom_image_url: '', category_ids: [], description: 'แตงโม กล้วย แอปเปิ้ล ผลไม้สดตามฤดูกาล', grid_row: 3, grid_col: 5, col_span: 2, row_span: 1, sort_order: 6, is_active: true }
+        { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', zone_type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', grid_row: 1, grid_col: 1, col_span: 1, row_span: 1, sort_order: 1, is_active: true },
+        { id: 'ZONE-CHILLER-2', name: 'ตู้แช่ 2 (นมสด & เครื่องดื่มชูกำลัง)', type: 'CHILLER', zone_type: 'CHILLER', icon: '🧊', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'นมพร้อมดื่ม ชา กาแฟกระป๋อง และเครื่องดื่มชูกำลัง', grid_row: 1, grid_col: 2, col_span: 1, row_span: 1, sort_order: 2, is_active: true },
+        { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', zone_type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', grid_row: 2, grid_col: 2, col_span: 2, row_span: 1, sort_order: 3, is_active: true },
+        { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', zone_type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', grid_row: 1, grid_col: 4, col_span: 1, row_span: 1, sort_order: 4, is_active: true },
+        { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', zone_type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', grid_row: 1, grid_col: 5, col_span: 2, row_span: 1, sort_order: 5, is_active: true },
+        { id: 'ZONE-FRUIT-1', name: 'กระบะผลไม้ & ของสด', type: 'FRUIT', zone_type: 'FRUIT', icon: '🍉', pixel_sprite: 'fruit', custom_image_url: '', category_ids: [], description: 'แตงโม กล้วย แอปเปิ้ล ผลไม้สดตามฤดูกาล', grid_row: 3, grid_col: 5, col_span: 2, row_span: 1, sort_order: 6, is_active: true }
       ];
 
       const row = db.prepare("SELECT note FROM customers WHERE id = 'SYS-STORE-ZONES'").get();
       if (row && row.note) {
         try {
           const parsed = JSON.parse(row.note);
-          if (Array.isArray(parsed) && parsed.length > 0) storeZones = parsed;
+          if (Array.isArray(parsed)) storeZones = parsed;
         } catch {}
       }
 
@@ -1943,7 +1925,8 @@ const server = http.createServer(async (req, res) => {
       const zoneObj = {
         id: zoneId,
         name: name.trim(),
-        type,
+        type: zType,
+        zone_type: zType,
         icon: icon || '❄️',
         pixel_sprite: pixel_sprite || 'chiller',
         custom_image_url: custom_image_url || '',
@@ -1977,16 +1960,18 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/store-zones/delete') {
       const { id } = await parseJsonBody(req);
       let storeZones = [
-        { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', sort_order: 1, is_active: true },
-        { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', sort_order: 2, is_active: true },
-        { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', sort_order: 3, is_active: true },
-        { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', sort_order: 4, is_active: true }
+        { id: 'ZONE-CHILLER-1', name: 'ตู้แช่ 1 (เครื่องดื่มเย็น & น้ำแข็ง)', type: 'CHILLER', zone_type: 'CHILLER', icon: '❄️', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'เครื่องดื่มเย็นเจี๊ยบ น้ำอัดลม น้ำดื่ม และน้ำแข็งสดชื่น', grid_row: 1, grid_col: 1, col_span: 1, row_span: 1, sort_order: 1, is_active: true },
+        { id: 'ZONE-CHILLER-2', name: 'ตู้แช่ 2 (นมสด & เครื่องดื่มชูกำลัง)', type: 'CHILLER', zone_type: 'CHILLER', icon: '🧊', pixel_sprite: 'chiller', custom_image_url: '', category_ids: ['CAT-DRINK'], description: 'นมพร้อมดื่ม ชา กาแฟกระป๋อง และเครื่องดื่มชูกำลัง', grid_row: 1, grid_col: 2, col_span: 1, row_span: 1, sort_order: 2, is_active: true },
+        { id: 'ZONE-SHELF-1', name: 'ชั้นวางขนม & ของชำทั่วไป', type: 'SHELF', zone_type: 'SHELF', icon: '🧺', pixel_sprite: 'shelf', custom_image_url: '', category_ids: ['CAT-SNACK', 'CAT-PANTRY'], description: 'ขนมขบเคี้ยว บะหมี่กึ่งสำเร็จรูป เครื่องปรุง และของใช้ในบ้าน', grid_row: 2, grid_col: 2, col_span: 2, row_span: 1, sort_order: 3, is_active: true },
+        { id: 'ZONE-KITCHEN-1', name: 'ครัวอาหารตามสั่ง (สั่งปรุงสด)', type: 'KITCHEN', zone_type: 'KITCHEN', icon: '🍳', pixel_sprite: 'kitchen', custom_image_url: '', category_ids: ['CAT-RICE', 'CAT-NOODLE', 'CAT-APPETIZER'], description: 'อาหารจานเดียว กะเพรา ผัด ต้มยำ สั่งทำสดใหม่จานต่อจาน', grid_row: 1, grid_col: 4, col_span: 1, row_span: 1, sort_order: 4, is_active: true },
+        { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', zone_type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', grid_row: 1, grid_col: 5, col_span: 2, row_span: 1, sort_order: 5, is_active: true },
+        { id: 'ZONE-FRUIT-1', name: 'กระบะผลไม้ & ของสด', type: 'FRUIT', zone_type: 'FRUIT', icon: '🍉', pixel_sprite: 'fruit', custom_image_url: '', category_ids: [], description: 'แตงโม กล้วย แอปเปิ้ล ผลไม้สดตามฤดูกาล', grid_row: 3, grid_col: 5, col_span: 2, row_span: 1, sort_order: 6, is_active: true }
       ];
       const row = db.prepare("SELECT note FROM customers WHERE id = 'SYS-STORE-ZONES'").get();
       if (row && row.note) {
         try {
           const parsed = JSON.parse(row.note);
-          if (Array.isArray(parsed) && parsed.length > 0) storeZones = parsed;
+          if (Array.isArray(parsed)) storeZones = parsed;
         } catch {}
       }
       storeZones = storeZones.filter(z => z.id !== id);
@@ -1998,6 +1983,12 @@ const server = http.createServer(async (req, res) => {
 
       broadcastUpdate('store_zones_deleted', { id });
       return sendJson(res, 200, { success: true, storeZones, data: getFullBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/store-zones/reset') {
+      db.prepare("DELETE FROM customers WHERE id = 'SYS-STORE-ZONES'").run();
+      broadcastUpdate('store_zones_reset', {});
+      return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
     }
 
     // Add Daily Expense
