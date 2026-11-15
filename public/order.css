@@ -1711,25 +1711,43 @@ body {
 .co-map-viewport {
   position: relative;
   width: 100%;
-  height: 250px;
-  overflow: hidden;
+  height: 255px;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   background: #0f172a;
   border-radius: 10px;
-  touch-action: pan-x pan-y;
+  border: 2px solid #334155;
   cursor: grab;
+  user-select: none;
 }
 
+.co-map-viewport.is-dragging,
 .co-map-viewport:active {
   cursor: grabbing;
+}
+
+.co-map-viewport::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.co-map-viewport::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.7);
+}
+
+.co-map-viewport::-webkit-scrollbar-thumb {
+  background: #38bdf8;
+  border-radius: 4px;
 }
 
 .co-map-canvas {
   position: relative;
   width: 100%;
   height: 100%;
-  transform-origin: center center;
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  will-change: transform;
+  min-width: 100%;
+  min-height: 100%;
+  transition: width 0.16s ease, height 0.16s ease;
 }
 
 /* Compact Pin Marker (ไม่บังรูปหรือตัวหนังสือ) */
@@ -1851,6 +1869,77 @@ body {
   background: #38bdf8;
   border-radius: 4px;
 }
+
+/* My Orders Phone Search Input & Button Layout */
+.co-orders-search-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+}
+
+.co-orders-phone-input {
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 120px !important;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1.5px solid #cbd5e1;
+  font-size: 16px !important;
+  font-weight: 600;
+  color: var(--co-ink);
+  background: #ffffff;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.co-orders-phone-input:focus {
+  border-color: #0d9488;
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.15);
+}
+
+.co-orders-search-btn {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: none;
+  background: #0f3238;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.co-orders-search-btn:hover {
+  background: #0d9488;
+}
+
+.co-orders-search-btn:active {
+  transform: scale(0.97);
+}
+
+.co-modal-close {
+  background: #f1f5f9;
+  border: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 900;
+  color: #0f172a;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 
 
 

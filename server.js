@@ -2100,14 +2100,17 @@ const server = http.createServer(async (req, res) => {
       }
 
       const tableMap = new Map(db.prepare('SELECT id, name, zone_name FROM dining_tables').all().map(t => [t.id, t]));
+      const customerPhoneMap = new Map(db.prepare('SELECT id, phone FROM customers').all().map(c => [c.id, (c.phone || '').replace(/\D/g, '')]));
 
       const matched = allRecentOrders.filter(o => {
         if (billIds.length > 0 && billIds.includes(o.id)) return true;
         if (tableId && o.table_id === tableId && o.status === 'OPEN') return true;
-        if (phone && phone.length >= 8) {
+        if (phone && phone.length >= 6) {
+          const cusPhone = o.customer_id ? (customerPhoneMap.get(o.customer_id) || '') : '';
           const oNote = o.bill_note || '';
           const oTitle = o.bill_title || '';
-          const digits = (oNote + ' ' + oTitle).replace(/\D/g, '');
+          const oCusName = o.customer_name || '';
+          const digits = (cusPhone + ' ' + oNote + ' ' + oTitle + ' ' + oCusName).replace(/\D/g, '');
           if (digits.includes(phone)) return true;
         }
         return false;

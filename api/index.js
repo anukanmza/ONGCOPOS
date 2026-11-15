@@ -508,6 +508,11 @@ module.exports = async (req, res) => {
         });
       }
 
+      const orderItemsToInsert = [];
+      const inventoryLogsToInsert = [];
+      const productStockPatches = new Map();
+      const ingredientStockPatches = new Map();
+
       for (const it of items) {
         const prod = data.products.find(p => p.id === it.product_id);
         if (!prod) continue;
@@ -528,22 +533,20 @@ module.exports = async (req, res) => {
 
         if (prod.item_type === 'GROCERY' && prod.track_stock) {
           const nextStock = Math.round((prod.stock_qty - qty) * 100) / 100;
-          await sbRest(`products?id=eq.${encodeURIComponent(prod.id)}`, { method: 'PATCH', body: { stock_qty: nextStock } });
-          await sbRest('inventory_logs', {
-            method: 'POST',
-            body: {
-              id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              target_type: 'GROCERY',
-              product_id: prod.id,
-              item_name: prod.name,
-              change_qty: -qty,
-              balance_after: nextStock,
-              unit: prod.unit,
-              reason: 'SALE',
-              reference_id: orderId,
-              note: contextLabel,
-              created_at: now
-            }
+          prod.stock_qty = nextStock;
+          productStockPatches.set(prod.id, nextStock);
+          inventoryLogsToInsert.push({
+            id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            target_type: 'GROCERY',
+            product_id: prod.id,
+            item_name: prod.name,
+            change_qty: -qty,
+            balance_after: nextStock,
+            unit: prod.unit,
+            reason: 'SALE',
+            reference_id: orderId,
+            note: contextLabel,
+            created_at: now
           });
         } else if (prod.item_type === 'FOOD') {
           for (const rec of prod.recipe_items || []) {
@@ -552,56 +555,67 @@ module.exports = async (req, res) => {
             const deductQty = rec.quantity_used * qty;
             const nextIng = Math.round((ing.current_qty - deductQty) * 100) / 100;
             ing.current_qty = nextIng;
+            ingredientStockPatches.set(ing.id, nextIng);
             recipeSnapshot.push({ ingredient_id: ing.id, name: ing.name, qty: deductQty, unit: ing.stock_unit });
-            await sbRest(`ingredients?id=eq.${encodeURIComponent(ing.id)}`, { method: 'PATCH', body: { current_qty: nextIng } });
-            await sbRest('inventory_logs', {
-              method: 'POST',
-              body: {
-                id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                target_type: 'INGREDIENT',
-                ingredient_id: ing.id,
-                item_name: ing.name,
-                change_qty: -deductQty,
-                balance_after: nextIng,
-                unit: ing.stock_unit,
-                reason: 'RECIPE_DEDUCT',
-                reference_id: orderId,
-                note: `ตัดสูตร ${prod.name} x${qty} (${contextLabel})`,
-                created_at: now
-              }
+            inventoryLogsToInsert.push({
+              id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              target_type: 'INGREDIENT',
+              ingredient_id: ing.id,
+              item_name: ing.name,
+              change_qty: -deductQty,
+              balance_after: nextIng,
+              unit: ing.stock_unit,
+              reason: 'RECIPE_DEDUCT',
+              reference_id: orderId,
+              note: `ตัดสูตร ${prod.name} x${qty} (${contextLabel})`,
+              created_at: now
             });
           }
         }
 
-        await sbRest('order_items', {
-          method: 'POST',
-          body: {
-            id: `OI-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            order_id: orderId,
-            product_id: prod.id,
-            product_name: prod.name,
-            item_type: prod.item_type,
-            order_round: orderRound,
-            quantity: qty,
-            returned_qty: 0,
-            unit_price: unitPrice,
-            unit_cost: unitCost,
-            modifiers_json: modNames,
-            recipe_snapshot_json: recipeSnapshot,
-            item_status: 'ACTIVE',
-            kitchen_status: prod.send_to_kitchen ? 'PENDING' : 'NONE',
-            input_source: it.input_source || input_source || 'TOUCH',
-            created_at: now
-          }
+        orderItemsToInsert.push({
+          id: `OI-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          order_id: orderId,
+          product_id: prod.id,
+          product_name: prod.name,
+          item_type: prod.item_type,
+          order_round: orderRound,
+          quantity: qty,
+          returned_qty: 0,
+          unit_price: unitPrice,
+          unit_cost: unitCost,
+          modifiers_json: modNames,
+          recipe_snapshot_json: recipeSnapshot,
+          item_status: 'ACTIVE',
+          kitchen_status: prod.send_to_kitchen ? 'PENDING' : 'NONE',
+          input_source: it.input_source || input_source || 'TOUCH',
+          created_at: now
         });
       }
+
+      const writePromises = [];
+      if (orderItemsToInsert.length > 0) {
+        writePromises.push(sbRest('order_items', { method: 'POST', body: orderItemsToInsert }));
+      }
+      if (inventoryLogsToInsert.length > 0) {
+        writePromises.push(sbRest('inventory_logs', { method: 'POST', body: inventoryLogsToInsert }));
+      }
+      for (const [pid, nextStock] of productStockPatches.entries()) {
+        writePromises.push(sbRest(`products?id=eq.${encodeURIComponent(pid)}`, { method: 'PATCH', body: { stock_qty: nextStock } }));
+      }
+      for (const [iid, nextIng] of ingredientStockPatches.entries()) {
+        writePromises.push(sbRest(`ingredients?id=eq.${encodeURIComponent(iid)}`, { method: 'PATCH', body: { current_qty: nextIng } }));
+      }
+      await Promise.all(writePromises);
 
       await recalculateSupabaseOrderTotals(orderId);
       if (settle_immediately && customer_id) {
         try {
-          const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(orderId)}`);
+          const [ords, cusRows] = await Promise.all([
+            sbRest(`orders?select=*&id=eq.${encodeURIComponent(orderId)}`),
+            sbRest(`customers?select=*&id=eq.${encodeURIComponent(customer_id)}`)
+          ]);
           const updatedOrd = ords[0];
-          const cusRows = await sbRest(`customers?select=*&id=eq.${encodeURIComponent(customer_id)}`);
           if (updatedOrd && cusRows[0]) {
             const redeemPts = Math.max(0, Math.floor(Number(body.redeem_points) || 0));
             const lUpd = computeCustomerLoyaltyUpdate(cusRows[0], Number(updatedOrd.total_amount || 0), redeemPts, data.loyaltySettings);
@@ -686,30 +700,24 @@ module.exports = async (req, res) => {
       }
       if (!targetOrderId) return send(404, { error: 'ไม่พบบิลที่ต้องการชำระเงิน' });
 
-      // Check for out-of-stock items in this bill
-      const activeItems = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(targetOrderId)}&item_status=eq.ACTIVE`);
-      const bootData = await getSupabaseBootstrapData();
-      const oos = [];
-      for (const it of activeItems) {
-        const p = bootData.products.find(x => x.id === it.product_id);
-        if (p && p.item_type === 'GROCERY' && p.track_stock && Number(p.stock_qty) <= 0) {
-          oos.push(p.name);
-        }
+      const [ords, activeItems] = await Promise.all([
+        sbRest(`orders?select=*&id=eq.${encodeURIComponent(targetOrderId)}`),
+        sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(targetOrderId)}&item_status=eq.ACTIVE`)
+      ]);
+      const refreshed = ords && ords[0];
+      if (!refreshed) return send(404, { error: 'ไม่พบบิลที่ต้องการชำระเงิน' });
+
+      let subtotal = 0;
+      let totalCost = 0;
+      for (const it of activeItems || []) {
+        const activeQty = Math.max(0, Number(it.quantity || 0) - Number(it.returned_qty || 0));
+        subtotal += activeQty * Number(it.unit_price || 0);
+        totalCost += activeQty * Number(it.unit_cost || 0);
       }
-      if (oos.length > 0) {
-        return send(400, { error: `ไม่สามารถเช็คบิลได้ เนื่องจากมีสินค้าสต็อกหมดในบิล: ${oos.join(', ')} กรุณานำออกจากบิลก่อนครับ` });
-      }
-
-      const patchDiscBody = { discount: Number(discount) || 0 };
-      if (customer_id !== undefined) patchDiscBody.customer_id = customer_id;
-      if (customer_name !== undefined) patchDiscBody.customer_name = customer_name;
-
-      await sbPatchOrderSafe(targetOrderId, patchDiscBody);
-      await recalculateSupabaseOrderTotals(targetOrderId);
-
-      const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(targetOrderId)}`);
-      const refreshed = ords[0];
-      const totalAmt = Number(refreshed.total_amount);
+      subtotal = Math.round(subtotal * 100) / 100;
+      totalCost = Math.round(totalCost * 100) / 100;
+      const disc = Math.max(0, Number(discount) || 0);
+      const totalAmt = Math.round(Math.max(0, subtotal - disc) * 100) / 100;
       const received = Number(cash_received) >= totalAmt ? Number(cash_received) : totalAmt;
       const change = Math.round(Math.max(0, received - totalAmt) * 100) / 100;
       const redeemPts = Math.max(0, Math.floor(Number(redeem_points) || 0));
@@ -718,36 +726,58 @@ module.exports = async (req, res) => {
         ? `${refreshed.bill_note || ''} [ใช้แต้มสะสม ${redeemPts} แต้ม ลด ฿${ptsDisc}]`.trim()
         : (refreshed.bill_note || '');
 
-      await sbPatchOrderSafe(targetOrderId, {
+      const patchPayload = {
+        subtotal,
+        discount: disc,
+        total_amount: totalAmt,
+        total_cost: totalCost,
         status: 'PAID',
         payment_method,
         cash_received: received,
         change_amount: change,
         bill_note: nextNote,
         paid_at: now
-      });
+      };
+      if (customer_id !== undefined) patchPayload.customer_id = customer_id;
+      if (customer_name !== undefined) patchPayload.customer_name = customer_name;
+
+      const settleTasks = [
+        sbPatchOrderSafe(targetOrderId, patchPayload)
+      ];
 
       if (refreshed.table_id) {
-        await sbRest(`dining_tables?id=eq.${encodeURIComponent(refreshed.table_id)}`, {
-          method: 'PATCH',
-          body: { status: 'AVAILABLE', current_order_id: null }
-        });
+        settleTasks.push(
+          sbRest(`dining_tables?id=eq.${encodeURIComponent(refreshed.table_id)}`, {
+            method: 'PATCH',
+            body: { status: 'AVAILABLE', current_order_id: null }
+          })
+        );
       }
 
       const finalCusId = customer_id !== undefined ? customer_id : refreshed.customer_id;
       if (finalCusId) {
-        try {
-          const boot = await getSupabaseBootstrapData();
-          const cusRows = await sbRest(`customers?select=*&id=eq.${encodeURIComponent(finalCusId)}`);
-          if (cusRows[0]) {
-            const lUpd = computeCustomerLoyaltyUpdate(cusRows[0], totalAmt, redeemPts, boot.loyaltySettings);
-            await sbRest(`customers?id=eq.${encodeURIComponent(finalCusId)}`, {
-              method: 'PATCH',
-              body: { points: lUpd.nextPts, total_spent: lUpd.nextSpent, tier: lUpd.nextTier }
-            });
-          }
-        } catch {}
+        settleTasks.push((async () => {
+          try {
+            const [cusRows, cfgRows] = await Promise.all([
+              sbRest(`customers?select=*&id=eq.${encodeURIComponent(finalCusId)}`),
+              sbRest("customers?select=note&id=eq.SYS-LOYALTY-CONFIG").catch(() => [])
+            ]);
+            if (cusRows && cusRows[0]) {
+              let loyaltySettings = { ...DEFAULT_LOYALTY_SETTINGS };
+              if (cfgRows && cfgRows[0] && cfgRows[0].note) {
+                try { loyaltySettings = { ...DEFAULT_LOYALTY_SETTINGS, ...JSON.parse(cfgRows[0].note) }; } catch {}
+              }
+              const lUpd = computeCustomerLoyaltyUpdate(cusRows[0], totalAmt, redeemPts, loyaltySettings);
+              await sbRest(`customers?id=eq.${encodeURIComponent(finalCusId)}`, {
+                method: 'PATCH',
+                body: { points: lUpd.nextPts, total_spent: lUpd.nextSpent, tier: lUpd.nextTier }
+              });
+            }
+          } catch {}
+        })());
       }
+
+      await Promise.all(settleTasks);
 
       return send(200, { success: true, orderId: targetOrderId, change, data: await getSupabaseBootstrapData() });
     }
@@ -1632,23 +1662,29 @@ module.exports = async (req, res) => {
       const billIds = (req.query?.bill_ids || '').split(',').map(s => s.trim()).filter(Boolean);
       const tableId = req.query?.table_id;
 
-      const allRecentOrders = await sbRest("orders?select=*&order=created_at.desc&limit=200");
+      const [allRecentOrders, allTables, allCustomers] = await Promise.all([
+        sbRest("orders?select=*&order=created_at.desc&limit=200"),
+        sbRest("dining_tables?select=id,name,zone_name"),
+        sbRest("customers?select=id,phone").catch(() => [])
+      ]);
       const allOrderIds = (allRecentOrders || []).map(o => o.id);
       let allItems = [];
       if (allOrderIds.length > 0) {
         allItems = await sbRest(`order_items?select=*&order_id=in.(${allOrderIds.map(encodeURIComponent).join(',')})&order=created_at.asc`);
       }
 
-      const allTables = await sbRest("dining_tables?select=id,name,zone_name");
       const tableMap = new Map((allTables || []).map(t => [t.id, t]));
+      const customerPhoneMap = new Map((allCustomers || []).map(c => [c.id, (c.phone || '').replace(/\D/g, '')]));
 
       const matched = (allRecentOrders || []).filter(o => {
         if (billIds.length > 0 && billIds.includes(o.id)) return true;
         if (tableId && o.table_id === tableId && o.status === 'OPEN') return true;
-        if (phone && phone.length >= 8) {
+        if (phone && phone.length >= 6) {
+          const cusPhone = o.customer_id ? (customerPhoneMap.get(o.customer_id) || '') : '';
           const oNote = o.bill_note || '';
           const oTitle = o.bill_title || '';
-          const digits = (oNote + ' ' + oTitle).replace(/\D/g, '');
+          const oCusName = o.customer_name || '';
+          const digits = (cusPhone + ' ' + oNote + ' ' + oTitle + ' ' + oCusName).replace(/\D/g, '');
           if (digits.includes(phone)) return true;
         }
         return false;

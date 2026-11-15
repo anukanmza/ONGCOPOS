@@ -69,6 +69,11 @@ const state = {
   editingCustomLandmark: null,
   showStoreZonesModal: false,
   editingStoreZone: null,
+  showTableQrModal: false,
+  qrModalTableId: null,
+  showKdsServedModal: false,
+  kdsServedSearch: '',
+  isBusy: false,
   // Stock-In Draft & Inventory Search / Voice / History Modal State
   stockInSupplier: 'แม็คโคร & ตลาดสด',
   stockInNote: '',
@@ -103,6 +108,32 @@ const state = {
 let recognition = null;
 let stockVoiceRecognition = null;
 let toastTimer = null;
+let activePostLocks = new Set();
+
+function showBusyIndicator(label = 'กำลังดำเนินการ... กรุณารอสักครู่') {
+  state.isBusy = true;
+  let el = document.getElementById('ttl-busy-live');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'ttl-busy-live';
+    el.style.cssText = 'position:fixed; top:16px; left:50%; transform:translateX(-50%); z-index:99999; background:#0f3238; color:#fff; border:2px solid #f59e0b; padding:10px 20px; border-radius:999px; font-size:14px; font-weight:800; box-shadow:0 10px 28px rgba(0,0,0,0.35); display:flex; align-items:center; gap:10px; pointer-events:none; transition:opacity 0.15s;';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `<span style="display:inline-block; animation:spin 1s linear infinite;">⏳</span><span>${label}</span>`;
+  el.style.display = 'flex';
+  el.style.opacity = '1';
+}
+
+function hideBusyIndicator() {
+  state.isBusy = false;
+  const el = document.getElementById('ttl-busy-live');
+  if (el) {
+    el.style.opacity = '0';
+    setTimeout(() => {
+      if (!state.isBusy && el) el.style.display = 'none';
+    }, 150);
+  }
+}
 
 // Non-disruptive Toast: Updates ONLY the floating toast element without calling render()!
 function showToast(msg) {
@@ -269,6 +300,25 @@ function getLoyaltySettings() {
 }
 
 async function apiCall(endpoint, method = 'GET', bodyObj = null) {
+  const isMutation = method !== 'GET';
+  const lockKey = isMutation ? `${method}:${endpoint}` : null;
+
+  if (isMutation) {
+    if (activePostLocks.has(lockKey)) {
+      showToast('⏳ ระบบกำลังดำเนินการคำสั่งก่อนหน้า กรุณารอสักครู่...');
+      return null;
+    }
+    activePostLocks.add(lockKey);
+
+    let actionLabel = 'กำลังดำเนินการ... กรุณารอสักครู่';
+    if (endpoint.includes('/orders/submit')) actionLabel = 'กำลังบันทึกบิล / ส่งรายการเข้าครัว...';
+    else if (endpoint.includes('/orders/checkout')) actionLabel = 'กำลังเช็คบิล & ตัดชำระเงิน...';
+    else if (endpoint.includes('/orders/cancel') || endpoint.includes('/void')) actionLabel = 'กำลังยกเลิกบิล & คืนสต็อก...';
+    else if (endpoint.includes('/orders/transfer') || endpoint.includes('/orders/split')) actionLabel = 'กำลังย้าย/แยกบิล...';
+    else if (endpoint.includes('/kds/status')) actionLabel = 'กำลังอัปเดตสถานะครัว...';
+    showBusyIndicator(actionLabel);
+  }
+
   const fetchUrl = method === 'GET'
     ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}_t=${Date.now()}`
     : endpoint;
@@ -293,12 +343,20 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
         if (json.data.syncSig !== undefined) state.lastSyncSig = json.data.syncSig;
         if (json.data.kdsSig !== undefined) state.lastKdsSig = json.data.kdsSig;
       }
+      if (isMutation) {
+        activePostLocks.delete(lockKey);
+        hideBusyIndicator();
+      }
       return json;
     }
     if (json && json.error) {
       state.lastApiError = json.error;
       // หากเชื่อมต่อ CLOUD_API อยู่แล้ว แต่คำสั่งบันทึกมีปัญหา ห้ามสลับกลับไปใช้ LocalStorage ของเครื่องใครเครื่องมัน!
       if (state.backendMode === 'CLOUD_API' && endpoint !== '/api/bootstrap') {
+        if (isMutation) {
+          activePostLocks.delete(lockKey);
+          hideBusyIndicator();
+        }
         showToast(`⚠️ ซิงค์ฐานข้อมูลขัดข้อง: ${json.error}`, 'warn');
         return null;
       }
@@ -307,11 +365,20 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
     state.lastApiError = err?.message || 'Network error';
     // หากเคยเชื่อมต่อ CLOUD_API สำเร็จแล้ว แต่เน็ตมือถือสะดุดชั่วคราว ห้ามเอาข้อมูล LocalStorage มาทับข้อมูล Cloud
     if (state.backendMode === 'CLOUD_API') {
+      if (isMutation) {
+        activePostLocks.delete(lockKey);
+        hideBusyIndicator();
+      }
       if (endpoint !== '/api/bootstrap') {
         showToast('⚠️ สัญญาณอินเทอร์เน็ตสะดุด กรุณาลองกดอีกครั้ง', 'warn');
       }
       return null;
     }
+  }
+
+  if (isMutation) {
+    activePostLocks.delete(lockKey);
+    hideBusyIndicator();
   }
 
   state.backendMode = 'LOCAL_ENGINE';
@@ -3407,6 +3474,9 @@ function renderTablesView() {
           <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.editingTable=null; state.showNewTableModal=true; render();">
             + เพิ่มโต๊ะใหม่
           </button>
+          <button type="button" class="ttl-btn ttl-btn-outline" style="border-color:#15803d; color:#15803d; font-weight:700;" onclick="openTableQrModal(null);">
+            📱 พิมพ์ QR ทุกโต๊ะ (${tables.length})
+          </button>
           <button type="button" class="ttl-btn ttl-btn-outline" style="border-color:#0d9488; color:#0d9488; font-weight:600;" onclick="openDeliveryPointsModal();">
             🛵 จุดส่งตลาดอินโดจีน (${(state.data?.deliveryPoints || []).length})
           </button>
@@ -3478,7 +3548,10 @@ function renderTablesView() {
                   ` : `
                     <span class="ttl-tag ttl-tag-grocery">โต๊ะว่าง</span>
                   `}
-                  <div style="display:flex; gap:4px;">
+                  <div style="display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end;">
+                    <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-outline" style="height:24px; padding:0 7px; font-size:11px; border-color:#15803d; color:#15803d; font-weight:700;" onclick="openTableQrModal('${t.id}');">
+                      📱 QR โต๊ะ
+                    </button>
                     <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:24px; padding:0 7px; font-size:11px;" onclick="state.editingTable=${safeTableJson}; state.showNewTableModal=true; render();">
                       ✏️ แก้ไข
                     </button>
@@ -3556,11 +3629,43 @@ function renderTablesView() {
 // ============================================================================
 // VIEW 4: KITCHEN DISPLAY SYSTEM (KDS - With Date/Time & Return/Cancel Alert)
 // ============================================================================
+function getAllServedKdsItems() {
+  const { kitchenQueue = [], allBills = [], tables = [] } = state.data || {};
+  const tableNameMap = new Map(tables.map(t => [t.id, t.name]));
+  const map = new Map();
+
+  // 1. ดึงจาก kitchenQueue ที่สถานะ SERVED
+  kitchenQueue.forEach(k => {
+    if (k.kitchen_status === 'SERVED') {
+      map.set(k.id, k);
+    }
+  });
+
+  // 2. ดึงจาก allBills เผื่อบิลที่เช็คบิลชำระเงินไปแล้ว (PAID) แต่ต้องการดูประวัติเมนูที่เสิร์ฟแล้วทั้งหมด
+  allBills.forEach(b => {
+    if (b.status === 'CANCELLED' || b.status === 'VOIDED') return;
+    (b.items || []).forEach(it => {
+      if (it.kitchen_status === 'SERVED' && !map.has(it.id)) {
+        map.set(it.id, {
+          ...it,
+          order_id: b.id,
+          table_id: b.table_id,
+          table_name: b.table_name || (b.table_id ? tableNameMap.get(b.table_id) : null),
+          bill_title: b.bill_title || '',
+          bill_status: b.status
+        });
+      }
+    });
+  });
+
+  return Array.from(map.values()).sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+}
+
 function renderKdsView() {
   const { kitchenQueue } = state.data;
   const cancelAlertKds = kitchenQueue.filter(k => k.kitchen_status === 'CANCEL_REQUESTED');
   const activeKds = kitchenQueue.filter(k => k.kitchen_status !== 'SERVED' && k.kitchen_status !== 'CANCELLED_ACK');
-  const servedKds = kitchenQueue.filter(k => k.kitchen_status === 'SERVED');
+  const servedKds = getAllServedKdsItems();
 
   return `
     <div>
@@ -3571,14 +3676,21 @@ function renderKdsView() {
             แสดงเมนูอาหารที่ส่งเข้าครัวพร้อมวันเวลาที่สั่ง และแจ้งเตือนสีแดงทันทีเมื่อมีการกดคืน/ยกเลิกเมนูเพื่อให้ครัวกดยืนยันรับทราบ
           </p>
         </div>
-        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
           ${cancelAlertKds.length > 0 ? `
             <span class="ttl-tag ttl-tag-low" style="font-size:13px; padding:6px 12px; font-weight:700;">
               🚨 แจ้งคืน/ยกเลิกเมนูรอยืนยัน: ${cancelAlertKds.length} รายการ
             </span>
           ` : ''}
           <span class="ttl-tag ttl-tag-food" style="font-size:13px; padding:6px 12px;">🔥 คิวในครัว: ${activeKds.length} รายการ</span>
-          <span class="ttl-tag ttl-tag-grocery" style="font-size:13px; padding:6px 12px;">✅ เสิร์ฟแล้ววันนี้: ${servedKds.length} รายการ</span>
+          <button
+            type="button"
+            class="ttl-btn ttl-btn-sm ttl-btn-outline"
+            style="border-color:#15803d; color:#15803d; background:#f0fdf4; font-weight:800; font-size:13px; padding:6px 14px; height:auto;"
+            onclick="state.showKdsServedModal=true; render();"
+          >
+            📜 ประวัติเมนูที่เสิร์ฟแล้ว (${servedKds.length} รายการ)
+          </button>
         </div>
       </div>
 
@@ -6503,7 +6615,271 @@ function renderModals() {
     html += renderStoreZonesModal();
   }
 
+  // 15. Table QR Code Generator & Print Modal (สร้าง & พิมพ์ QR Code ประจำโต๊ะ)
+  if (state.showTableQrModal) {
+    html += renderTableQrModal();
+  }
+
+  // 16. KDS Served Menu History Sub-Window (หน้าต่างย่อยดูประวัติเมนูที่เสิร์ฟแล้วในจอครัว)
+  if (state.showKdsServedModal) {
+    html += renderKdsServedHistoryModal();
+  }
+
   return html;
+}
+
+function openTableQrModal(tableId = null) {
+  state.qrModalTableId = tableId;
+  state.showTableQrModal = true;
+  render();
+}
+
+function copyTableQrLink(url) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(() => {
+      showToast('📋 คัดลอกลิงก์สั่งอาหารของโต๊ะเรียบร้อยแล้ว!');
+    }).catch(() => {
+      prompt('คัดลอกลิงก์ของโต๊ะ:', url);
+    });
+  } else {
+    prompt('คัดลอกลิงก์ของโต๊ะ:', url);
+  }
+}
+
+function printTableQrCards(singleTableId = null) {
+  const allTables = state.data?.tables || [];
+  const targetTables = singleTableId ? allTables.filter(t => t.id === singleTableId) : allTables;
+  if (targetTables.length === 0) return;
+
+  const origin = window.location.origin;
+  const cardsHtml = targetTables.map(t => {
+    const url = `${origin}/order?table=${encodeURIComponent(t.id)}`;
+    const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=280x280&margin=8&data=${encodeURIComponent(url)}`;
+    return `
+      <div class="qr-print-card">
+        <div class="qr-brand">☕ ONG CO POS</div>
+        <div class="qr-sub">ริมแม่น้ำโขง ตลาดอินโดจีน มุกดาหาร</div>
+        <div class="qr-table-badge">${t.name}</div>
+        <div class="qr-zone">${t.zone_name || 'โซนทานที่ร้าน'}</div>
+        <img src="${qrSrc}" alt="QR ${t.name}" class="qr-img" />
+        <div class="qr-instruction">📱 สแกน QR เพื่อสั่งอาหาร & เครื่องดื่ม</div>
+        <div class="qr-features">🔔 เรียกพนักงาน • 🧊 ขอน้ำแข็ง • 🧾 ดูบิล/เช็คบิล</div>
+        <div class="qr-url">${url}</div>
+      </div>
+    `;
+  }).join('');
+
+  const printWin = window.open('', '_blank', 'width=900,height=700');
+  if (!printWin) {
+    alert('กรุณาอนุญาตป๊อปอัป (Pop-up) เพื่อพิมพ์ป้าย QR โต๊ะ');
+    return;
+  }
+  printWin.document.write(`
+    <!doctype html>
+    <html lang="th">
+    <head>
+      <meta charset="utf-8" />
+      <title>พิมพ์ป้าย QR โต๊ะอาหาร - ONG CO POS</title>
+      <style>
+        body { font-family: 'Noto Sans Thai', -apple-system, sans-serif; margin: 0; padding: 20px; background: #fff; color: #0f172a; }
+        .qr-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+        .qr-print-card { border: 2.5px solid #0f3238; border-radius: 18px; padding: 20px; text-align: center; page-break-inside: avoid; }
+        .qr-brand { font-size: 18px; font-weight: 900; color: #0f3238; }
+        .qr-sub { font-size: 11.5px; color: #64748b; margin-bottom: 10px; }
+        .qr-table-badge { display: inline-block; background: #0f3238; color: #fef08a; font-size: 24px; font-weight: 900; padding: 6px 22px; border-radius: 12px; margin-bottom: 4px; }
+        .qr-zone { font-size: 12px; font-weight: 700; color: #0d9488; margin-bottom: 10px; }
+        .qr-img { width: 210px; height: 210px; border: 2px solid #e2e8f0; border-radius: 12px; padding: 6px; display: block; margin: 0 auto 10px; }
+        .qr-instruction { font-size: 15px; font-weight: 800; color: #0f172a; margin-bottom: 4px; }
+        .qr-features { font-size: 11.5px; color: #475569; font-weight: 600; margin-bottom: 6px; }
+        .qr-url { font-size: 10px; color: #94a3b8; font-family: monospace; word-break: break-all; }
+        @media print {
+          .no-print { display: none !important; }
+          body { padding: 0; }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="no-print" style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; background: #f1f5f9; padding: 12px 16px; border-radius: 10px;">
+        <div><b>🖨️ ตัวอย่างป้ายตั้งโต๊ะ QR Code (${targetTables.length} โต๊ะ)</b> — กดปุ่มพิมพ์แล้วตัดแปะที่โต๊ะได้เลย</div>
+        <button onclick="window.print()" style="background:#0f3238; color:#fff; border:none; padding:8px 18px; border-radius:8px; font-weight:800; cursor:pointer;">🖨️ สั่งพิมพ์ (Print)</button>
+      </div>
+      <div class="qr-grid">${cardsHtml}</div>
+    </body>
+    </html>
+  `);
+  printWin.document.close();
+}
+
+function renderTableQrModal() {
+  const allTables = state.data?.tables || [];
+  const selectedId = state.qrModalTableId;
+  const displayedTables = selectedId ? allTables.filter(t => t.id === selectedId) : allTables;
+  const origin = window.location.origin;
+
+  return `
+    <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showTableQrModal=false; render();}">
+      <div class="ttl-modal" style="width:min(880px, 96vw); max-width:880px; max-height:92vh; overflow-y:auto; padding:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; border-bottom:1px solid var(--ttl-rule); padding-bottom:12px; margin-bottom:14px; flex-wrap:wrap;">
+          <div>
+            <div class="ttl-k">TABLE QR CODE GENERATOR • ระบบสร้าง QR Code ประจำโต๊ะอัตโนมัติ</div>
+            <h3 style="margin:2px 0 0; font-size:19px;">📱 QR Code สำหรับลูกค้าสแกนสั่งอาหารที่โต๊ะ</h3>
+            <p style="margin:4px 0 0; font-size:12.5px; color:var(--ttl-muted);">
+              เมื่อลูกค้าสแกน QR ของโต๊ะใด ระบบจะล็อกเบอร์โต๊ะนั้นให้อัตโนมัติ (เช่น <code>/order?table=T1</code>) พร้อมปุ่มเรียกพนักงาน ขอน้ำแข็ง และดูสถานะบิลของโต๊ะตัวเองทันที
+            </p>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            ${selectedId ? `
+              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-outline" onclick="state.qrModalTableId=null; render();">
+                📋 ดู QR ทุกโต๊ะ (${allTables.length})
+              </button>
+            ` : ''}
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-dark" onclick="printTableQrCards(${selectedId ? `'${selectedId}'` : 'null'})">
+              🖨️ พิมพ์ป้าย QR ${selectedId ? 'โต๊ะนี้' : 'ทุกโต๊ะ'}
+            </button>
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showTableQrModal=false; render();">✕ ปิด</button>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:14px;">
+          ${displayedTables.map(t => {
+            const url = `${origin}/order?table=${encodeURIComponent(t.id)}`;
+            const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=6&data=${encodeURIComponent(url)}`;
+            return `
+              <div style="background:#fff; border:2px solid var(--ttl-rule); border-radius:14px; padding:14px; text-align:center; display:flex; flex-direction:column; align-items:center; box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+                <div style="background:#0f3238; color:#fef08a; font-size:16px; font-weight:800; padding:4px 16px; border-radius:10px; margin-bottom:4px;">
+                  🍽️ ${t.name}
+                </div>
+                <div style="font-size:11.5px; color:var(--ttl-muted); margin-bottom:10px;">
+                  ${t.zone_name || 'โซนในร้าน'} • รหัสโต๊ะ: <b>${t.id}</b>
+                </div>
+                <img
+                  src="${qrSrc}"
+                  alt="QR ${t.name}"
+                  style="width:170px; height:170px; border:1px solid #e2e8f0; border-radius:10px; padding:4px; margin-bottom:10px; background:#fff;"
+                  loading="lazy"
+                />
+                <div style="font-size:10.5px; color:#475569; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:4px 8px; width:100%; word-break:break-all; font-family:monospace; margin-bottom:10px;">
+                  ${url}
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; width:100%; margin-top:auto;">
+                  <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="copyTableQrLink('${url}')">
+                    📋 คัดลอกลิงก์
+                  </button>
+                  <a href="${url}" target="_blank" class="ttl-btn ttl-btn-sm ttl-btn-outline" style="text-decoration:none; display:inline-flex; align-items:center; justify-content:center;">
+                    🔗 ทดลองเปิด ↗
+                  </a>
+                </div>
+                <button
+                  type="button"
+                  class="ttl-btn ttl-btn-sm ttl-btn-dark"
+                  style="width:100%; margin-top:6px;"
+                  onclick="printTableQrCards('${t.id}')"
+                >
+                  🖨️ พิมพ์ป้าย ${t.name}
+                </button>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderKdsServedHistoryModal() {
+  const allServed = getAllServedKdsItems();
+  const q = (state.kdsServedSearch || '').trim().toLowerCase();
+  const filtered = allServed.filter(it => {
+    if (!q) return true;
+    const pName = (it.product_name || '').toLowerCase();
+    const tName = (it.table_name || '').toLowerCase();
+    const bTitle = (it.bill_title || '').toLowerCase();
+    const oId = (it.order_id || '').toLowerCase();
+    return pName.includes(q) || tName.includes(q) || bTitle.includes(q) || oId.includes(q);
+  });
+
+  return `
+    <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.showKdsServedModal=false; render();}">
+      <div class="ttl-modal" style="width:min(760px, 96vw); max-width:760px; max-height:90vh; overflow-y:auto; padding:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; border-bottom:1px solid var(--ttl-rule); padding-bottom:12px; margin-bottom:14px; flex-wrap:wrap;">
+          <div>
+            <div class="ttl-k">KDS SERVED HISTORY • ประวัติเมนูอาหารที่ทำเสร็จและเสิร์ฟแล้ว</div>
+            <h3 style="margin:2px 0 0; font-size:19px;">📜 ประวัติเมนูที่เสิร์ฟแล้ว (${allServed.length} รายการ)</h3>
+            <p style="margin:3px 0 0; font-size:12px; color:var(--ttl-muted);">
+              ตรวจสอบย้อนหลังว่าเมนูไหนเสิร์ฟไปที่โต๊ะ/บิลใดบ้าง และหากเผลอกดเสิร์ฟผิดสามารถกดดึงกลับเข้าคิวครัวได้ทันที
+            </p>
+          </div>
+          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.showKdsServedModal=false; render();">✕ ปิดหน้าต่าง</button>
+        </div>
+
+        <div style="display:flex; gap:8px; margin-bottom:12px; align-items:center;">
+          <input
+            id="kds-served-search-input"
+            type="text"
+            class="ttl-input"
+            placeholder="🔍 ค้นหาชื่อเมนู, ชื่อโต๊ะ, ชื่อบิล หรือเลขบิล..."
+            value="${(state.kdsServedSearch || '').replace(/"/g, '&quot;')}"
+            oninput="state.kdsServedSearch = this.value; render();"
+          />
+          ${state.kdsServedSearch ? `
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="state.kdsServedSearch=''; render();">ล้าง</button>
+          ` : ''}
+        </div>
+
+        ${filtered.length === 0 ? `
+          <div style="padding:40px 20px; text-align:center; color:var(--ttl-muted); background:var(--ttl-page); border-radius:12px; border:1px dashed var(--ttl-rule);">
+            <div style="font-size:32px; margin-bottom:6px;">🍽️</div>
+            <div style="font-weight:700; font-size:14px; color:var(--ttl-ink);">ยังไม่มีประวัติเมนูที่เสิร์ฟแล้ว</div>
+            <div style="font-size:12px; margin-top:2px;">เมื่อกด "✅ ทำเสร็จแล้ว / พร้อมเสิร์ฟ" ในจอครัว รายการจะถูกบันทึกไว้ที่นี่</div>
+          </div>
+        ` : `
+          <div style="display:flex; flex-direction:column; gap:8px; max-height:58vh; overflow-y:auto; padding-right:4px;">
+            ${filtered.map(item => {
+              const mods = Array.isArray(item.modifiers) ? item.modifiers : [];
+              const sourceLabel = item.table_name ? `🍽️ ${item.table_name}` : (item.bill_title || `บิล #${item.order_id}`);
+              return `
+                <div style="background:#fff; border:1.5px solid var(--ttl-rule); border-radius:12px; padding:10px 14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                  <div style="flex:1; min-width:220px;">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px;">
+                      <span style="background:#dcfce7; color:#15803d; font-weight:800; font-size:11px; padding:2px 8px; border-radius:6px; border:1px solid #86efac;">
+                        ✅ เสิร์ฟแล้ว
+                      </span>
+                      <span style="background:var(--ttl-deep); color:#fff; font-weight:700; font-size:12px; padding:2px 8px; border-radius:6px;">
+                        ${sourceLabel}
+                      </span>
+                      <span style="font-size:11.5px; color:var(--ttl-muted);">
+                        🕒 สั่งเมื่อ ${formatDateTimeThai(item.created_at)} (${formatTimeAgo(item.created_at)}) • เลขบิล: ${item.order_id || '-'}
+                      </span>
+                    </div>
+                    <div style="font-size:15.5px; font-weight:800; color:var(--ttl-ink);">
+                      🍳 ${item.product_name} <span style="color:var(--ttl-gold);">× ${item.quantity}</span>
+                    </div>
+                    ${mods.length > 0 ? `
+                      <div style="font-size:12px; color:#b45309; font-weight:600; margin-top:2px;">
+                        🌶️ คำสั่งพิเศษ: ${mods.join(' • ')}
+                      </div>
+                    ` : ''}
+                  </div>
+
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <button
+                      type="button"
+                      class="ttl-btn ttl-btn-sm ttl-btn-outline"
+                      style="border-color:#d97706; color:#b45309; font-weight:700;"
+                      onclick="updateKdsStatus('${item.id}', 'COOKING')"
+                      title="ดึงเมนูนี้กลับไปที่หน้าจอคิวครัว (กรณีเผลอกดเสิร์ฟผิด)"
+                    >
+                      ↩ ดึงกลับเข้าคิวครัว
+                    </button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `}
+      </div>
+    </div>
+  `;
 }
 
 function renderDeliveryPointsModal() {

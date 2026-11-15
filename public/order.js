@@ -184,6 +184,46 @@ function getProductQtyInCart(productId) {
     .reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
 }
 
+// แสดงแถบแจ้งเตือนสถานะกำลังดำเนินการ (Loading / Toast) เพื่อป้องกันการกดซ้ำ
+let coToastTimer = null;
+function showOrderToast(message, isBusy = false) {
+  let el = document.getElementById('co-global-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'co-global-toast';
+    el.style.cssText = 'position:fixed; top:16px; left:50%; transform:translateX(-50%); z-index:99999; padding:10px 18px; border-radius:999px; font-size:13.5px; font-weight:800; color:#fff; box-shadow:0 8px 24px rgba(0,0,0,0.3); display:flex; align-items:center; gap:8px; transition:opacity 0.2s, transform 0.2s; pointer-events:none; white-space:nowrap;';
+    document.body.appendChild(el);
+  }
+  if (coToastTimer) {
+    clearTimeout(coToastTimer);
+    coToastTimer = null;
+  }
+  el.style.background = isBusy ? '#0284c7' : '#0f3238';
+  el.style.border = isBusy ? '2px solid #7dd3fc' : '2px solid #2dd4bf';
+  el.innerHTML = isBusy
+    ? `<span style="display:inline-block; animation:spin 0.8s linear infinite;">⏳</span><span>${message}</span>`
+    : `<span>${message}</span>`;
+  el.style.opacity = '1';
+  el.style.transform = 'translateX(-50%) translateY(0)';
+
+  if (!isBusy) {
+    coToastTimer = setTimeout(() => {
+      if (el) {
+        el.style.opacity = '0';
+        el.style.transform = 'translateX(-50%) translateY(-10px)';
+      }
+    }, 2600);
+  }
+}
+
+function hideOrderToast() {
+  const el = document.getElementById('co-global-toast');
+  if (el) {
+    el.style.opacity = '0';
+    el.style.transform = 'translateX(-50%) translateY(-10px)';
+  }
+}
+
 // อัปเดตเฉพาะแถบตะกร้าด้านล่าง, หน้าต่างป๊อปอัป (Modal), และป้ายจำนวนบนการ์ดสินค้า โดยไม่รีเฟรชหน้าจอหลัก!
 function renderCartAndModals() {
   const stickyRoot = document.getElementById('co-sticky-cart-root');
@@ -198,6 +238,8 @@ function renderCartAndModals() {
     ${orderState.foodModalProduct ? renderFoodModifierModal() : ''}
     ${orderState.showCartModal ? renderCartModal() : ''}
     ${orderState.showCheckoutModal ? renderCheckoutModal() : ''}
+    ${orderState.showMyOrdersModal ? renderMyOrdersModal() : ''}
+    ${orderState.showTableBillModal ? renderTableBillModal() : ''}
   `;
 
   // อัปเดตป้ายจำนวนสินค้าที่อยู่ในตะกร้าบนการ์ดสินค้าแต่ละใบทันทีโดยไม่ขยับ Scroll
@@ -212,6 +254,10 @@ function renderCartAndModals() {
       el.style.display = 'none';
     }
   });
+}
+
+function renderModalsOnly() {
+  renderCartAndModals();
 }
 
 // อัปเดตเฉพาะโซนหน้าร้าน (#co-storefront-root) เมื่อกดเข้าตู้/ออกจากตู้ เพื่อไม่ให้หน้าจอกระตุกหรือเลื่อนขึ้น
@@ -376,6 +422,10 @@ function getPromptPayQrUrl(amount) {
 // Submit Order to POS Backend
 async function submitOrder() {
   if (orderState.cart.length === 0) return;
+  if (orderState.isSubmitting) {
+    showOrderToast('กำลังส่งคำสั่งซื้อ กรุณารอสักครู่...', true);
+    return;
+  }
 
   if (orderState.orderMode === 'DELIVERY' && !orderState.customerPhone) {
     alert('กรุณาระบุเบอร์โทรศัพท์สำหรับติดต่อส่งของ');
@@ -385,6 +435,10 @@ async function submitOrder() {
     alert('กรุณาระบุเบอร์โทรศัพท์สำหรับติดต่อรับอาหาร');
     return;
   }
+
+  orderState.isSubmitting = true;
+  showOrderToast('กำลังส่งคำสั่งซื้อเข้าสู่ระบบ... กรุณารอสักครู่', true);
+  renderCartAndModals();
 
   const netTotal = getCartNetTotal();
   const subtotal = getCartSubtotal();
@@ -400,7 +454,7 @@ async function submitOrder() {
   } else if (orderState.orderMode === 'DINE_IN') {
     const tblObj = (orderState.data?.tables || []).find(t => t.id === orderState.tableId);
     billTitle = `🍽️ ${tblObj ? tblObj.name : 'โต๊ะ ' + orderState.tableId} (${orderState.customerName || 'ลูกค้า'})`;
-    billNote = orderState.deliveryNote || 'ทานที่ร้าน';
+    billNote = `ทานที่ร้าน${orderState.customerPhone ? ' | โทร: ' + orderState.customerPhone : ''}${orderState.deliveryNote ? ' | หมายเหตุ: ' + orderState.deliveryNote : ''}`;
   } else {
     // โหมดรับกลับบ้าน (Takeaway) พร้อมช่วงเวลามารับ
     let pickupText = 'มารับทันที (~15 นาที)';
@@ -439,6 +493,7 @@ async function submitOrder() {
     });
     const json = await res.json().catch(() => null);
     if (res.ok && json && json.success) {
+      if (json.data) orderState.data = json.data;
       orderState.activeOrder = {
         id: json.orderId || `ORD-${Date.now().toString().slice(-4)}`,
         title: billTitle,
@@ -446,7 +501,7 @@ async function submitOrder() {
         paymentMethod: orderState.paymentMethod,
         orderMode: orderState.orderMode,
         pointName: ptName,
-        status: 'PENDING',
+        status: 'OPEN',
         items: [...orderState.cart],
         created_at: new Date().toISOString()
       };
@@ -454,6 +509,8 @@ async function submitOrder() {
       orderState.cart = [];
       orderState.showCheckoutModal = false;
       orderState.showCartModal = false;
+      orderState.isSubmitting = false;
+      showOrderToast('✅ ส่งคำสั่งซื้อสำเร็จเรียบร้อยแล้ว!', false);
       startLivePolling(orderState.activeOrder.id);
       render();
       return;
@@ -465,6 +522,7 @@ async function submitOrder() {
   // Fallback if offline
   if (window.LocalPosEngine) {
     const out = window.LocalPosEngine.submitOrder(payload);
+    if (out && out.data) orderState.data = out.data;
     orderState.activeOrder = {
       id: out.orderId || `ORD-${Date.now().toString().slice(-4)}`,
       title: billTitle,
@@ -472,7 +530,7 @@ async function submitOrder() {
       paymentMethod: orderState.paymentMethod,
       orderMode: orderState.orderMode,
       pointName: ptName,
-      status: 'PENDING',
+      status: 'OPEN',
       items: [...orderState.cart],
       created_at: new Date().toISOString()
     };
@@ -480,9 +538,16 @@ async function submitOrder() {
     orderState.cart = [];
     orderState.showCheckoutModal = false;
     orderState.showCartModal = false;
+    orderState.isSubmitting = false;
+    showOrderToast('✅ ส่งคำสั่งซื้อสำเร็จเรียบร้อยแล้ว!', false);
     startLivePolling(orderState.activeOrder.id);
     render();
+    return;
   }
+
+  orderState.isSubmitting = false;
+  hideOrderToast();
+  renderCartAndModals();
 }
 
 // Save Order to LocalStorage History (แนวทาง A)
@@ -768,9 +833,17 @@ function renderDeliverySection() {
         </div>
       </div>
 
-      <!-- Interactive Pixel Map (Horizontal Orientation with Zoom & Pan) -->
-      <div class="co-map-viewport" id="co-map-viewport">
-        <div class="co-map-canvas" id="co-map-canvas" style="transform: scale(${orderState.mapZoom});">
+      <!-- Interactive Pixel Map (Horizontal Orientation with Zoom & Free Pan) -->
+      <div
+        class="co-map-viewport"
+        id="co-map-viewport"
+        onmousedown="startMapDrag(event)"
+      >
+        <div
+          class="co-map-canvas"
+          id="co-map-canvas"
+          style="width: ${Math.round(orderState.mapZoom * 100)}%; height: ${Math.round(orderState.mapZoom * 100)}%;"
+        >
           ${mapCfg.custom_image_url ? `
             <!-- Custom Drawn Map Background -->
             <img
@@ -2131,9 +2204,10 @@ function renderCheckoutModal() {
           type="button"
           class="co-checkout-btn"
           style="width:100%; justify-content:center; padding:12px;"
+          ${orderState.isSubmitting ? 'disabled' : ''}
           onclick="submitOrder()"
         >
-          ✓ ยืนยันคำสั่งซื้อ
+          ${orderState.isSubmitting ? '⏳ กำลังส่งคำสั่งซื้อ... กรุณารอสักครู่' : '✓ ยืนยันคำสั่งซื้อ'}
         </button>
       </div>
     </div>
@@ -2145,10 +2219,10 @@ function renderCheckoutModal() {
 // ==========================================================================
 function renderLiveTrackerView() {
   const ord = orderState.activeOrder;
-  const isPending = ord.status === 'PENDING';
-  const isCooking = ord.status === 'COOKING';
+  const isDone = ord.status === 'COMPLETED' || ord.status === 'PAID';
   const isDelivering = ord.status === 'DELIVERING';
-  const isDone = ord.status === 'COMPLETED';
+  const isCooking = ord.status === 'COOKING';
+  const isPending = !isDone && !isDelivering && !isCooking;
 
   return `
     <header class="co-header">
@@ -2160,6 +2234,15 @@ function renderLiveTrackerView() {
             <div class="co-store-sub">หมายเลขคำสั่งซื้อ: #${ord.id}</div>
           </div>
         </div>
+        <div class="co-header-actions">
+          <button
+            type="button"
+            class="co-orders-nav-btn"
+            onclick="openMyOrdersModal();"
+          >
+            📋 ออเดอร์ของฉัน
+          </button>
+        </div>
       </div>
     </header>
 
@@ -2169,7 +2252,7 @@ function renderLiveTrackerView() {
           ${isDone ? '🎉' : (isDelivering ? '🛵' : (isCooking ? '🍳' : '⏳'))}
         </div>
         <h2 style="font-size:20px; font-weight:800; margin-bottom:4px;">
-          ${isDone ? 'จัดส่งสำเร็จเรียบร้อยแล้ว!' : (isDelivering ? 'ไรเดอร์กำลังนำส่งถึงคุณ!' : (isCooking ? 'ครัวกำลังปรุงอาหารอย่างพิถีพิถัน' : 'ทางร้านได้รับออเดอร์แล้ว'))}
+          ${isDone ? 'ชำระเงิน / จัดส่งสำเร็จเรียบร้อยแล้ว!' : (isDelivering ? 'อาหารพร้อมเสิร์ฟ / กำลังนำส่งถึงคุณ!' : (isCooking ? 'ครัวกำลังปรุงอาหารอย่างพิถีพิถัน' : 'กำลังดำเนินการ (บิลยังเปิดอยู่)'))}
         </h2>
         <p style="font-size:12.5px; color:var(--co-muted); margin-bottom:18px;">
           ${ord.title}
@@ -2191,12 +2274,12 @@ function renderLiveTrackerView() {
 
           <div class="co-tracker-step" data-active="${isDelivering}" data-done="${isDone}">
             <div class="co-step-dot">3</div>
-            <span class="co-step-label">กำลังนำส่ง</span>
+            <span class="co-step-label">เสิร์ฟ/นำส่ง</span>
           </div>
 
           <div class="co-tracker-step" data-active="${isDone}" data-done="${isDone}">
             <div class="co-step-dot">4</div>
-            <span class="co-step-label">สำเร็จ</span>
+            <span class="co-step-label">เช็คบิลสำเร็จ</span>
           </div>
         </div>
 
@@ -2215,41 +2298,119 @@ function renderLiveTrackerView() {
           </div>
         </div>
 
-        <button
-          type="button"
-          class="co-checkout-btn"
-          style="width:100%; justify-content:center; background:#0f3238;"
-          onclick="orderState.activeOrder=null; if(orderState.pollTimer) clearInterval(orderState.pollTimer); render();"
-        >
-          + สั่งออเดอร์ใหม่
-        </button>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <button
+            type="button"
+            class="co-checkout-btn"
+            style="width:100%; justify-content:center; background:#0284c7;"
+            onclick="openMyOrdersModal();"
+          >
+            📋 ดูออเดอร์ทั้งหมด
+          </button>
+          <button
+            type="button"
+            class="co-checkout-btn"
+            style="width:100%; justify-content:center; background:#0f3238;"
+            onclick="orderState.activeOrder=null; if(orderState.pollTimer) clearInterval(orderState.pollTimer); render();"
+          >
+            + สั่งออเดอร์เพิ่ม
+          </button>
+        </div>
       </div>
+    </div>
+
+    <div id="co-modals-root">
+      ${orderState.showMyOrdersModal ? renderMyOrdersModal() : ''}
+      ${orderState.showTableBillModal ? renderTableBillModal() : ''}
     </div>
   `;
 }
 
 // ==========================================================================
-// TABLE SERVICE ACTIONS & MAP ZOOM CONTROLS
+// TABLE SERVICE ACTIONS & MAP ZOOM / PAN CONTROLS
 // ==========================================================================
 
+let mapDragState = { isDown: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0, moved: false };
+
+function startMapDrag(e) {
+  const vp = document.getElementById('co-map-viewport');
+  if (!vp) return;
+  if (e.button !== undefined && e.button !== 0) return;
+  mapDragState.isDown = true;
+  mapDragState.moved = false;
+  mapDragState.startX = e.clientX;
+  mapDragState.startY = e.clientY;
+  mapDragState.scrollLeft = vp.scrollLeft;
+  mapDragState.scrollTop = vp.scrollTop;
+  vp.classList.add('is-dragging');
+
+  const onMove = (ev) => {
+    if (!mapDragState.isDown) return;
+    const dx = ev.clientX - mapDragState.startX;
+    const dy = ev.clientY - mapDragState.startY;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+      mapDragState.moved = true;
+    }
+    vp.scrollLeft = mapDragState.scrollLeft - dx;
+    vp.scrollTop = mapDragState.scrollTop - dy;
+  };
+
+  const onUp = () => {
+    mapDragState.isDown = false;
+    vp.classList.remove('is-dragging');
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+}
+
 function zoomMap(delta) {
-  const next = Math.max(1.0, Math.min(2.5, Math.round((orderState.mapZoom + delta) * 100) / 100));
+  const prevZoom = orderState.mapZoom || 1.0;
+  const next = Math.max(1.0, Math.min(3.0, Math.round((prevZoom + delta) * 100) / 100));
   orderState.mapZoom = next;
+
+  const vp = document.getElementById('co-map-viewport');
   const canvas = document.getElementById('co-map-canvas');
-  if (canvas) canvas.style.transform = `scale(${next})`;
+  if (canvas && vp) {
+    // Preserve the center point while zooming
+    const centerRatioX = (vp.scrollLeft + vp.clientWidth / 2) / (canvas.offsetWidth || vp.clientWidth);
+    const centerRatioY = (vp.scrollTop + vp.clientHeight / 2) / (canvas.offsetHeight || vp.clientHeight);
+
+    canvas.style.width = `${Math.round(next * 100)}%`;
+    canvas.style.height = `${Math.round(next * 100)}%`;
+
+    requestAnimationFrame(() => {
+      vp.scrollLeft = Math.max(0, centerRatioX * canvas.offsetWidth - vp.clientWidth / 2);
+      vp.scrollTop = Math.max(0, centerRatioY * canvas.offsetHeight - vp.clientHeight / 2);
+    });
+  }
   const label = document.getElementById('co-zoom-label');
   if (label) label.textContent = `${Math.round(next * 100)}%`;
 }
 
 function resetMapZoom() {
   orderState.mapZoom = 1.0;
+  const vp = document.getElementById('co-map-viewport');
   const canvas = document.getElementById('co-map-canvas');
-  if (canvas) canvas.style.transform = 'scale(1.0)';
+  if (canvas) {
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+  }
+  if (vp) {
+    vp.scrollLeft = 0;
+    vp.scrollTop = 0;
+  }
   const label = document.getElementById('co-zoom-label');
   if (label) label.textContent = '100%';
 }
 
 function selectDeliveryPoint(id) {
+  if (mapDragState.moved) {
+    mapDragState.moved = false;
+    return;
+  }
   orderState.selectedDeliveryPointId = id;
   render();
 }
@@ -2270,6 +2431,7 @@ async function requestTableService(type) {
 
   if (!confirm(`ยืนยันการส่งคำขอ "${label}" สำหรับ ${tblName} ไปยังพนักงานร้าน?`)) return;
 
+  showOrderToast(`กำลังส่งคำขอ "${label}" ไปยังพนักงาน...`, true);
   try {
     const res = await fetch('/api/tables/service-call', {
       method: 'POST',
@@ -2282,7 +2444,7 @@ async function requestTableService(type) {
     });
     const json = await res.json().catch(() => null);
     if (res.ok && json && json.success) {
-      alert(`✓ ส่งคำขอ "${label}" ให้ ${tblName} เรียบร้อยแล้ว พนักงานกำลังมาให้บริการครับ`);
+      showOrderToast(`✓ ส่งคำขอ "${label}" ให้ ${tblName} เรียบร้อยแล้ว`, false);
       return;
     }
   } catch {}
@@ -2293,7 +2455,9 @@ async function requestTableService(type) {
       request_type: type,
       note: ''
     });
-    alert(`✓ ส่งคำขอ "${label}" ให้ ${tblName} เรียบร้อยแล้ว (ออฟไลน์)`);
+    showOrderToast(`✓ ส่งคำขอ "${label}" ให้ ${tblName} เรียบร้อยแล้ว`, false);
+  } else {
+    hideOrderToast();
   }
 }
 
@@ -2314,7 +2478,9 @@ async function openTableBillModal() {
     const res = await fetch(`/api/customer/orders?table_id=${encodeURIComponent(orderState.tableId)}&_t=${Date.now()}`);
     const json = await res.json().catch(() => null);
     if (res.ok && json && Array.isArray(json.orders)) {
-      orderState.tableBillData = json.orders[0] || null;
+      // เลือกบิลที่ยังเปิดอยู่ (OPEN) ก่อน ถ้าไม่มีค่อยเอาบิลล่าสุด
+      const openBill = json.orders.find(o => o.status !== 'PAID' && o.status !== 'CANCELLED' && o.status !== 'VOIDED');
+      orderState.tableBillData = openBill || json.orders[0] || null;
       renderModalsOnly();
       return;
     }
@@ -2348,7 +2514,7 @@ function renderTableBillModal() {
             <div style="font-size:11px; font-weight:700; color:#0d9488; text-transform:uppercase; letter-spacing:0.5px;">TABLE BILL STATUS</div>
             <h3 style="margin:2px 0 0; font-size:18px; font-weight:800; color:var(--co-ink);">🍽️ สถานะบิล: ${tblName}</h3>
           </div>
-          <button type="button" class="co-modal-close" onclick="closeTableBillModal();">✕</button>
+          <button type="button" class="co-close-btn" onclick="closeTableBillModal();">✕</button>
         </div>
 
         <div class="co-modal-body">
@@ -2363,7 +2529,7 @@ function renderTableBillModal() {
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:12px; color:var(--co-muted);">
                 <span>เลขบิล: <b>${bill.id}</b></span>
                 <span class="co-status-pill ${bill.status === 'PAID' ? 'is-paid' : 'is-pending'}">
-                  ${bill.status === 'PAID' ? '✅ ชำระแล้ว' : '⏳ กำลังรับประทาน'}
+                  ${bill.status === 'PAID' ? '✅ เช็คบิลชำระแล้ว' : '⏳ กำลังดำเนินการ (ยังไม่เช็คบิล)'}
                 </span>
               </div>
               <div style="font-size:12px; color:var(--co-muted);">
@@ -2446,12 +2612,30 @@ function renderTableBillModal() {
 // MY ORDERS MODAL (แนวทาง A: ดูสถานะออเดอร์สด & ประวัติการสั่งซื้อ)
 // ==========================================================================
 
-function openMyOrdersModal() {
+async function openMyOrdersModal() {
   orderState.showMyOrdersModal = true;
   if (!orderState.myOrdersSearchPhone) {
     orderState.myOrdersSearchPhone = orderState.customerPhone || localStorage.getItem('co_customer_phone') || '';
   }
   renderModalsOnly();
+
+  // อัปเดตสถานะบิลล่าสุดจากระบบหลังบ้านแบบอัตโนมัติทันทีที่เปิดหน้าต่าง
+  await refreshMyOrdersLiveStatus();
+}
+
+async function refreshMyOrdersLiveStatus() {
+  try {
+    const res = await fetch(`/api/bootstrap?_t=${Date.now()}`, { cache: 'no-store' });
+    if (res.ok) {
+      const freshData = await res.json().catch(() => null);
+      if (freshData && Array.isArray(freshData.allBills)) {
+        orderState.data = freshData;
+      }
+    }
+  } catch {}
+  if (orderState.showMyOrdersModal) {
+    renderModalsOnly();
+  }
 }
 
 function closeMyOrdersModal() {
@@ -2461,20 +2645,22 @@ function closeMyOrdersModal() {
 
 async function searchCustomerOrders(phone) {
   const clean = String(phone || '').replace(/\D/g, '');
-  if (clean.length < 8) {
-    alert('กรุณากรอกเบอร์โทรศัพท์อย่างน้อย 8-10 หลัก');
+  if (clean.length < 6) {
+    alert('กรุณากรอกเบอร์โทรศัพท์อย่างน้อย 6-10 หลักเพื่อค้นหา');
     return;
   }
   orderState.myOrdersSearchPhone = clean;
   orderState.isSearchingOrders = true;
   renderModalsOnly();
 
+  showOrderToast('กำลังค้นหาประวัติคำสั่งซื้อ...', true);
   try {
     const res = await fetch(`/api/customer/orders?phone=${encodeURIComponent(clean)}&_t=${Date.now()}`);
     const json = await res.json().catch(() => null);
     if (res.ok && json && Array.isArray(json.orders)) {
       orderState.searchedOrders = json.orders;
       orderState.isSearchingOrders = false;
+      hideOrderToast();
       renderModalsOnly();
       return;
     }
@@ -2484,6 +2670,7 @@ async function searchCustomerOrders(phone) {
     orderState.searchedOrders = window.LocalPosEngine.getCustomerOrders(clean);
   }
   orderState.isSearchingOrders = false;
+  hideOrderToast();
   renderModalsOnly();
 }
 
@@ -2497,11 +2684,62 @@ function getMyStoredOrders() {
   }
 }
 
+// รวมออเดอร์ในเครื่อง + ซิงค์สถานะสดกับบิลจริงในระบบ (allBills)
+// กฎสำคัญ: ถ้ายังไม่มีการเช็คบิล (status !== 'PAID' และไม่ได้ยกเลิก) จะถือว่าบิลนั้นยังดำเนินการอยู่เสมอ!
+function getResolvedMyOrders() {
+  const allBills = orderState.data?.allBills || [];
+  const billMap = new Map(allBills.map(b => [b.id, b]));
+  const storedOrders = getMyStoredOrders();
+  const baseList = orderState.searchedOrders !== null ? orderState.searchedOrders : storedOrders;
+
+  const mergedMap = new Map();
+
+  // 1. นำออเดอร์จากรายการที่ค้นหาหรือที่บันทึกไว้ในเครื่องมาอัปเดตสถานะสดจาก allBills
+  baseList.forEach(ord => {
+    const live = billMap.get(ord.id);
+    if (live) {
+      mergedMap.set(ord.id, {
+        ...ord,
+        ...live,
+        status: live.status || 'OPEN',
+        bill_title: live.bill_title || ord.bill_title || ord.title,
+        net_total: live.net_total ?? live.total_amount ?? ord.net_total ?? ord.netTotal,
+        items: (Array.isArray(live.items) && live.items.length > 0) ? live.items : (ord.items || [])
+      });
+    } else {
+      mergedMap.set(ord.id, {
+        ...ord,
+        status: ord.status || 'OPEN'
+      });
+    }
+  });
+
+  // 2. หากไม่ได้อยู่ในโหมดค้นหาเบอร์อื่น ให้ดึงบิลที่เปิดอยู่ของโต๊ะนี้ (กรณีสแกน QR โต๊ะ) หรือบิลที่ตรงกับเบอร์โทรลูกค้ามารวมด้วยอัตโนมัติ
+  if (orderState.searchedOrders === null) {
+    const myPhone = (orderState.customerPhone || localStorage.getItem('co_customer_phone') || '').replace(/\D/g, '');
+    allBills.forEach(b => {
+      if (mergedMap.has(b.id)) return;
+      const matchTable = orderState.isTableLocked && orderState.tableId && b.table_id === orderState.tableId;
+      const matchPhone = myPhone.length >= 8 && (
+        String(b.customer_name || '').includes(myPhone) ||
+        String(b.bill_note || '').includes(myPhone) ||
+        String(b.bill_title || '').includes(myPhone)
+      );
+      if (matchTable || matchPhone) {
+        mergedMap.set(b.id, {
+          ...b,
+          status: b.status || 'OPEN'
+        });
+      }
+    });
+  }
+
+  return Array.from(mergedMap.values()).sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+}
+
 function reorderPastOrder(orderId) {
-  const storedList = getMyStoredOrders();
-  const foundStored = storedList.find(o => o.id === orderId);
-  const foundSearched = orderState.searchedOrders ? orderState.searchedOrders.find(o => o.id === orderId) : null;
-  const target = foundSearched || foundStored;
+  const allResolved = getResolvedMyOrders();
+  const target = allResolved.find(o => o.id === orderId);
   if (!target || !target.items || target.items.length === 0) {
     alert('ไม่พบรายการอาหารในคำสั่งซื้อนี้');
     return;
@@ -2511,20 +2749,20 @@ function reorderPastOrder(orderId) {
   let addedCount = 0;
   target.items.forEach(it => {
     const pid = it.product_id;
-    const prod = allProds.find(p => p.id === pid);
+    const prod = allProds.find(p => p.id === pid || p.name === (it.product_name || it.name));
     if (prod) {
-      for (let i = 0; i < (it.quantity || 1); i++) {
-        orderState.cart.push({
-          cartId: `C-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          product_id: prod.id,
-          product: prod,
-          quantity: 1,
-          modifiers: [],
-          unitPrice: prod.price,
-          special_instructions: ''
-        });
-        addedCount++;
-      }
+      const qty = Number(it.quantity) || 1;
+      orderState.cart.push({
+        product_id: prod.id,
+        name: prod.name,
+        unit_price: prod.price,
+        image_url: prod.image_url || '',
+        item_type: prod.item_type,
+        quantity: qty,
+        modifiers: [],
+        special_instructions: ''
+      });
+      addedCount += qty;
     }
   });
 
@@ -2532,17 +2770,23 @@ function reorderPastOrder(orderId) {
     closeMyOrdersModal();
     orderState.showCartModal = true;
     render();
-    alert(`✓ นำรายการอาหาร ${addedCount} ชิ้น ใส่ตะกร้าเรียบร้อยแล้ว ตรวจสอบและกดยืนยันสั่งได้เลยครับ`);
+    showOrderToast(`✓ นำสินค้า ${addedCount} ชิ้น ใส่ตะกร้าเรียบร้อยแล้ว`, false);
   } else {
     alert('สินค้าในคำสั่งซื้อเดิมไม่พร้อมให้บริการในขณะนี้');
   }
 }
 
 function renderMyOrdersModal() {
-  const storedOrders = getMyStoredOrders();
-  const displayOrders = orderState.searchedOrders !== null ? orderState.searchedOrders : storedOrders;
-  const activeOrders = displayOrders.filter(o => o.status === 'PENDING' || o.status === 'COOKING' || o.status === 'OPEN' || o.status === 'DELIVERING');
-  const pastOrders = displayOrders.filter(o => o.status === 'PAID' || o.status === 'COMPLETED' || o.status === 'CANCELLED' || o.status === 'VOIDED' || (!activeOrders.includes(o)));
+  const displayOrders = getResolvedMyOrders();
+
+  // กฎเหล็ก: ถ้ายังไม่มีการเช็คบิล (status ไม่ใช่ PAID / COMPLETED / CANCELLED / VOIDED) ถือว่าบิลนั้นยังดำเนินการอยู่เสมอ!
+  const isOrderClosed = (o) => {
+    const st = String(o.status || 'OPEN').toUpperCase();
+    return st === 'PAID' || st === 'COMPLETED' || st === 'CANCELLED' || st === 'VOIDED';
+  };
+
+  const activeOrders = displayOrders.filter(o => !isOrderClosed(o));
+  const pastOrders = displayOrders.filter(o => isOrderClosed(o));
 
   return `
     <div class="co-modal-backdrop" onclick="if(event.target===this) closeMyOrdersModal();">
@@ -2552,38 +2796,43 @@ function renderMyOrdersModal() {
             <div style="font-size:11px; font-weight:700; color:#0d9488; text-transform:uppercase; letter-spacing:0.5px;">ORDER TRACKING & HISTORY</div>
             <h3 style="margin:2px 0 0; font-size:18px; font-weight:800; color:var(--co-ink);">📋 ออเดอร์ของฉัน</h3>
           </div>
-          <button type="button" class="co-modal-close" onclick="closeMyOrdersModal();">✕</button>
+          <button
+            type="button"
+            class="co-close-btn"
+            style="width:34px; height:34px; border-radius:8px; background:#f1f5f9; color:#0f172a; font-weight:900; display:flex; align-items:center; justify-content:center;"
+            onclick="closeMyOrdersModal();"
+            title="ปิดหน้าต่าง"
+          >✕</button>
         </div>
 
         <div class="co-modal-body">
-          <!-- Search Phone Box -->
+          <!-- Search Phone Box (แก้ไขขนาดช่องกรอกให้กว้างเต็มพื้นที่ ไม่โดนปุ่มเบียด) -->
           <div style="background:#f8fafc; border:1px solid var(--co-border); border-radius:12px; padding:12px; margin-bottom:14px;">
-            <label style="font-size:11.5px; font-weight:700; color:#475569; display:block; margin-bottom:6px;">
-              🔍 ค้นหาประวัติด้วยเบอร์โทรศัพท์ (สั่งจากเครื่องอื่น / ล้างประวัติแล้ว):
+            <label style="font-size:12px; font-weight:700; color:#334155; display:block; margin-bottom:8px;">
+              🔍 ค้นหาออเดอร์ด้วยเบอร์โทรศัพท์ (สั่งจากเครื่องอื่น / เช็คสถานะบิล):
             </label>
-            <div style="display:flex; gap:8px;">
+            <div class="co-orders-search-row">
               <input
                 type="tel"
                 id="co-orders-search-input"
-                class="co-input"
-                style="flex:1;"
-                placeholder="เช่น 0812345678"
-                value="${orderState.myOrdersSearchPhone}"
+                class="co-orders-phone-input"
+                placeholder="กรอกเบอร์โทร เช่น 0812345678"
+                value="${orderState.myOrdersSearchPhone || ''}"
+                oninput="orderState.myOrdersSearchPhone = this.value;"
                 onkeydown="if(event.key==='Enter') searchCustomerOrders(this.value);"
               />
               <button
                 type="button"
-                class="co-item-add-btn"
-                style="padding:0 16px; white-space:nowrap; background:#0f3238;"
+                class="co-orders-search-btn"
                 onclick="searchCustomerOrders(document.getElementById('co-orders-search-input').value);"
               >
-                ${orderState.isSearchingOrders ? 'กำลังค้น...' : '🔍 ค้นหา'}
+                ${orderState.isSearchingOrders ? '⏳ ค้นหา...' : '🔍 ค้นหา'}
               </button>
             </div>
             ${orderState.searchedOrders !== null ? `
-              <div style="font-size:11.5px; color:#0d9488; font-weight:700; margin-top:6px; display:flex; justify-content:space-between; align-items:center;">
-                <span>ผลการค้นหา: พบ ${orderState.searchedOrders.length} ออเดอร์</span>
-                <button type="button" style="border:none; background:none; color:#dc2626; font-size:11px; cursor:pointer;" onclick="orderState.searchedOrders=null; renderModalsOnly();">✕ ล้างการค้นหา</button>
+              <div style="font-size:12px; color:#0d9488; font-weight:700; margin-top:8px; display:flex; justify-content:space-between; align-items:center;">
+                <span>✓ ผลการค้นหาเบอร์ ${orderState.myOrdersSearchPhone}: พบ ${orderState.searchedOrders.length} ออเดอร์</span>
+                <button type="button" style="border:none; background:#fee2e2; color:#b91c1c; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer;" onclick="orderState.searchedOrders=null; renderModalsOnly();">✕ ล้างตัวกรอง</button>
               </div>
             ` : ''}
           </div>
@@ -2592,17 +2841,17 @@ function renderMyOrdersModal() {
           <div style="display:flex; border-bottom:2px solid var(--co-border); margin-bottom:14px;">
             <button
               type="button"
-              style="flex:1; padding:10px; font-size:13px; font-weight:800; border:none; background:none; cursor:pointer; border-bottom:3px solid ${orderState.myOrdersTab === 'ACTIVE' ? '#0d9488' : 'transparent'}; color:${orderState.myOrdersTab === 'ACTIVE' ? '#0d9488' : 'var(--co-muted)'};"
+              style="flex:1; padding:10px; font-size:13.5px; font-weight:800; border:none; background:none; cursor:pointer; border-bottom:3px solid ${orderState.myOrdersTab === 'ACTIVE' ? '#0d9488' : 'transparent'}; color:${orderState.myOrdersTab === 'ACTIVE' ? '#0d9488' : 'var(--co-muted)'};"
               onclick="orderState.myOrdersTab='ACTIVE'; renderModalsOnly();"
             >
               ⏳ กำลังดำเนินการ (${activeOrders.length})
             </button>
             <button
               type="button"
-              style="flex:1; padding:10px; font-size:13px; font-weight:800; border:none; background:none; cursor:pointer; border-bottom:3px solid ${orderState.myOrdersTab === 'HISTORY' ? '#0d9488' : 'transparent'}; color:${orderState.myOrdersTab === 'HISTORY' ? '#0d9488' : 'var(--co-muted)'};"
+              style="flex:1; padding:10px; font-size:13.5px; font-weight:800; border:none; background:none; cursor:pointer; border-bottom:3px solid ${orderState.myOrdersTab === 'HISTORY' ? '#0d9488' : 'transparent'}; color:${orderState.myOrdersTab === 'HISTORY' ? '#0d9488' : 'var(--co-muted)'};"
               onclick="orderState.myOrdersTab='HISTORY'; renderModalsOnly();"
             >
-              📜 ประวัติสั่งซื้อ (${pastOrders.length})
+              📜 ประวัติที่เช็คบิลแล้ว (${pastOrders.length})
             </button>
           </div>
 
@@ -2614,10 +2863,10 @@ function renderMyOrdersModal() {
                 <div style="text-align:center; padding:36px 16px; color:var(--co-muted);">
                   <div style="font-size:36px; margin-bottom:8px;">📦</div>
                   <div style="font-weight:700; font-size:14px; color:var(--co-ink);">
-                    ${orderState.myOrdersTab === 'ACTIVE' ? 'ไม่มีออเดอร์ที่กำลังดำเนินการ' : 'ยังไม่มีประวัติการสั่งซื้อ'}
+                    ${orderState.myOrdersTab === 'ACTIVE' ? 'ไม่มีออเดอร์ที่กำลังดำเนินการ' : 'ยังไม่มีประวัติที่เช็คบิลแล้ว'}
                   </div>
                   <div style="font-size:12px; margin-top:4px;">
-                    ${orderState.myOrdersTab === 'ACTIVE' ? 'เมื่อสั่งอาหารหรือของชำ ระบบจะแสดงขั้นตอนการปรุงและจัดส่งสดๆ ที่นี่' : 'สั่งซื้ออาหารและของชำได้จากหน้าร้านเลยครับ'}
+                    ${orderState.myOrdersTab === 'ACTIVE' ? 'บิลที่ยังไม่ได้เช็คบิลจะแสดงสถานะขั้นตอนการปรุงและจัดส่งสดๆ ที่นี่' : 'เมื่อพนักงานเช็คบิลเรียบร้อยแล้ว รายการจะย้ายมาเก็บไว้ที่หน้าประวัตินี้ครับ'}
                   </div>
                 </div>
               `;
@@ -2626,14 +2875,26 @@ function renderMyOrdersModal() {
             return `
               <div style="display:flex; flex-direction:column; gap:12px;">
                 ${list.map(ord => {
-                  const items = ord.items || [];
-                  const isDone = ord.status === 'PAID' || ord.status === 'COMPLETED';
-                  const isDelivering = ord.status === 'DELIVERING';
-                  const isCooking = ord.status === 'COOKING';
-                  const isPending = ord.status === 'PENDING' || ord.status === 'OPEN';
+                  const items = (ord.items || []).filter(i => i.item_status !== 'VOIDED');
+                  const isDone = isOrderClosed(ord);
+                  const foodItems = items.filter(i => i.item_type === 'FOOD' || i.kitchen_status);
+                  const allFoodServed = foodItems.length > 0 && foodItems.every(i => i.kitchen_status === 'SERVED');
+                  const anyFoodCooking = foodItems.some(i => i.kitchen_status === 'COOKING' || i.kitchen_status === 'SERVED');
+
+                  const isDelivering = !isDone && (ord.status === 'DELIVERING' || allFoodServed);
+                  const isCooking = !isDone && !isDelivering && (ord.status === 'COOKING' || anyFoodCooking);
+
+                  let badgeLabel = '⏳ กำลังดำเนินการ (ยังไม่เช็คบิล)';
+                  if (isDone) {
+                    badgeLabel = ord.status === 'CANCELLED' || ord.status === 'VOIDED' ? '❌ ยกเลิกบิล' : '✅ เช็คบิลชำระแล้ว';
+                  } else if (isDelivering) {
+                    badgeLabel = '🛵 เสิร์ฟครบ / พร้อมส่ง (รอเช็คบิล)';
+                  } else if (isCooking) {
+                    badgeLabel = '🍳 กำลังปรุงอาหาร (ยังไม่เช็คบิล)';
+                  }
 
                   return `
-                    <div style="background:#fff; border:1.5px solid var(--co-border); border-radius:12px; padding:12px 14px; box-shadow:0 2px 6px rgba(0,0,0,0.04);">
+                    <div style="background:#fff; border:1.5px solid ${isDone ? 'var(--co-border)' : '#99f6e4'}; border-radius:12px; padding:12px 14px; box-shadow:0 2px 6px rgba(0,0,0,0.04);">
                       <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px; flex-wrap:wrap; gap:6px;">
                         <div>
                           <div style="font-weight:800; font-size:14px; color:var(--co-ink);">${ord.bill_title || ord.title || `ออเดอร์ #${ord.id}`}</div>
@@ -2642,13 +2903,14 @@ function renderMyOrdersModal() {
                           </div>
                         </div>
                         <span class="co-status-pill ${isDone ? 'is-paid' : 'is-pending'}">
-                          ${isDone ? '✅ สำเร็จ / ชำระแล้ว' : (isDelivering ? '🛵 กำลังส่ง / พร้อมรับ' : (isCooking ? '🍳 กำลังปรุง' : '⏳ ได้รับออเดอร์'))}
+                          ${badgeLabel}
                         </span>
                       </div>
 
-                      ${orderState.myOrdersTab === 'ACTIVE' ? `
+                      ${!isDone ? `
                         <!-- Step Tracker Indicator -->
                         <div class="co-tracker-steps" style="margin:12px 0 10px;">
+                          <div class="co-tracker-line"></div>
                           <div class="co-tracker-step" data-active="true" data-done="${isCooking || isDelivering || isDone}">
                             <div class="co-step-dot">1</div>
                             <span class="co-step-label">รับออเดอร์</span>
@@ -2659,48 +2921,49 @@ function renderMyOrdersModal() {
                           </div>
                           <div class="co-tracker-step" data-active="${isDelivering || isDone}" data-done="${isDone}">
                             <div class="co-step-dot">3</div>
-                            <span class="co-step-label">นำส่ง/พร้อมรับ</span>
+                            <span class="co-step-label">เสิร์ฟ/นำส่ง</span>
                           </div>
                           <div class="co-tracker-step" data-active="${isDone}" data-done="${isDone}">
                             <div class="co-step-dot">4</div>
-                            <span class="co-step-label">สำเร็จ</span>
+                            <span class="co-step-label">เช็คบิลแล้ว</span>
                           </div>
                         </div>
                       ` : ''}
 
                       <!-- Item List Summary -->
                       <div style="background:#f8fafc; border-radius:8px; padding:8px 10px; margin:8px 0; font-size:12px;">
-                        ${items.map(it => `
-                          <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
-                            <span>• ${it.product_name || it.name} × ${it.quantity}</span>
-                            <span style="font-weight:700;">${formatMoney(Number(it.unit_price || it.price || 0) * (it.quantity || 1))}</span>
-                          </div>
-                        `).join('')}
+                        ${items.map(it => {
+                          const kSt = it.kitchen_status === 'SERVED' ? ' <span style="color:#16a34a; font-weight:700;">(เสิร์ฟแล้ว)</span>' : (it.kitchen_status === 'COOKING' ? ' <span style="color:#d97706; font-weight:700;">(กำลังปรุง)</span>' : '');
+                          return `
+                            <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+                              <span>• ${it.product_name || it.name} × ${it.quantity}${!isDone ? kSt : ''}</span>
+                              <span style="font-weight:700;">${formatMoney(Number(it.unit_price || it.price || 0) * (it.quantity || 1))}</span>
+                            </div>
+                          `;
+                        }).join('')}
                       </div>
 
                       <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px dashed var(--co-border);">
                         <div>
-                          <span style="font-size:12px; color:var(--co-muted);">ยอดรวม: </span>
+                          <span style="font-size:12px; color:var(--co-muted);">ยอดสุทธิ: </span>
                           <b style="font-size:15px; color:#0d9488;">${formatMoney(ord.net_total || ord.total_amount || ord.netTotal)}</b>
                         </div>
                         <div style="display:flex; gap:6px;">
                           ${isDone ? `
                             <button
                               type="button"
-                              class="co-item-add-btn"
-                              style="padding:4px 12px; font-size:12px; background:#0f3238;"
+                              style="padding:6px 14px; font-size:12px; font-weight:800; color:#fff; background:#0f3238; border:none; border-radius:8px; cursor:pointer;"
                               onclick="reorderPastOrder('${ord.id}')"
                             >
-                              🔄 สั่งซ้ำ
+                              🔄 สั่งซ้ำบิลนี้
                             </button>
                           ` : `
                             <button
                               type="button"
-                              class="co-item-add-btn"
-                              style="padding:4px 10px; font-size:11.5px; background:#0284c7;"
-                              onclick="searchCustomerOrders(orderState.myOrdersSearchPhone || ord.phone || '');"
+                              style="padding:6px 12px; font-size:12px; font-weight:800; color:#fff; background:#0284c7; border:none; border-radius:8px; cursor:pointer;"
+                              onclick="refreshMyOrdersLiveStatus();"
                             >
-                              🔄 อัปเดตสถานะ
+                              🔄 รีเฟรชสถานะสด
                             </button>
                           `}
                         </div>
