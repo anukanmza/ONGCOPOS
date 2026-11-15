@@ -142,21 +142,21 @@ button {
 }
 
 .ttl-nav-in {
-  max-width: 1400px;
+  max-width: 1460px;
   margin: 0 auto;
-  padding: 0 16px;
-  height: 60px;
+  padding: 0 12px;
+  min-height: 56px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
 .ttl-brand {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  font-weight: 700;
-  font-size: 16px;
+  gap: 7px;
+  font-weight: 800;
+  font-size: 15px;
   letter-spacing: -0.02em;
   text-decoration: none;
   color: var(--ttl-ink);
@@ -164,12 +164,7 @@ button {
 }
 
 .ttl-brand-sub {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--ttl-lilac);
-  color: var(--ttl-lilac-ink);
+  display: none;
 }
 
 .ttl-nav-links {
@@ -177,6 +172,7 @@ button {
   align-items: center;
   gap: 4px;
   flex: 1;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -187,13 +183,14 @@ button {
 .ttl-nav-tab {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
+  gap: 5px;
+  padding: 6px 10px;
   border-radius: 999px;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 12.5px;
+  font-weight: 600;
   color: var(--ttl-muted);
   white-space: nowrap;
+  flex-shrink: 0;
   transition: all 0.18s ease;
 }
 

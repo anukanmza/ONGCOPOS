@@ -128,6 +128,7 @@ const orderState = {
   promoCodeInput: '',
   appliedPromoCode: '',
   activePromoFilterId: null,
+  selectedPromoId: null, // null = เลือกโปรที่คุ้มที่สุดอัตโนมัติ | 'NONE' = ไม่ใช้โปรฯ (เช่น เลือกใช้แต้มลดแทน) | string = ID ของโปรฯ ที่เลือก
   selectedDeliveryPointId: 'DP-03', // Default: ศาลาขาว ตลาดอินโดจีน
   customerName: '',
   customerPhone: '',
@@ -347,7 +348,12 @@ function getProductPromoBadges(product) {
   const activePromos = getActivePromotions();
   const badges = [];
   for (const pr of activePromos) {
-    if (pr.type === 'COMBO_SET') {
+    if (pr.type === 'BILL_DISCOUNT' || pr.type === 'PROMO_CODE') {
+      const hasRestriction = (Array.isArray(pr.target_products) && pr.target_products.length > 0) || (Array.isArray(pr.target_categories) && pr.target_categories.length > 0);
+      if (hasRestriction && isProductInListOrCat(product, pr.target_products, pr.target_categories)) {
+        badges.push(pr.badge_text || '🔥 ร่วมโปรฯ');
+      }
+    } else if (pr.type === 'COMBO_SET') {
       const inA = isProductInListOrCat(product, pr.combo_group_a_products, pr.combo_group_a_categories);
       const inB = isProductInListOrCat(product, pr.combo_group_b_products, pr.combo_group_b_categories);
       if (inA || inB) {
@@ -367,7 +373,7 @@ function getProductPromoBadges(product) {
   return badges;
 }
 
-// คำนวณโปรโมชั่นทั้ง 5 รูปแบบอัตโนมัติในตะกร้า (Approach C: Smart Cart + Upsell Hints)
+// คำนวณโปรโมชั่นทั้ง 5 รูปแบบอัตโนมัติในตะกร้า (กฎเหล็ก: ห้ามใช้โปรฯ ซ้อนกัน และห้ามใช้ซ้อนกับแต้มลด!)
 function evaluateCustomerPromotions() {
   const subtotal = getCartSubtotal();
   const activePromos = getActivePromotions();
@@ -390,31 +396,34 @@ function evaluateCustomerPromotions() {
     }
   });
 
-  const appliedList = [];
+  const eligibleList = [];
   const upsellHints = [];
-  let totalDiscount = 0;
   let codeError = '';
 
   for (const pr of activePromos) {
-    // 1. BILL_DISCOUNT (ส่วนลดท้ายบิลตามยอดซื้อขั้นต่ำ)
+    // 1. BILL_DISCOUNT (ส่วนลดท้ายบิลตามยอดซื้อขั้นต่ำ หรือตามหมวด/รายสินค้าที่กำหนด)
     if (pr.type === 'BILL_DISCOUNT') {
       const minSpend = Number(pr.min_spend) || 0;
-      if (subtotal >= minSpend && subtotal > 0) {
+      const hasRestriction = (Array.isArray(pr.target_products) && pr.target_products.length > 0) || (Array.isArray(pr.target_categories) && pr.target_categories.length > 0);
+      const baseSpend = hasRestriction
+        ? expandedItems.filter(x => isProductInListOrCat(x.prod, pr.target_products, pr.target_categories)).reduce((s, x) => s + x.unit_price, 0)
+        : subtotal;
+
+      if (baseSpend >= minSpend && baseSpend > 0) {
         const disc = pr.discount_type === 'PERCENT'
-          ? Math.round((subtotal * (Number(pr.discount_value) || 0)) / 100)
+          ? Math.round((baseSpend * (Number(pr.discount_value) || 0)) / 100)
           : (Number(pr.discount_value) || 0);
         if (disc > 0) {
-          totalDiscount += disc;
-          appliedList.push({ id: pr.id, name: pr.name, icon: pr.icon || '🎉', amount: disc });
+          eligibleList.push({ id: pr.id, name: pr.name, icon: pr.icon || '🎉', amount: Math.min(subtotal, disc) });
         }
-      } else if (subtotal > 0 && subtotal < minSpend && (minSpend - subtotal) <= 120) {
-        const diff = minSpend - subtotal;
+      } else if (baseSpend > 0 && baseSpend < minSpend && (minSpend - baseSpend) <= 120) {
+        const diff = minSpend - baseSpend;
         const rewardTxt = pr.discount_type === 'PERCENT' ? `ลด ${pr.discount_value}%` : `ลดทันที ${formatMoney(pr.discount_value)}`;
         upsellHints.push(`💡 สั่งเพิ่มอีกเพียง <b>${formatMoney(diff)}</b> รับสิทธิ์ "${pr.name}" (${rewardTxt})!`);
       }
     }
 
-    // 2. COMBO_SET (โปรจับคู่อิ่มคุ้มข้ามหมวด)
+    // 2. COMBO_SET (โปรจับคู่อิ่มคุ้มข้ามหมวด / รายเมนู)
     else if (pr.type === 'COMBO_SET') {
       const groupA = expandedItems.filter(x => isProductInListOrCat(x.prod, pr.combo_group_a_products, pr.combo_group_a_categories));
       const groupB = expandedItems.filter(x => isProductInListOrCat(x.prod, pr.combo_group_b_products, pr.combo_group_b_categories));
@@ -423,13 +432,12 @@ function evaluateCustomerPromotions() {
         const perSet = Number(pr.discount_value) || 10;
         const disc = pairs * perSet;
         if (disc > 0) {
-          totalDiscount += disc;
-          appliedList.push({ id: pr.id, name: `${pr.name} (×${pairs} ชุด)`, icon: pr.icon || '🍛🥤', amount: disc });
+          eligibleList.push({ id: pr.id, name: `${pr.name} (×${pairs} ชุด)`, icon: pr.icon || '🍛🥤', amount: Math.min(subtotal, disc) });
         }
       } else if (groupA.length > 0 && groupB.length === 0) {
-        upsellHints.push(`💡 คุณมีเมนูหลักในตะกร้าแล้ว! หยิบคู่ <b>เครื่องดื่มที่ร่วมรายการ</b> เพิ่มอีก 1 ชิ้น รับส่วนลดจับคู่ทันที <b>${formatMoney(pr.discount_value)}</b>!`);
+        upsellHints.push(`💡 คุณมีเมนูหลักในตะกร้าแล้ว! หยิบคู่ <b>สินค้าที่ร่วมโปรฯ "${pr.name}"</b> เพิ่มอีก 1 ชิ้น รับส่วนลดจับคู่ทันที <b>${formatMoney(pr.discount_value)}</b>!`);
       } else if (groupB.length > 0 && groupA.length === 0) {
-        upsellHints.push(`💡 สั่งคู่กับ <b>อาหารจานหลัก</b> เพิ่มอีก 1 จาน รับส่วนลดจับคู่ทันที <b>${formatMoney(pr.discount_value)}</b>!`);
+        upsellHints.push(`💡 สั่งคู่กับ <b>เมนูหลักที่ร่วมโปรฯ "${pr.name}"</b> เพิ่มอีก 1 รายการ รับส่วนลดจับคู่ทันที <b>${formatMoney(pr.discount_value)}</b>!`);
       }
     }
 
@@ -450,8 +458,7 @@ function evaluateCustomerPromotions() {
           disc = sets * (Number(pr.reward_value || pr.discount_value) || 5);
         }
         if (disc > 0) {
-          totalDiscount += disc;
-          appliedList.push({ id: pr.id, name: `${pr.name} (×${sets} ชุด)`, icon: pr.icon || '🧺', amount: disc });
+          eligibleList.push({ id: pr.id, name: `${pr.name} (×${sets} ชุด)`, icon: pr.icon || '🧺', amount: Math.min(subtotal, disc) });
         }
       } else if (matched.length > 0 && (buyQty - matched.length) <= 2) {
         const need = buyQty - matched.length;
@@ -469,8 +476,7 @@ function evaluateCustomerPromotions() {
             ? Math.round((matchedSum * (Number(pr.discount_value) || 0)) / 100)
             : matched.length * (Number(pr.discount_value) || 0);
           if (disc > 0) {
-            totalDiscount += disc;
-            appliedList.push({ id: pr.id, name: pr.name, icon: pr.icon || '⏰', amount: disc });
+            eligibleList.push({ id: pr.id, name: pr.name, icon: pr.icon || '⏰', amount: Math.min(subtotal, disc) });
           }
         }
       }
@@ -482,16 +488,20 @@ function evaluateCustomerPromotions() {
       const userCode = String(orderState.appliedPromoCode || '').trim().toUpperCase();
       if (targetCode && userCode && targetCode === userCode) {
         const minSpend = Number(pr.min_spend) || 0;
-        if (subtotal >= minSpend) {
+        const hasRestriction = (Array.isArray(pr.target_products) && pr.target_products.length > 0) || (Array.isArray(pr.target_categories) && pr.target_categories.length > 0);
+        const baseSpend = hasRestriction
+          ? expandedItems.filter(x => isProductInListOrCat(x.prod, pr.target_products, pr.target_categories)).reduce((s, x) => s + x.unit_price, 0)
+          : subtotal;
+
+        if (baseSpend >= minSpend && baseSpend > 0) {
           const disc = pr.discount_type === 'PERCENT'
-            ? Math.round((subtotal * (Number(pr.discount_value) || 0)) / 100)
+            ? Math.round((baseSpend * (Number(pr.discount_value) || 0)) / 100)
             : (Number(pr.discount_value) || 0);
           if (disc > 0) {
-            totalDiscount += disc;
-            appliedList.push({ id: pr.id, name: `โค้ด ${targetCode}: ${pr.name}`, icon: pr.icon || '🎟️', amount: disc });
+            eligibleList.push({ id: pr.id, name: `โค้ด ${targetCode}: ${pr.name}`, icon: pr.icon || '🎟️', amount: Math.min(subtotal, disc) });
           }
         } else {
-          codeError = `โค้ด ${targetCode} ต้องมียอดสั่งซื้อขั้นต่ำ ${formatMoney(minSpend)} (ขาดอีก ${formatMoney(minSpend - subtotal)})`;
+          codeError = `โค้ด ${targetCode} ต้องมียอดสั่งซื้อสินค้าที่ร่วมรายการขั้นต่ำ ${formatMoney(minSpend)} (ขาดอีก ${formatMoney(Math.max(0, minSpend - baseSpend))})`;
         }
       }
     }
@@ -506,8 +516,54 @@ function evaluateCustomerPromotions() {
     }
   }
 
-  totalDiscount = Math.min(subtotal, Math.max(0, totalDiscount));
-  return { totalDiscount, appliedList, upsellHints, codeError };
+  // เรียงโปรที่ลดเยอะสุดขึ้นก่อน
+  eligibleList.sort((a, b) => b.amount - a.amount);
+
+  // กฎเหล็ก:
+  // 1) ถ้าลูกค้าเลือกใช้แต้มสะสมลดราคา (orderState.redeemPoints > 0) จะไม่สามารถใช้โปรโมชั่นซ้อนได้
+  // 2) ถ้าเข้าเกณฑ์ตั้งแต่ 2 โปรโมชั่นขึ้นไป เลือกใช้ได้เพียง 1 โปรโมชั่นเท่านั้น (ค่าเริ่มต้นเลือกอันที่ลดคุ้มสุดให้ หรือตามที่ลูกค้ากดเลือก)
+  let chosenPromo = null;
+  if (orderState.redeemPoints > 0 || orderState.selectedPromoId === 'NONE') {
+    chosenPromo = null;
+  } else if (eligibleList.length > 0) {
+    chosenPromo = eligibleList.find(p => p.id === orderState.selectedPromoId) || eligibleList[0];
+  }
+
+  const totalDiscount = chosenPromo ? Math.min(subtotal, Math.max(0, chosenPromo.amount)) : 0;
+  const appliedList = chosenPromo ? [chosenPromo] : [];
+
+  return {
+    totalDiscount,
+    appliedList,
+    eligibleList,
+    chosenPromo,
+    upsellHints,
+    codeError
+  };
+}
+
+function selectCustomerPromotion(promoId) {
+  if (!promoId || promoId === 'NONE') {
+    orderState.selectedPromoId = 'NONE';
+  } else {
+    orderState.selectedPromoId = promoId;
+    // ห้ามใช้โปรโมชั่นซ้อนกับแต้มลด! หากเลือกโปรโมชั่น ให้ยกเลิกการใช้แต้มลดทันที
+    orderState.redeemPoints = 0;
+  }
+  renderCartAndModals();
+}
+
+function selectCustomerPointsRedeem(points) {
+  const pts = Math.max(0, Number(points) || 0);
+  orderState.redeemPoints = pts;
+  if (pts > 0) {
+    // ห้ามใช้แต้มลดซ้อนกับโปรโมชั่น! หากเลือกใช้แต้มลด ให้ปิดการใช้โปรโมชั่นทันที
+    orderState.selectedPromoId = 'NONE';
+    showOrderToast('⭐ เลือกใช้แต้มสะสมเป็นส่วนลด (ไม่สามารถใช้ร่วมกับโปรโมชั่นอื่นได้)', false);
+  } else {
+    orderState.selectedPromoId = null;
+  }
+  renderCartAndModals();
 }
 
 function applyCustomerPromoCode(codeStr) {
@@ -515,11 +571,19 @@ function applyCustomerPromoCode(codeStr) {
   if (!clean) {
     orderState.appliedPromoCode = '';
     orderState.promoCodeInput = '';
+    if (orderState.selectedPromoId && orderState.selectedPromoId !== 'NONE') {
+      orderState.selectedPromoId = null;
+    }
     renderCartAndModals();
     return;
   }
   orderState.promoCodeInput = clean;
   orderState.appliedPromoCode = clean;
+  orderState.redeemPoints = 0;
+  const matchedPromo = getActivePromotions().find(p => p.type === 'PROMO_CODE' && String(p.promo_code || '').trim().toUpperCase() === clean);
+  if (matchedPromo) {
+    orderState.selectedPromoId = matchedPromo.id;
+  }
   const evalRes = evaluateCustomerPromotions();
   if (evalRes.codeError) {
     showOrderToast(`⚠️ ${evalRes.codeError}`, false);
@@ -536,12 +600,17 @@ function handleShowcasePromoClick(promoId) {
   if (promo.type === 'PROMO_CODE' && promo.promo_code) {
     orderState.promoCodeInput = promo.promo_code;
     orderState.appliedPromoCode = promo.promo_code;
+    orderState.selectedPromoId = promo.id;
+    orderState.redeemPoints = 0;
     showOrderToast(`🎟️ เก็บโค้ด "${promo.promo_code}" เรียบร้อย! เมื่อสั่งครบ ${formatMoney(promo.min_spend || 0)} จะลดทันที`, false);
     renderCartAndModals();
     return;
   }
 
-  // สำหรับโปรจับคู่ / ซื้อครบ / Happy Hour ให้พาไปดูรายการสินค้าที่ร่วมโปรฯ
+  orderState.selectedPromoId = promo.id;
+  orderState.redeemPoints = 0;
+
+  // สำหรับโปรจับคู่ / ซื้อครบ / Happy Hour / ลดท้ายบิลเฉพาะรายการ ให้พาไปดูรายการสินค้าที่ร่วมโปรฯ
   if (orderState.activePromoFilterId === promo.id) {
     orderState.activePromoFilterId = null;
     showOrderToast('แสดงสินค้าทั้งหมดตามปกติ', false);
@@ -2325,10 +2394,7 @@ function renderListView(products) {
           return isProductInListOrCat(p, promo.combo_group_a_products, promo.combo_group_a_categories) ||
                  isProductInListOrCat(p, promo.combo_group_b_products, promo.combo_group_b_categories);
         }
-        if (promo.type === 'BUY_X_GET_Y' || promo.type === 'HAPPY_HOUR') {
-          return isProductInListOrCat(p, promo.target_products, promo.target_categories);
-        }
-        return true;
+        return isProductInListOrCat(p, promo.target_products, promo.target_categories);
       });
     }
   }
@@ -2646,25 +2712,37 @@ function renderCheckoutModal() {
           <button type="button" class="co-close-btn" onclick="orderState.showCheckoutModal=false; renderCartAndModals();">✕</button>
         </div>
 
-        <!-- Loyalty Points Redemption Block -->
+        <!-- Loyalty Points Redemption Block (ห้ามใช้ซ้อนกับโปรโมชั่น) -->
         ${m ? `
           <div style="background:#fef3c7; border:1px solid #fde68a; border-radius:12px; padding:12px; margin-bottom:14px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px; flex-wrap:wrap;">
               <div>
                 <b style="font-size:13px;">⭐ สมาชิก: ${m.name}</b>
-                <div style="font-size:11px; color:#b45309;">แต้มคงเหลือ: ${m.points} แต้ม</div>
+                <div style="font-size:11px; color:#b45309;">แต้มคงเหลือ: ${m.points} แต้ม (เลือกใช้แต้ม หรือ โปรโมชั่น อย่างใดอย่างหนึ่ง)</div>
               </div>
-              <button
-                type="button"
-                style="background:#b45309; color:#fff; border:none; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer;"
-                onclick="orderState.redeemPoints = Math.min(${m.points}, Math.floor(${subtotal} * 4)); renderCartAndModals();"
-              >
-                ใช้แต้มสูงสุด
-              </button>
+              <div style="display:flex; gap:6px;">
+                ${orderState.redeemPoints > 0 ? `
+                  <button
+                    type="button"
+                    style="background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;"
+                    onclick="selectCustomerPointsRedeem(0)"
+                  >
+                    ยกเลิกใช้แต้ม (กลับไปใช้โปรฯ)
+                  </button>
+                ` : `
+                  <button
+                    type="button"
+                    style="background:#b45309; color:#fff; border:none; padding:5px 10px; border-radius:6px; font-size:11px; font-weight:800; cursor:pointer;"
+                    onclick="selectCustomerPointsRedeem(Math.min(${m.points}, Math.floor(${subtotal} * 4)))"
+                  >
+                    ใช้แต้มลดแทนโปรฯ
+                  </button>
+                `}
+              </div>
             </div>
             ${orderState.redeemPoints > 0 ? `
-              <div style="display:flex; justify-content:space-between; font-size:12px; color:#b45309; font-weight:700;">
-                <span>แลก ${orderState.redeemPoints} แต้ม</span>
+              <div style="display:flex; justify-content:space-between; font-size:12px; color:#b45309; font-weight:800; padding-top:4px; border-top:1px dashed #fde68a;">
+                <span>✓ เลือกใช้แต้มสะสม ${orderState.redeemPoints} แต้ม (ปิดโปรโมชั่นอื่น)</span>
                 <span>ส่วนลด -${formatMoney(disc)}</span>
               </div>
             ` : ''}
@@ -2749,15 +2827,33 @@ function renderPromoAndFeeSummary(subtotal, isCheckout) {
       </div>
     ` : ''}
 
-    ${promoEval.appliedList.length > 0 ? `
+    ${promoEval.eligibleList && promoEval.eligibleList.length > 0 ? `
       <div class="co-applied-promo-box">
-        <div style="font-weight:800; margin-bottom:4px;">🎉 โปรโมชั่นที่ได้รับอัตโนมัติ:</div>
-        ${promoEval.appliedList.map(p => `
-          <div style="display:flex; justify-content:space-between; gap:8px;">
-            <span>${p.icon} ${p.name}</span>
-            <b style="white-space:nowrap;">-${formatMoney(p.amount)}</b>
+        <div style="font-weight:800; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px;">
+          <span>🎁 โปรโมชั่นที่เข้าเกณฑ์ (${promoEval.eligibleList.length > 1 ? 'เลือกใช้ได้ 1 โปรฯ เท่านั้น' : 'ใช้สิทธิ์ได้ 1 โปรฯ ไม่ซ้อนกับแต้มลด'}):</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${promoEval.eligibleList.map(p => {
+            const isChosen = promoEval.chosenPromo && promoEval.chosenPromo.id === p.id;
+            return `
+              <label
+                style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:7px 10px; border-radius:8px; background:${isChosen ? '#dcfce7' : '#ffffff'}; border:1.5px solid ${isChosen ? '#16a34a' : '#cbd5e1'}; cursor:pointer;"
+                onclick="selectCustomerPromotion('${p.id}')"
+              >
+                <div style="display:flex; align-items:center; gap:6px; font-weight:${isChosen ? '800' : '600'}; color:#0f172a;">
+                  <input type="radio" name="co_promo_choice" ${isChosen ? 'checked' : ''} style="accent-color:#0d9488;" />
+                  <span>${p.icon} ${p.name}</span>
+                </div>
+                <b style="white-space:nowrap; color:${isChosen ? '#15803d' : '#64748b'};">-${formatMoney(p.amount)}</b>
+              </label>
+            `;
+          }).join('')}
+        </div>
+        ${orderState.redeemPoints > 0 ? `
+          <div style="font-size:11px; color:#b45309; font-weight:700; margin-top:6px;">
+            ⚠️ ขณะนี้คุณเลือกใช้แต้มสะสมลดราคาอยู่ (แตะเลือกโปรโมชั่นด้านบนหากต้องการเปลี่ยนมาใช้โปรฯ แทนแต้ม)
           </div>
-        `).join('')}
+        ` : ''}
       </div>
     ` : ''}
 

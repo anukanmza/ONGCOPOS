@@ -2075,7 +2075,13 @@ function setCheckoutRedeemPoints(pts) {
   state.checkoutRedeemPoints = requested;
   const ptsDisc = getPointsDiscountBaht(requested, remainingPayable);
   const net = Math.max(0, (co.subtotal || 0) + (Number(co.deliveryFee) || 0) - manualDisc - ptsDisc);
-  state.checkoutCashReceived = String(net);
+  if (requested > 0) {
+    // กฎ: ห้ามใช้โปรโมชั่นซ้อนกับแต้มลด! หากเลือกใช้แต้มลด ให้ล้างส่วนลดโปรโมชั่นออกทันที
+    state.checkoutDiscount = 0;
+    state.selectedCheckoutPromoId = null;
+  }
+  const finalDisc = requested > 0 ? 0 : manualDisc;
+  state.checkoutCashReceived = String(Math.max(0, (co.subtotal || 0) + (Number(co.deliveryFee) || 0) - finalDisc - ptsDisc));
   render();
 }
 
@@ -2324,7 +2330,7 @@ function adminHappyHourActive(pr) {
   return hhmm >= (pr.start_time || '00:00') && hhmm <= (pr.end_time || '23:59');
 }
 
-// คำนวณโปรโมชั่นอัตโนมัติ (ประเภท 1, 2, 3, 5) สำหรับหน้าเช็คบิลแคชเชียร์
+// คำนวณโปรโมชั่นอัตโนมัติ (ประเภท 1, 2, 3, 5) สำหรับหน้าเช็คบิลแคชเชียร์ (ห้ามใช้ซ้อนกัน เลือกได้เพียง 1 โปรฯ เท่านั้น)
 function evaluateAdminPromotions(items = [], subtotal = 0) {
   const prodMap = new Map((state.data?.products || []).map(p => [p.id, p]));
   const units = [];
@@ -2334,14 +2340,17 @@ function evaluateAdminPromotions(items = [], subtotal = 0) {
     for (let i = 0; i < qty; i++) units.push({ prod, price: Number(it.unit_price) || 0 });
   });
 
-  const appliedList = [];
-  let total = 0;
+  const eligibleList = [];
   getAdminPromotions().filter(p => p.is_active !== false).forEach(pr => {
     let disc = 0;
     let label = pr.name;
     if (pr.type === 'BILL_DISCOUNT') {
-      if (subtotal > 0 && subtotal >= (Number(pr.min_spend) || 0)) {
-        disc = pr.discount_type === 'PERCENT' ? Math.round(subtotal * (Number(pr.discount_value) || 0) / 100) : (Number(pr.discount_value) || 0);
+      const hasTargetRestrictions = (Array.isArray(pr.target_products) && pr.target_products.length > 0) || (Array.isArray(pr.target_categories) && pr.target_categories.length > 0);
+      const baseSpend = hasTargetRestrictions
+        ? units.filter(u => adminProdMatches(u.prod, pr.target_products, pr.target_categories)).reduce((s, u) => s + u.price, 0)
+        : subtotal;
+      if (baseSpend > 0 && baseSpend >= (Number(pr.min_spend) || 0)) {
+        disc = pr.discount_type === 'PERCENT' ? Math.round(baseSpend * (Number(pr.discount_value) || 0) / 100) : (Number(pr.discount_value) || 0);
       }
     } else if (pr.type === 'COMBO_SET') {
       const a = units.filter(u => adminProdMatches(u.prod, pr.combo_group_a_products, pr.combo_group_a_categories)).length;
@@ -2366,22 +2375,30 @@ function evaluateAdminPromotions(items = [], subtotal = 0) {
       }
     }
     if (disc > 0) {
-      total += disc;
-      appliedList.push({ id: pr.id, name: label, icon: pr.icon || '🎁', amount: disc });
+      eligibleList.push({ id: pr.id, name: label, icon: pr.icon || '🎁', amount: Math.min(subtotal, disc) });
     }
   });
-  return { totalDiscount: Math.min(subtotal, total), appliedList };
+
+  // เรียงโปรที่ลดเยอะสุดขึ้นก่อน
+  eligibleList.sort((a, b) => b.amount - a.amount);
+  const bestPromo = eligibleList[0] || null;
+  return {
+    totalDiscount: bestPromo ? bestPromo.amount : 0,
+    appliedList: eligibleList,
+    bestPromo
+  };
 }
 
-function applyAdminAutoPromoDiscount(amount) {
+function applyAdminAutoPromoDiscount(amount, promoId = null) {
   const co = state.checkoutModalOrder;
   if (!co) return;
+  // กฎ: ห้ามใช้โปรโมชั่นซ้อนกับโปรอื่น หรือซ้อนกับแต้มลด!
+  state.selectedCheckoutPromoId = promoId;
+  state.checkoutRedeemPoints = 0;
   state.checkoutDiscount = Math.max(0, Number(amount) || 0);
-  const rem = Math.max(0, co.subtotal - state.checkoutDiscount);
-  const pDisc = getPointsDiscountBaht(Number(state.checkoutRedeemPoints) || 0, rem);
-  state.checkoutCashReceived = String(Math.max(0, co.subtotal + (Number(co.deliveryFee) || 0) - state.checkoutDiscount - pDisc));
+  state.checkoutCashReceived = String(Math.max(0, co.subtotal + (Number(co.deliveryFee) || 0) - state.checkoutDiscount));
   render();
-  showToast(`🎁 ใส่ส่วนลดโปรโมชั่น ${formatMoney(amount)} เรียบร้อย`);
+  showToast(`🎁 เลือกใช้โปรโมชั่น ลด ${formatMoney(amount)} เรียบร้อย (ใช้ได้ 1 โปรฯ ไม่ซ้อนกับแต้ม)`);
 }
 
 async function saveAdminStoreConfig(cfg, successMsg) {
@@ -2486,7 +2503,9 @@ async function saveEditingPromotion() {
   if (!String(d.name || '').trim()) { showToast('⚠️ กรุณาตั้งชื่อโปรโมชั่น'); return; }
   if (d.type === 'PROMO_CODE' && !String(d.promo_code || '').trim()) { showToast('⚠️ กรุณากรอกโค้ดส่วนลด'); return; }
   const clean = { ...d };
-  delete clean._isEdit;
+  Object.keys(clean).forEach(k => {
+    if (k.startsWith('_')) delete clean[k];
+  });
   clean.name = String(clean.name).trim();
   if (clean.promo_code) clean.promo_code = String(clean.promo_code).trim().toUpperCase();
   ['min_spend', 'discount_value', 'buy_qty', 'reward_value', 'sort_order'].forEach(k => {
@@ -2553,13 +2572,19 @@ async function saveStoreConfigDraft() {
 
 function describePromotion(pr) {
   const catMap = new Map((state.data?.categories || []).map(c => [c.id, c.name]));
-  const cats = (ids) => (ids || []).map(id => catMap.get(id) || id).join(', ') || '-';
+  const prodMap = new Map((state.data?.products || []).map(p => [p.id, p.name]));
+  const targets = (catIds, prodIds) => {
+    const cList = (catIds || []).map(id => catMap.get(id) || id);
+    const pList = (prodIds || []).map(id => prodMap.get(id) || id);
+    const joined = [...cList, ...pList];
+    return joined.length > 0 ? joined.join(', ') : 'ทั้งร้าน';
+  };
   const discTxt = pr.discount_type === 'PERCENT' ? `${pr.discount_value}%` : formatMoney(pr.discount_value);
-  if (pr.type === 'BILL_DISCOUNT') return `ซื้อครบ ${formatMoney(pr.min_spend)} ลด ${discTxt}`;
-  if (pr.type === 'COMBO_SET') return `[${cats(pr.combo_group_a_categories)}] + [${cats(pr.combo_group_b_categories)}] ลดชุดละ ${formatMoney(pr.discount_value)}`;
-  if (pr.type === 'BUY_X_GET_Y') return `[${cats(pr.target_categories)}] ครบ ${pr.buy_qty} ชิ้น ${pr.reward_type === 'FREE_CHEAPEST' ? 'แถมชิ้นถูกสุดฟรี' : `ลด ${formatMoney(pr.reward_value)}`}`;
+  if (pr.type === 'BILL_DISCOUNT') return `[${targets(pr.target_categories, pr.target_products)}] ซื้อครบ ${formatMoney(pr.min_spend)} ลด ${discTxt}`;
+  if (pr.type === 'COMBO_SET') return `[${targets(pr.combo_group_a_categories, pr.combo_group_a_products)}] + [${targets(pr.combo_group_b_categories, pr.combo_group_b_products)}] ลดชุดละ ${formatMoney(pr.discount_value)}`;
+  if (pr.type === 'BUY_X_GET_Y') return `[${targets(pr.target_categories, pr.target_products)}] ครบ ${pr.buy_qty} ชิ้น ${pr.reward_type === 'FREE_CHEAPEST' ? 'แถมชิ้นถูกสุดฟรี' : `ลด ${formatMoney(pr.reward_value)}`}`;
   if (pr.type === 'PROMO_CODE') return `โค้ด ${pr.promo_code} • ขั้นต่ำ ${formatMoney(pr.min_spend)} • ลด ${discTxt}`;
-  if (pr.type === 'HAPPY_HOUR') return `${pr.start_time}-${pr.end_time} (${(pr.days_of_week || []).map(d => DAY_LABELS_TH[d]).join(' ')}) [${cats(pr.target_categories)}] ลด ${discTxt}`;
+  if (pr.type === 'HAPPY_HOUR') return `${pr.start_time}-${pr.end_time} (${(pr.days_of_week || []).map(d => DAY_LABELS_TH[d]).join(' ')}) [${targets(pr.target_categories, pr.target_products)}] ลด ${discTxt}`;
   return '';
 }
 
@@ -2568,13 +2593,53 @@ function renderPromoCategoryPicker(field) {
   const cats = state.data?.categories || [];
   const selected = Array.isArray(d[field]) ? d[field] : [];
   return `
-    <div style="display:flex; flex-wrap:wrap; gap:6px; padding:8px; border:1px solid var(--ttl-rule); border-radius:8px; background:var(--ttl-paper); max-height:120px; overflow-y:auto;">
+    <div style="display:flex; flex-wrap:wrap; gap:6px; padding:8px; border:1px solid var(--ttl-rule); border-radius:8px; background:var(--ttl-paper); max-height:110px; overflow-y:auto;">
       ${cats.length === 0 ? '<span style="font-size:12px; color:var(--ttl-muted);">ยังไม่มีหมวดหมู่</span>' : cats.map(c => `
-        <label style="display:flex; align-items:center; gap:4px; font-size:12px; padding:3px 8px; border-radius:999px; border:1px solid var(--ttl-rule); cursor:pointer;">
-          <input type="checkbox" ${selected.includes(c.id) ? 'checked' : ''} onchange="togglePromoArrayValue('${field}', '${c.id}')" />
-          ${c.name}
+        <label style="display:flex; align-items:center; gap:4px; font-size:12px; padding:3px 8px; border-radius:999px; border:1px solid ${selected.includes(c.id) ? 'var(--ttl-accent)' : 'var(--ttl-rule)'}; background:${selected.includes(c.id) ? 'color-mix(in srgb, var(--ttl-accent) 12%, var(--ttl-paper))' : 'var(--ttl-paper)'}; font-weight:${selected.includes(c.id) ? '700' : '500'}; cursor:pointer;">
+          <input type="checkbox" ${selected.includes(c.id) ? 'checked' : ''} onchange="togglePromoArrayValue('${field}', '${c.id}'); render();" />
+          📁 ${c.name}
         </label>
       `).join('')}
+    </div>
+  `;
+}
+
+function renderPromoProductPicker(field) {
+  const d = state.editingPromotion;
+  const allProds = state.data?.products || [];
+  const selected = Array.isArray(d[field]) ? d[field] : [];
+  const searchKey = `_search_${field}`;
+  const query = String(d[searchKey] || '').trim().toLowerCase();
+  const filtered = query
+    ? allProds.filter(p => (p.name || '').toLowerCase().includes(query))
+    : allProds;
+
+  return `
+    <div style="border:1px solid var(--ttl-rule); border-radius:8px; background:var(--ttl-paper); padding:8px; margin-top:6px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+        <span style="font-size:11.5px; font-weight:700; color:var(--ttl-accent);">
+          🍽️ เลือกผูกเฉพาะรายสินค้า / เมนู (${selected.length > 0 ? `เลือกแล้ว ${selected.length} รายการ` : 'ยังไม่ได้ระบุรายเมนู'})
+        </span>
+        <input
+          type="text"
+          class="ttl-input"
+          style="height:26px; width:190px; font-size:11.5px; padding:0 8px;"
+          placeholder="🔍 ค้นหาชื่อเมนู/สินค้า..."
+          value="${String(d[searchKey] || '').replace(/"/g, '&quot;')}"
+          oninput="state.editingPromotion['${searchKey}']=this.value; render();"
+        />
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:5px; max-height:135px; overflow-y:auto; padding:2px;">
+        ${filtered.length === 0 ? '<span style="font-size:11.5px; color:var(--ttl-muted);">ไม่พบรายการสินค้า</span>' : filtered.map(p => {
+          const isSel = selected.includes(p.id);
+          return `
+            <label style="display:flex; align-items:center; gap:4px; font-size:11.5px; padding:3px 8px; border-radius:999px; border:1px solid ${isSel ? 'var(--ttl-gold)' : 'var(--ttl-rule)'}; background:${isSel ? 'color-mix(in srgb, var(--ttl-gold) 18%, var(--ttl-paper))' : 'var(--ttl-page)'}; font-weight:${isSel ? '700' : '500'}; cursor:pointer;">
+              <input type="checkbox" ${isSel ? 'checked' : ''} onchange="togglePromoArrayValue('${field}', '${p.id}'); render();" />
+              ${p.item_type === 'FOOD' ? '🍳' : '📦'} ${p.name} (${formatMoney(p.price)})
+            </label>
+          `;
+        }).join('')}
+      </div>
     </div>
   `;
 }
@@ -2612,12 +2677,25 @@ function renderPromotionEditorForm() {
         <label style="${lbl}">ยอดซื้อขั้นต่ำ (บาท)</label>
         <input type="number" min="0" class="ttl-input" value="${d.min_spend ?? 0}" oninput="state.editingPromotion.min_spend=this.value;" />
       </div>
+      <div>
+        <label style="${lbl}">ผูกหมวดหมู่ หรือ รายสินค้า/เมนู (หากไม่เลือกเลย = นับรวมทุกสินค้าทั้งร้าน)</label>
+        ${renderPromoCategoryPicker('target_categories')}
+        ${renderPromoProductPicker('target_products')}
+      </div>
       ${discountFields}
     `;
   } else if (d.type === 'COMBO_SET') {
     typeFields = `
-      <div><label style="${lbl}">กลุ่ม A (เช่น อาหารจานหลัก)</label>${renderPromoCategoryPicker('combo_group_a_categories')}</div>
-      <div><label style="${lbl}">กลุ่ม B (เช่น เครื่องดื่มในตู้แช่)</label>${renderPromoCategoryPicker('combo_group_b_categories')}</div>
+      <div>
+        <label style="${lbl}">กลุ่ม A: เลือกหมวดหมู่ หรือ ระบุรายเมนู/สินค้า (เช่น ข้าวกะเพรา, อาหารจานหลัก)</label>
+        ${renderPromoCategoryPicker('combo_group_a_categories')}
+        ${renderPromoProductPicker('combo_group_a_products')}
+      </div>
+      <div>
+        <label style="${lbl}">กลุ่ม B: เลือกหมวดหมู่ หรือ ระบุรายเมนู/สินค้าที่มาจับคู่ (เช่น โค้ก, เครื่องดื่มในตู้แช่)</label>
+        ${renderPromoCategoryPicker('combo_group_b_categories')}
+        ${renderPromoProductPicker('combo_group_b_products')}
+      </div>
       <div>
         <label style="${lbl}">ส่วนลดต่อชุด (บาท)</label>
         <input type="number" min="0" class="ttl-input" value="${d.discount_value ?? 0}" oninput="state.editingPromotion.discount_value=this.value; state.editingPromotion.discount_type='FIXED';" />
@@ -2626,7 +2704,11 @@ function renderPromotionEditorForm() {
     `;
   } else if (d.type === 'BUY_X_GET_Y') {
     typeFields = `
-      <div><label style="${lbl}">หมวดหมู่สินค้าที่ร่วมรายการ</label>${renderPromoCategoryPicker('target_categories')}</div>
+      <div>
+        <label style="${lbl}">เลือกหมวดหมู่ หรือ ระบุรายสินค้า/เมนูที่ร่วมรายการ</label>
+        ${renderPromoCategoryPicker('target_categories')}
+        ${renderPromoProductPicker('target_products')}
+      </div>
       <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
         <div>
           <label style="${lbl}">ซื้อครบ (ชิ้น)</label>
@@ -2656,12 +2738,16 @@ function renderPromotionEditorForm() {
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
           ${DAY_LABELS_TH.map((dl, i) => `
             <label style="display:flex; align-items:center; gap:3px; font-size:12px; padding:3px 8px; border:1px solid var(--ttl-rule); border-radius:999px; cursor:pointer;">
-              <input type="checkbox" ${(d.days_of_week || []).map(Number).includes(i) ? 'checked' : ''} onchange="togglePromoArrayValue('days_of_week', ${i})" /> ${dl}
+              <input type="checkbox" ${(d.days_of_week || []).map(Number).includes(i) ? 'checked' : ''} onchange="togglePromoArrayValue('days_of_week', ${i}); render();" /> ${dl}
             </label>
           `).join('')}
         </div>
       </div>
-      <div><label style="${lbl}">หมวดหมู่ที่ร่วมรายการ</label>${renderPromoCategoryPicker('target_categories')}</div>
+      <div>
+        <label style="${lbl}">เลือกหมวดหมู่ หรือ ระบุรายสินค้า/เมนูที่ร่วมรายการ Happy Hour</label>
+        ${renderPromoCategoryPicker('target_categories')}
+        ${renderPromoProductPicker('target_products')}
+      </div>
       ${discountFields}
     `;
   }
@@ -5716,25 +5802,36 @@ function renderModals() {
             `}
           </div>
 
-          <!-- โปรโมชั่นอัตโนมัติ & ค่าส่งเดลิเวอรี่ -->
+          <!-- โปรโมชั่นอัตโนมัติ & ค่าส่งเดลิเวอรี่ (เลือกใช้ได้เพียง 1 โปรฯ เท่านั้น ไม่ซ้อนกับโปรอื่นและแต้มลด) -->
           ${(coDeliveryFee > 0 || autoPromo.appliedList.length > 0) ? `
             <div style="padding:10px 12px; border-radius:12px; background:#f0fdf4; border:1px solid #86efac; margin-bottom:12px; font-size:12.5px; color:#166534;">
               ${coDeliveryFee > 0 ? `
-                <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:6px; padding-bottom:6px; border-bottom:1px dashed #86efac;">
                   <span>🛵 ค่าส่งเดลิเวอรี่ (บวกเข้ายอดบิล)</span><b>+${formatMoney(coDeliveryFee)}</b>
                 </div>
               ` : ''}
               ${autoPromo.appliedList.length > 0 ? `
-                <div style="font-weight:800; margin:4px 0;">🎁 โปรโมชั่นที่เข้าเงื่อนไข (รวม -${formatMoney(autoPromo.totalDiscount)}):</div>
-                ${autoPromo.appliedList.map(p => `<div style="display:flex; justify-content:space-between;"><span>${p.icon} ${p.name}</span><b>-${formatMoney(p.amount)}</b></div>`).join('')}
-                <button
-                  type="button"
-                  class="ttl-btn ttl-btn-xs ttl-btn-good"
-                  style="margin-top:6px;"
-                  onclick="applyAdminAutoPromoDiscount(${autoPromo.totalDiscount})"
-                >
-                  ✓ ใช้ส่วนลดโปรฯ ${formatMoney(autoPromo.totalDiscount)} เป็นส่วนลดท้ายบิล
-                </button>
+                <div style="font-weight:800; margin:4px 0 6px;">🎁 โปรโมชั่นที่เข้าเกณฑ์ (เลือกใช้ได้ 1 สิทธิ์ ไม่ใช้ซ้อนกับแต้มลด):</div>
+                <div style="display:flex; flex-direction:column; gap:6px;">
+                  ${autoPromo.appliedList.map(p => {
+                    const isSelected = state.selectedCheckoutPromoId === p.id && Number(state.checkoutDiscount) === p.amount && redeemPts === 0;
+                    return `
+                      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:6px 8px; border-radius:8px; background:${isSelected ? '#dcfce7' : '#ffffff'}; border:1.5px solid ${isSelected ? '#16a34a' : '#bbf7d0'};">
+                        <span style="font-weight:${isSelected ? '800' : '600'};">${p.icon} ${p.name}</span>
+                        <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+                          <b>-${formatMoney(p.amount)}</b>
+                          <button
+                            type="button"
+                            class="ttl-btn ttl-btn-xs ${isSelected ? 'ttl-btn-dark' : 'ttl-btn-good'}"
+                            onclick="${isSelected ? `applyAdminAutoPromoDiscount(0, null)` : `applyAdminAutoPromoDiscount(${p.amount}, '${p.id}')`}"
+                          >
+                            ${isSelected ? '✓ เลือกอยู่ (กดยกเลิก)' : 'ใช้โปรฯ นี้'}
+                          </button>
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
               ` : ''}
             </div>
           ` : ''}
@@ -5769,6 +5866,8 @@ function renderModals() {
                 value="${state.checkoutDiscount}"
                 oninput="
                   state.checkoutDiscount = this.value;
+                  state.selectedCheckoutPromoId = null;
+                  if ((Number(this.value) || 0) > 0) state.checkoutRedeemPoints = 0;
                   const mDisc = Math.max(0, Number(this.value) || 0);
                   const rem = Math.max(0, ${co.subtotal} - mDisc);
                   const pDisc = getPointsDiscountBaht(Number(state.checkoutRedeemPoints) || 0, rem);
@@ -8509,28 +8608,29 @@ function render() {
             </button>
           </nav>
 
-          <div class="ttl-nav-end" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div class="ttl-nav-end" style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
             <button
               type="button"
               class="ttl-btn ttl-btn-sm"
-              style="height:30px; padding:0 10px; font-size:11.5px; font-weight:800; color:#fff; border:none; background:${getAdminStoreConfig().is_open ? '#16a34a' : '#dc2626'};"
+              style="height:28px; padding:0 9px; font-size:11.5px; font-weight:800; color:#fff; border:none; border-radius:999px; background:${getAdminStoreConfig().is_open ? '#16a34a' : '#dc2626'};"
               title="กดเพื่อสลับสถานะเปิด/ปิดรับออเดอร์ออนไลน์ของหน้าร้านลูกค้า"
               onclick="toggleStoreOpenQuick()"
             >
-              ${getAdminStoreConfig().is_open ? '🟢 เปิดร้านรับออเดอร์' : '🔴 ปิดร้านชั่วคราว'}
+              ${getAdminStoreConfig().is_open ? '🟢 เปิดร้าน' : '🔴 ปิดร้าน'}
             </button>
             <button
               type="button"
               class="ttl-btn ttl-btn-sm ttl-btn-ghost"
-              style="height:30px; padding:0 10px; font-size:11.5px; font-weight:800;"
+              style="height:28px; padding:0 9px; font-size:11.5px; font-weight:800; border-radius:999px;"
+              title="ตั้งค่าโปรโมชั่น, อัตราค่าส่งเดลิเวอรี่ขั้นบันได และเปิด-ปิดร้าน"
               onclick="openPromotionsModal()"
             >
-              🎁 โปรฯ & ค่าส่ง
+              🎁 โปรฯ
             </button>
             <button
               type="button"
               class="ttl-btn ttl-btn-sm ${state.backendMode === 'CLOUD_API' ? 'ttl-btn-good' : 'ttl-btn-danger-outline'}"
-              style="height:30px; padding:0 10px; font-size:11.5px; font-weight:700;"
+              style="height:28px; padding:0 8px; font-size:11px; font-weight:800; border-radius:999px;"
               title="${state.backendMode === 'CLOUD_API' ? 'เชื่อมต่อฐานข้อมูลกลางแล้ว กดเพื่อซิงค์ข้อมูลล่าสุดทันที' : `ขณะนี้อยู่ในโหมดบันทึกในเครื่อง (ไม่ซิงค์ข้ามอุปกรณ์) ${state.lastApiError ? 'สาเหตุ: ' + state.lastApiError : ''}`}"
               onclick="
                 smartAutoSync('all', true).then((updated) => {
@@ -8549,14 +8649,18 @@ function render() {
               "
             >
               ${state.backendMode === 'CLOUD_API'
-                ? (state.data?.backendSource === 'SUPABASE_CLOUD' ? '☁️ ซิงค์ออนไลน์ (Supabase)' : '🖥️ เซิร์ฟเวอร์กลาง')
-                : '⚠️ โหมดในเครื่อง (ไม่ซิงค์)'}
+                ? '☁️ ซิงค์'
+                : '⚠️ ออฟไลน์'}
             </button>
-            <div class="ttl-seg" role="group" aria-label="Theme">
-              <button type="button" aria-selected="${state.theme === 'teal'}" onclick="state.theme='teal'; render();">Teal</button>
-              <button type="button" aria-selected="${state.theme === 'plum'}" onclick="state.theme='plum'; render();">Plum</button>
-              <button type="button" aria-selected="${state.theme === 'graphite'}" onclick="state.theme='graphite'; render();">Dark</button>
-            </div>
+            <button
+              type="button"
+              class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+              style="height:28px; width:28px; padding:0; font-size:13px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center;"
+              title="สลับธีมสี (ปัจจุบัน: ${state.theme === 'teal' ? 'Teal' : (state.theme === 'plum' ? 'Plum' : 'Dark')})"
+              onclick="state.theme = state.theme === 'teal' ? 'plum' : (state.theme === 'plum' ? 'graphite' : 'teal'); render();"
+            >
+              🎨
+            </button>
           </div>
         </div>
       </header>
