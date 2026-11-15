@@ -9,6 +9,97 @@ const DEFAULT_STORE_ZONES = [
   { id: 'ZONE-BAR-1', name: 'บาร์น้ำชง & เครื่องดื่มพิเศษ', type: 'BAR', icon: '🥤', pixel_sprite: 'bar', custom_image_url: '', category_ids: [], description: 'ชา กาแฟโบราณ เครื่องดื่มชง และเมนูพิเศษ', sort_order: 4, is_active: true }
 ];
 
+const DEFAULT_STORE_CONFIG = {
+  is_open: true,
+  closed_message: 'ขออภัย ขณะนี้ร้านปิดรับออเดอร์ชั่วคราว กรุณาแวะมาใหม่ในเวลาทำการครับ 🙏',
+  delivery_enabled: true,
+  takeaway_enabled: true,
+  dine_in_enabled: true,
+  delivery_fee_tiers: [
+    { id: 'TIER-1', min_amount: 0, max_amount: 99, fee: 20, label: 'สั่งต่ำกว่า ฿100' },
+    { id: 'TIER-2', min_amount: 100, max_amount: 199, fee: 10, label: 'สั่ง ฿100 - ฿199' },
+    { id: 'TIER-3', min_amount: 200, max_amount: 999999, fee: 0, label: 'สั่ง ฿200 ขึ้นไป (ส่งฟรี!)' }
+  ]
+};
+
+const DEFAULT_PROMOTIONS = [
+  {
+    id: 'PROMO-BILL-150',
+    name: 'อิ่มคุ้ม! สั่งครบ ฿150 ลดทันที ฿15',
+    description: 'สั่งอาหารหรือของชำครบ 150 บาทขึ้นไป ลดท้ายบิลทันที 15 บาท',
+    type: 'BILL_DISCOUNT',
+    icon: '🎉',
+    badge_text: 'ลด ฿15',
+    is_active: true,
+    min_spend: 150,
+    discount_type: 'FIXED',
+    discount_value: 15,
+    sort_order: 1
+  },
+  {
+    id: 'PROMO-COMBO-MEAL',
+    name: 'คู่หูอิ่มอร่อย (อาหารจานหลัก + เครื่องดื่ม) ลด ฿10',
+    description: 'สั่งอาหารตามสั่ง/ก๋วยเตี๋ยว คู่กับเครื่องดื่มเย็นในตู้แช่ ลดทันทีชุดละ 10 บาท',
+    type: 'COMBO_SET',
+    icon: '🍛🥤',
+    badge_text: 'จับคู่ลด ฿10',
+    is_active: true,
+    combo_group_a_categories: ['CAT-RICE', 'CAT-NOODLE'],
+    combo_group_a_products: [],
+    combo_group_b_categories: ['CAT-DRINK'],
+    combo_group_b_products: [],
+    discount_type: 'FIXED',
+    discount_value: 10,
+    sort_order: 2
+  },
+  {
+    id: 'PROMO-BUY3-SNACK',
+    name: 'ขนมขบเคี้ยว ซื้อครบ 3 ชิ้น ลดทันที ฿5',
+    description: 'หยิบขนมขบเคี้ยวจากชั้นวางครบทุกๆ 3 ชิ้น รับส่วนลดทันที 5 บาท',
+    type: 'BUY_X_GET_Y',
+    icon: '🧺',
+    badge_text: '3 ชิ้นลด ฿5',
+    is_active: true,
+    target_categories: ['CAT-SNACK'],
+    target_products: [],
+    buy_qty: 3,
+    reward_type: 'DISCOUNT_FIXED',
+    reward_value: 5,
+    sort_order: 3
+  },
+  {
+    id: 'PROMO-CODE-ONGCO20',
+    name: 'โค้ดส่วนลด ONGCO20 ลด ฿20',
+    description: 'กรอกโค้ด ONGCO20 เมื่อสั่งครบ 200 บาท ลดเพิ่มทันที 20 บาท',
+    type: 'PROMO_CODE',
+    icon: '🎟️',
+    badge_text: 'โค้ด ONGCO20',
+    promo_code: 'ONGCO20',
+    is_active: true,
+    min_spend: 200,
+    discount_type: 'FIXED',
+    discount_value: 20,
+    sort_order: 4
+  },
+  {
+    id: 'PROMO-HAPPY-HOUR',
+    name: 'Happy Hour บ่ายคลายร้อน เครื่องดื่มลด 10%',
+    description: 'ช่วงเวลา 14:00 - 17:00 น. เครื่องดื่มทุกชนิดลดทันที 10%',
+    type: 'HAPPY_HOUR',
+    icon: '⏰',
+    badge_text: 'Happy Hour -10%',
+    is_active: true,
+    start_time: '14:00',
+    end_time: '17:00',
+    days_of_week: [0, 1, 2, 3, 4, 5, 6],
+    target_categories: ['CAT-DRINK'],
+    target_products: [],
+    discount_type: 'PERCENT',
+    discount_value: 10,
+    sort_order: 5
+  }
+];
+
 const orderState = {
   viewMode: 'PIXEL', // 'PIXEL' (แบบ C: Virtual Storefront) | 'LIST' (รายการเมนูด่วน)
   orderMode: 'DELIVERY', // 'DELIVERY' | 'DINE_IN' | 'TAKEAWAY'
@@ -33,6 +124,10 @@ const orderState = {
   activeZoneCategory: 'ALL', // กรองหมวดหมู่ย่อยในตู้นั้น
   activeCategory: 'ALL',
   searchQuery: '',
+  // Promotions & Voucher State
+  promoCodeInput: '',
+  appliedPromoCode: '',
+  activePromoFilterId: null,
   selectedDeliveryPointId: 'DP-03', // Default: ศาลาขาว ตลาดอินโดจีน
   customerName: '',
   customerPhone: '',
@@ -160,6 +255,305 @@ function getPointsDiscountBaht(pts) {
   return Math.floor(Math.max(0, pts) / unit) * baht;
 }
 
+// ==========================================================================
+// STORE CONFIG, TIERED DELIVERY FEE & 5-TYPE PROMOTIONS ENGINE
+// ==========================================================================
+
+function getStoreConfig() {
+  const raw = orderState.data?.storeConfig;
+  if (!raw || typeof raw !== 'object') return DEFAULT_STORE_CONFIG;
+  return {
+    ...DEFAULT_STORE_CONFIG,
+    ...raw,
+    delivery_fee_tiers: Array.isArray(raw.delivery_fee_tiers) && raw.delivery_fee_tiers.length > 0
+      ? raw.delivery_fee_tiers
+      : DEFAULT_STORE_CONFIG.delivery_fee_tiers
+  };
+}
+
+function getAllPromotions() {
+  const raw = orderState.data?.promotions;
+  const list = Array.isArray(raw) && raw.length > 0 ? raw : DEFAULT_PROMOTIONS;
+  return list.slice().sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+}
+
+function getActivePromotions() {
+  return getAllPromotions().filter(p => p && p.is_active !== false);
+}
+
+function isHappyHourCurrentlyActive(promo) {
+  if (!promo || promo.type !== 'HAPPY_HOUR') return true;
+  const now = new Date();
+  const day = now.getDay();
+  if (Array.isArray(promo.days_of_week) && promo.days_of_week.length > 0) {
+    if (!promo.days_of_week.map(Number).includes(day)) return false;
+  }
+  const hhmm = now.toTimeString().slice(0, 5);
+  const start = promo.start_time || '00:00';
+  const end = promo.end_time || '23:59';
+  return hhmm >= start && hhmm <= end;
+}
+
+function getDeliveryFeeInfo(subtotal = getCartSubtotal()) {
+  if (orderState.orderMode !== 'DELIVERY') {
+    return { fee: 0, matchedTier: null, nextBetterTier: null, hint: '', tiers: [] };
+  }
+  const cfg = getStoreConfig();
+  const tiers = (cfg.delivery_fee_tiers || []).slice().sort((a, b) => (Number(a.min_amount) || 0) - (Number(b.min_amount) || 0));
+  if (tiers.length === 0) {
+    return { fee: 0, matchedTier: null, nextBetterTier: null, hint: '', tiers: [] };
+  }
+
+  let matched = tiers[0];
+  for (const t of tiers) {
+    const min = Number(t.min_amount) || 0;
+    const max = (t.max_amount !== undefined && t.max_amount !== null && t.max_amount !== '') ? Number(t.max_amount) : 9999999;
+    if (subtotal >= min && subtotal <= max) {
+      matched = t;
+      break;
+    }
+    if (subtotal >= min) {
+      matched = t;
+    }
+  }
+
+  const fee = Math.max(0, Number(matched?.fee) || 0);
+  const nextBetterTier = tiers.find(t => (Number(t.min_amount) || 0) > subtotal && (Number(t.fee) || 0) < fee) || null;
+  let hint = '';
+  if (subtotal > 0) {
+    if (fee === 0) {
+      hint = '🎉 ยอดสั่งซื้อถึงเกณฑ์ ได้รับสิทธิ์ส่งฟรี!';
+    } else if (nextBetterTier) {
+      const diff = Math.max(1, (Number(nextBetterTier.min_amount) || 0) - subtotal);
+      const nextFee = Number(nextBetterTier.fee) || 0;
+      hint = nextFee === 0
+        ? `🛵 สั่งเพิ่มอีกเพียง ${formatMoney(diff)} ได้รับสิทธิ์ ส่งฟรี!`
+        : `🛵 สั่งเพิ่มอีก ${formatMoney(diff)} ค่าส่งลดเหลือเพียง ${formatMoney(nextFee)}!`;
+    }
+  }
+
+  return { fee, matchedTier: matched, nextBetterTier, hint, tiers };
+}
+
+function isProductInListOrCat(prod, prodIds = [], catIds = []) {
+  if (!prod) return false;
+  if (Array.isArray(prodIds) && prodIds.includes(prod.id)) return true;
+  if (Array.isArray(catIds) && catIds.includes(prod.category_id)) return true;
+  return false;
+}
+
+function getProductPromoBadges(product) {
+  if (!product) return [];
+  const activePromos = getActivePromotions();
+  const badges = [];
+  for (const pr of activePromos) {
+    if (pr.type === 'COMBO_SET') {
+      const inA = isProductInListOrCat(product, pr.combo_group_a_products, pr.combo_group_a_categories);
+      const inB = isProductInListOrCat(product, pr.combo_group_b_products, pr.combo_group_b_categories);
+      if (inA || inB) {
+        badges.push(pr.badge_text || '🔥 จับคู่ลด');
+      }
+    } else if (pr.type === 'BUY_X_GET_Y') {
+      if (isProductInListOrCat(product, pr.target_products, pr.target_categories)) {
+        badges.push(pr.badge_text || `🔥 ซื้อ ${pr.buy_qty || 3} ลดคุ้ม`);
+      }
+    } else if (pr.type === 'HAPPY_HOUR') {
+      if (isProductInListOrCat(product, pr.target_products, pr.target_categories)) {
+        const isNow = isHappyHourCurrentlyActive(pr);
+        badges.push(isNow ? (pr.badge_text || '⏰ Happy Hour') : `⏰ ${pr.start_time || '14:00'}-${pr.end_time || '17:00'}`);
+      }
+    }
+  }
+  return badges;
+}
+
+// คำนวณโปรโมชั่นทั้ง 5 รูปแบบอัตโนมัติในตะกร้า (Approach C: Smart Cart + Upsell Hints)
+function evaluateCustomerPromotions() {
+  const subtotal = getCartSubtotal();
+  const activePromos = getActivePromotions();
+  const productsMap = new Map((orderState.data?.products || []).map(p => [p.id, p]));
+
+  const expandedItems = [];
+  orderState.cart.forEach(it => {
+    const prod = productsMap.get(it.product_id) || { id: it.product_id, name: it.name, category_id: it.category_id || '', price: it.unit_price };
+    const modExtra = (it.modifiers || []).reduce((s, m) => s + (Number(m.extra_price) || 0), 0);
+    const unitFullPrice = (Number(it.unit_price) || 0) + modExtra;
+    const qty = Number(it.quantity) || 0;
+    for (let i = 0; i < qty; i++) {
+      expandedItems.push({
+        product_id: it.product_id,
+        name: it.name,
+        category_id: prod.category_id || '',
+        unit_price: unitFullPrice,
+        prod
+      });
+    }
+  });
+
+  const appliedList = [];
+  const upsellHints = [];
+  let totalDiscount = 0;
+  let codeError = '';
+
+  for (const pr of activePromos) {
+    // 1. BILL_DISCOUNT (ส่วนลดท้ายบิลตามยอดซื้อขั้นต่ำ)
+    if (pr.type === 'BILL_DISCOUNT') {
+      const minSpend = Number(pr.min_spend) || 0;
+      if (subtotal >= minSpend && subtotal > 0) {
+        const disc = pr.discount_type === 'PERCENT'
+          ? Math.round((subtotal * (Number(pr.discount_value) || 0)) / 100)
+          : (Number(pr.discount_value) || 0);
+        if (disc > 0) {
+          totalDiscount += disc;
+          appliedList.push({ id: pr.id, name: pr.name, icon: pr.icon || '🎉', amount: disc });
+        }
+      } else if (subtotal > 0 && subtotal < minSpend && (minSpend - subtotal) <= 120) {
+        const diff = minSpend - subtotal;
+        const rewardTxt = pr.discount_type === 'PERCENT' ? `ลด ${pr.discount_value}%` : `ลดทันที ${formatMoney(pr.discount_value)}`;
+        upsellHints.push(`💡 สั่งเพิ่มอีกเพียง <b>${formatMoney(diff)}</b> รับสิทธิ์ "${pr.name}" (${rewardTxt})!`);
+      }
+    }
+
+    // 2. COMBO_SET (โปรจับคู่อิ่มคุ้มข้ามหมวด)
+    else if (pr.type === 'COMBO_SET') {
+      const groupA = expandedItems.filter(x => isProductInListOrCat(x.prod, pr.combo_group_a_products, pr.combo_group_a_categories));
+      const groupB = expandedItems.filter(x => isProductInListOrCat(x.prod, pr.combo_group_b_products, pr.combo_group_b_categories));
+      const pairs = Math.min(groupA.length, groupB.length);
+      if (pairs > 0) {
+        const perSet = Number(pr.discount_value) || 10;
+        const disc = pairs * perSet;
+        if (disc > 0) {
+          totalDiscount += disc;
+          appliedList.push({ id: pr.id, name: `${pr.name} (×${pairs} ชุด)`, icon: pr.icon || '🍛🥤', amount: disc });
+        }
+      } else if (groupA.length > 0 && groupB.length === 0) {
+        upsellHints.push(`💡 คุณมีเมนูหลักในตะกร้าแล้ว! หยิบคู่ <b>เครื่องดื่มที่ร่วมรายการ</b> เพิ่มอีก 1 ชิ้น รับส่วนลดจับคู่ทันที <b>${formatMoney(pr.discount_value)}</b>!`);
+      } else if (groupB.length > 0 && groupA.length === 0) {
+        upsellHints.push(`💡 สั่งคู่กับ <b>อาหารจานหลัก</b> เพิ่มอีก 1 จาน รับส่วนลดจับคู่ทันที <b>${formatMoney(pr.discount_value)}</b>!`);
+      }
+    }
+
+    // 3. BUY_X_GET_Y (ซื้อครบ X ชิ้น ลดทันที / แถมฟรี)
+    else if (pr.type === 'BUY_X_GET_Y') {
+      const matched = expandedItems
+        .filter(x => isProductInListOrCat(x.prod, pr.target_products, pr.target_categories))
+        .sort((a, b) => a.unit_price - b.unit_price);
+      const buyQty = Math.max(2, Number(pr.buy_qty) || 3);
+      const sets = Math.floor(matched.length / buyQty);
+      if (sets > 0) {
+        let disc = 0;
+        if (pr.reward_type === 'FREE_CHEAPEST') {
+          for (let i = 0; i < sets; i++) {
+            disc += matched[i]?.unit_price || 0;
+          }
+        } else {
+          disc = sets * (Number(pr.reward_value || pr.discount_value) || 5);
+        }
+        if (disc > 0) {
+          totalDiscount += disc;
+          appliedList.push({ id: pr.id, name: `${pr.name} (×${sets} ชุด)`, icon: pr.icon || '🧺', amount: disc });
+        }
+      } else if (matched.length > 0 && (buyQty - matched.length) <= 2) {
+        const need = buyQty - matched.length;
+        upsellHints.push(`💡 หยิบสินค้าโปรฯ "${pr.name}" เพิ่มอีก <b>${need} ชิ้น</b> รับส่วนลดทันที!`);
+      }
+    }
+
+    // 4. HAPPY_HOUR (โปรช่วงเวลาพิเศษ)
+    else if (pr.type === 'HAPPY_HOUR') {
+      if (isHappyHourCurrentlyActive(pr)) {
+        const matched = expandedItems.filter(x => isProductInListOrCat(x.prod, pr.target_products, pr.target_categories));
+        if (matched.length > 0) {
+          const matchedSum = matched.reduce((s, x) => s + x.unit_price, 0);
+          const disc = pr.discount_type === 'PERCENT'
+            ? Math.round((matchedSum * (Number(pr.discount_value) || 0)) / 100)
+            : matched.length * (Number(pr.discount_value) || 0);
+          if (disc > 0) {
+            totalDiscount += disc;
+            appliedList.push({ id: pr.id, name: pr.name, icon: pr.icon || '⏰', amount: disc });
+          }
+        }
+      }
+    }
+
+    // 5. PROMO_CODE (โค้ดส่วนลด / คูปอง)
+    else if (pr.type === 'PROMO_CODE') {
+      const targetCode = String(pr.promo_code || '').trim().toUpperCase();
+      const userCode = String(orderState.appliedPromoCode || '').trim().toUpperCase();
+      if (targetCode && userCode && targetCode === userCode) {
+        const minSpend = Number(pr.min_spend) || 0;
+        if (subtotal >= minSpend) {
+          const disc = pr.discount_type === 'PERCENT'
+            ? Math.round((subtotal * (Number(pr.discount_value) || 0)) / 100)
+            : (Number(pr.discount_value) || 0);
+          if (disc > 0) {
+            totalDiscount += disc;
+            appliedList.push({ id: pr.id, name: `โค้ด ${targetCode}: ${pr.name}`, icon: pr.icon || '🎟️', amount: disc });
+          }
+        } else {
+          codeError = `โค้ด ${targetCode} ต้องมียอดสั่งซื้อขั้นต่ำ ${formatMoney(minSpend)} (ขาดอีก ${formatMoney(minSpend - subtotal)})`;
+        }
+      }
+    }
+  }
+
+  // ตรวจสอบกรณีลูกค้ากรอกโค้ดที่ไม่พบในระบบ
+  if (orderState.appliedPromoCode) {
+    const uCode = String(orderState.appliedPromoCode).trim().toUpperCase();
+    const exists = activePromos.some(p => p.type === 'PROMO_CODE' && String(p.promo_code || '').trim().toUpperCase() === uCode);
+    if (!exists) {
+      codeError = `ไม่พบโค้ดส่วนลด "${uCode}" หรือโค้ดหมดอายุแล้ว`;
+    }
+  }
+
+  totalDiscount = Math.min(subtotal, Math.max(0, totalDiscount));
+  return { totalDiscount, appliedList, upsellHints, codeError };
+}
+
+function applyCustomerPromoCode(codeStr) {
+  const clean = String(codeStr !== undefined ? codeStr : orderState.promoCodeInput || '').trim().toUpperCase();
+  if (!clean) {
+    orderState.appliedPromoCode = '';
+    orderState.promoCodeInput = '';
+    renderCartAndModals();
+    return;
+  }
+  orderState.promoCodeInput = clean;
+  orderState.appliedPromoCode = clean;
+  const evalRes = evaluateCustomerPromotions();
+  if (evalRes.codeError) {
+    showOrderToast(`⚠️ ${evalRes.codeError}`, false);
+  } else {
+    showOrderToast(`🎉 ใช้โค้ดส่วนลด "${clean}" เรียบร้อยแล้ว!`, false);
+  }
+  renderCartAndModals();
+}
+
+function handleShowcasePromoClick(promoId) {
+  const promo = getActivePromotions().find(p => p.id === promoId);
+  if (!promo) return;
+
+  if (promo.type === 'PROMO_CODE' && promo.promo_code) {
+    orderState.promoCodeInput = promo.promo_code;
+    orderState.appliedPromoCode = promo.promo_code;
+    showOrderToast(`🎟️ เก็บโค้ด "${promo.promo_code}" เรียบร้อย! เมื่อสั่งครบ ${formatMoney(promo.min_spend || 0)} จะลดทันที`, false);
+    renderCartAndModals();
+    return;
+  }
+
+  // สำหรับโปรจับคู่ / ซื้อครบ / Happy Hour ให้พาไปดูรายการสินค้าที่ร่วมโปรฯ
+  if (orderState.activePromoFilterId === promo.id) {
+    orderState.activePromoFilterId = null;
+    showOrderToast('แสดงสินค้าทั้งหมดตามปกติ', false);
+  } else {
+    orderState.activePromoFilterId = promo.id;
+    orderState.viewMode = 'LIST';
+    orderState.activeCategory = 'ALL';
+    showOrderToast(`🔥 กรองเฉพาะสินค้าที่ร่วมโปรฯ: ${promo.name}`, false);
+  }
+  render();
+}
+
 // Cart Helpers
 function getCartCount() {
   return orderState.cart.reduce((sum, it) => sum + it.quantity, 0);
@@ -174,8 +568,11 @@ function getCartSubtotal() {
 
 function getCartNetTotal() {
   const sub = getCartSubtotal();
-  const disc = getPointsDiscountBaht(orderState.redeemPoints);
-  return Math.max(0, sub - disc);
+  if (sub <= 0) return 0;
+  const ptsDisc = getPointsDiscountBaht(orderState.redeemPoints);
+  const promoEval = evaluateCustomerPromotions();
+  const delivInfo = getDeliveryFeeInfo(sub);
+  return Math.max(0, sub + delivInfo.fee - promoEval.totalDiscount - ptsDisc);
 }
 
 function getProductQtyInCart(productId) {
@@ -422,6 +819,13 @@ function getPromptPayQrUrl(amount) {
 // Submit Order to POS Backend
 async function submitOrder() {
   if (orderState.cart.length === 0) return;
+
+  const storeCfg = getStoreConfig();
+  if (!storeCfg.is_open) {
+    alert(storeCfg.closed_message || 'ขออภัย ขณะนี้ร้านปิดรับออเดอร์ชั่วคราว');
+    return;
+  }
+
   if (orderState.isSubmitting) {
     showOrderToast('กำลังส่งคำสั่งซื้อ กรุณารอสักครู่...', true);
     return;
@@ -440,9 +844,12 @@ async function submitOrder() {
   showOrderToast('กำลังส่งคำสั่งซื้อเข้าสู่ระบบ... กรุณารอสักครู่', true);
   renderCartAndModals();
 
-  const netTotal = getCartNetTotal();
   const subtotal = getCartSubtotal();
   const ptsDisc = getPointsDiscountBaht(orderState.redeemPoints);
+  const promoEval = evaluateCustomerPromotions();
+  const delivInfo = getDeliveryFeeInfo(subtotal);
+  const totalDiscount = Math.min(subtotal, promoEval.totalDiscount + ptsDisc);
+  const netTotal = Math.max(0, subtotal + delivInfo.fee - totalDiscount);
   const ptName = getDeliveryPointName();
 
   let billTitle = '';
@@ -467,6 +874,17 @@ async function submitOrder() {
     billNote = `เวลามารับ: ${pickupText} | โทร: ${orderState.customerPhone || '-'} ${orderState.deliveryNote ? '| หมายเหตุ: ' + orderState.deliveryNote : ''}`;
   }
 
+  // บันทึกค่าส่งเดลิเวอรี่ขั้นบันไดและโปรโมชั่นลงในหมายเหตุบิล เพื่อให้ระบบหลังบ้านคำนวณยอดสุทธิตรงกัน
+  if (orderState.orderMode === 'DELIVERY' && delivInfo.fee > 0) {
+    billNote += ` [ค่าส่ง ฿${delivInfo.fee}]`;
+  } else if (orderState.orderMode === 'DELIVERY' && delivInfo.fee === 0) {
+    billNote += ` [ส่งฟรี]`;
+  }
+  if (promoEval.appliedList.length > 0) {
+    const pNames = promoEval.appliedList.map(p => `${p.name} (-฿${p.amount})`).join(', ');
+    billNote += ` | โปรฯ: ${pNames}`;
+  }
+
   const payload = {
     order_type: orderState.orderMode === 'DINE_IN' ? 'DINE_IN' : 'RETAIL',
     table_id: orderState.orderMode === 'DINE_IN' ? orderState.tableId : null,
@@ -475,7 +893,8 @@ async function submitOrder() {
     customer_id: orderState.member?.id || null,
     customer_name: orderState.customerName || (orderState.member?.name || ''),
     payment_method: orderState.paymentMethod,
-    discount: ptsDisc,
+    discount: totalDiscount,
+    delivery_fee: delivInfo.fee,
     redeem_points: orderState.redeemPoints,
     items: orderState.cart.map(it => ({
       product_id: it.product_id,
@@ -639,6 +1058,49 @@ function getProductVisualHtml(item) {
 // RENDER VIEWS
 // ==========================================================================
 
+function renderPromoShowcaseBanner() {
+  const activePromos = getActivePromotions();
+  if (activePromos.length === 0) return '';
+
+  return `
+    <div class="co-promo-showcase">
+      <div class="co-promo-showcase-title">
+        <span>🎁 โปรโมชั่นพิเศษ & คูปองวันนี้ (${activePromos.length} รายการ)</span>
+        ${orderState.activePromoFilterId ? `
+          <button
+            type="button"
+            style="border:none; background:#ef4444; color:#fff; font-size:11px; font-weight:800; padding:3px 8px; border-radius:6px; cursor:pointer;"
+            onclick="orderState.activePromoFilterId=null; render();"
+          >
+            ✕ ล้างตัวกรองโปรฯ
+          </button>
+        ` : `<span style="font-size:11px; color:#b45309; font-weight:700;">แตะที่การ์ดเพื่อใช้โปรฯ</span>`}
+      </div>
+      <div class="co-promo-cards-row">
+        ${activePromos.map(pr => {
+          const isFiltered = orderState.activePromoFilterId === pr.id;
+          const isCodeApplied = pr.type === 'PROMO_CODE' && pr.promo_code && String(orderState.appliedPromoCode || '').toUpperCase() === String(pr.promo_code).toUpperCase();
+          return `
+            <div
+              class="co-promo-card ${isFiltered || isCodeApplied ? 'is-selected' : ''}"
+              onclick="handleShowcasePromoClick('${pr.id}')"
+            >
+              <span class="co-promo-card-tag">${pr.icon || '🔥'} ${pr.badge_text || 'โปรฯ พิเศษ'}</span>
+              <div class="co-promo-card-name">${pr.name}</div>
+              <div class="co-promo-card-desc">${pr.description || ''}</div>
+              <div style="font-size:11px; font-weight:800; color:${isCodeApplied || isFiltered ? '#5eead4' : '#fbbf24'}; margin-top:2px;">
+                ${pr.type === 'PROMO_CODE'
+                  ? (isCodeApplied ? `✓ ใช้โค้ด ${pr.promo_code} แล้ว` : `🎟️ แตะเพื่อเก็บโค้ด: ${pr.promo_code}`)
+                  : (isFiltered ? '✓ กำลังดูสินค้าที่ร่วมรายการ' : '🛒 แตะดูสินค้าที่ร่วมโปรฯ →')}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
 function render() {
   const appEl = document.getElementById('order-app');
   if (!appEl) return;
@@ -667,6 +1129,7 @@ function render() {
   const prevCatPillsLeft = prevCatPillsEl ? prevCatPillsEl.scrollLeft : 0;
 
   const products = orderState.data.products || [];
+  const storeCfg = getStoreConfig();
 
   let contentHtml = '';
   if (orderState.viewMode === 'PIXEL') {
@@ -718,6 +1181,17 @@ function render() {
     </header>
 
     <div class="co-container">
+      <!-- Store Closed Banner (แสดงทันทีเมื่อหลังบ้านกดปิดร้าน) -->
+      ${!storeCfg.is_open ? `
+        <div class="co-store-closed-banner">
+          <span style="font-size:26px;">🔴</span>
+          <div>
+            <div style="font-weight:900; font-size:15px;">ขณะนี้ร้านปิดรับออเดอร์ชั่วคราว (CLOSED)</div>
+            <div style="font-size:12.5px; margin-top:2px; opacity:0.95;">${storeCfg.closed_message || 'กรุณาแวะมาสั่งใหม่อีกครั้งในเวลาทำการ ขอบคุณครับ'}</div>
+          </div>
+        </div>
+      ` : ''}
+
       <!-- Order Mode Selector -->
       ${orderState.isTableLocked ? `
         <!-- Table Mode Locked (สแกน QR โต๊ะมา ล็อคโต๊ะทันที ซ่อนแท็บสลับโหมด) -->
@@ -774,6 +1248,9 @@ function render() {
       ${orderState.orderMode === 'DELIVERY' ? renderDeliverySection() : ''}
       ${orderState.orderMode === 'TAKEAWAY' ? renderTakeawaySection() : ''}
       ${orderState.orderMode === 'DINE_IN' && !orderState.isTableLocked ? renderDineInSection() : ''}
+
+      <!-- Hybrid Promotions Showcase Banner (แนวทาง C) -->
+      ${renderPromoShowcaseBanner()}
 
       <!-- Main Storefront Content (Pixel or List) -->
       <div id="co-storefront-root">
@@ -1028,6 +1505,32 @@ function renderDeliverySection() {
           ${curPt?.landmark_desc ? `<div style="font-size:11.5px; color:#0284c7; margin-top:2px;">${curPt.landmark_desc}</div>` : ''}
         </div>
       </div>
+
+      <!-- อัตราค่าส่งเดลิเวอรี่แบบขั้นบันได (Tiered Delivery Fee) -->
+      ${(function() {
+        const delivInfo = getDeliveryFeeInfo();
+        if (!delivInfo.tiers || delivInfo.tiers.length === 0) return '';
+        return `
+          <div style="margin-bottom:14px; padding:10px 12px; background:#f0f9ff; border:1px solid #bae6fd; border-radius:10px;">
+            <div style="font-size:12px; font-weight:800; color:#0369a1; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+              <span>🛵 อัตราค่าส่งเดลิเวอรี่ (ขั้นบันไดตามยอดสั่ง):</span>
+              ${getCartSubtotal() > 0 ? `<span style="background:#0284c7; color:#fff; padding:2px 8px; border-radius:999px; font-size:11px;">ค่าส่งปัจจุบัน: ${delivInfo.fee === 0 ? 'ส่งฟรี!' : formatMoney(delivInfo.fee)}</span>` : ''}
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:6px;">
+              ${delivInfo.tiers.map(t => {
+                const isActive = getCartSubtotal() > 0 && delivInfo.matchedTier && delivInfo.matchedTier.id === t.id;
+                const feeTxt = Number(t.fee) === 0 ? 'ส่งฟรี!' : `ค่าส่ง ${formatMoney(t.fee)}`;
+                const rangeTxt = t.label || (Number(t.max_amount) >= 99999 ? `฿${t.min_amount} ขึ้นไป` : `฿${t.min_amount}-${t.max_amount}`);
+                return `
+                  <span style="font-size:11px; font-weight:${isActive ? '800' : '600'}; padding:4px 8px; border-radius:6px; background:${isActive ? '#0284c7' : '#fff'}; color:${isActive ? '#fff' : '#0f172a'}; border:1px solid ${isActive ? '#0284c7' : '#cbd5e1'};">
+                    ${rangeTxt}: <b>${feeTxt}</b>
+                  </span>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `;
+      })()}
 
       <!-- Delivery Contact Form -->
       <div class="co-delivery-form">
@@ -1542,6 +2045,7 @@ function renderPixelStorefront(products = []) {
                   const isFood = p.item_type === 'FOOD';
                   const isOutOfStock = !isFood && p.track_stock && (p.stock_qty <= 0);
                   const inCartQty = getProductQtyInCart(p.id);
+                  const promoBadges = getProductPromoBadges(p);
 
                   return `
                     <div
@@ -1549,6 +2053,7 @@ function renderPixelStorefront(products = []) {
                       style="${isOutOfStock ? 'opacity:0.65;' : ''}"
                       onclick="${isOutOfStock ? `alert('สินค้านี้หมดชั่วคราว');` : `addToCartById('${p.id}')`}"
                     >
+                      ${promoBadges.length > 0 ? `<span class="co-prod-promo-badge">${promoBadges[0]}</span>` : ''}
                       <span class="co-prod-qty-badge" data-prod-qty-badge="${p.id}" style="display:${inCartQty > 0 ? 'inline-block' : 'none'};">
                         ${inCartQty > 0 ? `✓ ${inCartQty} ในตะกร้า` : ''}
                       </span>
@@ -1680,7 +2185,9 @@ function renderPixelStorefront(products = []) {
       <!-- Store Sign -->
       <div class="co-storefront-sign">
         <div class="co-pixel-title">★ ONG CO PIXEL STOREFRONT ★</div>
-        <span class="co-open-sign">● OPEN พร้อมรับออเดอร์</span>
+        <span class="co-open-sign ${getStoreConfig().is_open ? '' : 'is-closed'}">
+          ${getStoreConfig().is_open ? '● OPEN พร้อมรับออเดอร์' : '● CLOSED ร้านปิดชั่วคราว'}
+        </span>
       </div>
 
       <!-- Notice Banner & View Switcher -->
@@ -1810,6 +2317,22 @@ function renderListView(products) {
   const cats = orderState.data?.categories || [];
   let filtered = products;
 
+  if (orderState.activePromoFilterId) {
+    const promo = getActivePromotions().find(p => p.id === orderState.activePromoFilterId);
+    if (promo) {
+      filtered = filtered.filter(p => {
+        if (promo.type === 'COMBO_SET') {
+          return isProductInListOrCat(p, promo.combo_group_a_products, promo.combo_group_a_categories) ||
+                 isProductInListOrCat(p, promo.combo_group_b_products, promo.combo_group_b_categories);
+        }
+        if (promo.type === 'BUY_X_GET_Y' || promo.type === 'HAPPY_HOUR') {
+          return isProductInListOrCat(p, promo.target_products, promo.target_categories);
+        }
+        return true;
+      });
+    }
+  }
+
   if (orderState.activeCategory !== 'ALL') {
     filtered = filtered.filter(p => p.category_id === orderState.activeCategory);
   }
@@ -1860,8 +2383,10 @@ function renderListView(products) {
       <div class="co-product-grid">
         ${filtered.map(p => {
           const inCartQty = getProductQtyInCart(p.id);
+          const promoBadges = getProductPromoBadges(p);
           return `
             <div class="co-prod-card" onclick="addToCartById('${p.id}')" style="cursor:pointer;">
+              ${promoBadges.length > 0 ? `<span class="co-prod-promo-badge">${promoBadges[0]}</span>` : ''}
               <span class="co-prod-qty-badge" data-prod-qty-badge="${p.id}" style="display:${inCartQty > 0 ? 'inline-block' : 'none'};">
                 ${inCartQty > 0 ? `✓ ${inCartQty} ในตะกร้า` : ''}
               </span>
@@ -1896,6 +2421,10 @@ function renderListView(products) {
 function renderStickyCart() {
   const count = getCartCount();
   const subtotal = getCartSubtotal();
+  const netTotal = getCartNetTotal();
+  const promoEval = evaluateCustomerPromotions();
+  const delivInfo = getDeliveryFeeInfo(subtotal);
+  const storeCfg = getStoreConfig();
 
   return `
     <div class="co-sticky-cart">
@@ -1906,19 +2435,25 @@ function renderStickyCart() {
             ${count > 0 ? `<span class="co-cart-count">${count}</span>` : ''}
           </div>
           <div class="co-cart-price-block">
-            <span class="co-cart-label">${count} รายการในตะกร้า (แตะเพื่อดูรายการ)</span>
-            <span class="co-cart-total">${formatMoney(subtotal)}</span>
+            <span class="co-cart-label">
+              ${count} รายการในตะกร้า ${promoEval.totalDiscount > 0 ? `<b style="color:#4ade80;">(ลด -${formatMoney(promoEval.totalDiscount)})</b>` : ''}
+            </span>
+            <span class="co-cart-total">
+              ${formatMoney(count > 0 ? netTotal : 0)}
+              ${count > 0 && orderState.orderMode === 'DELIVERY' ? `<span style="font-size:11px; color:#bae6fd; font-weight:600;"> (รวมค่าส่ง ${delivInfo.fee === 0 ? 'ฟรี' : formatMoney(delivInfo.fee)})</span>` : ''}
+            </span>
           </div>
         </div>
 
         <button
           type="button"
           class="co-checkout-btn"
-          ${count === 0 ? 'disabled' : ''}
+          style="${!storeCfg.is_open ? 'background:#ef4444;' : ''}"
+          ${count === 0 || !storeCfg.is_open ? 'disabled' : ''}
           onclick="orderState.showCheckoutModal=true; renderCartAndModals();"
         >
-          <span>สั่งสินค้า & ชำระเงิน</span>
-          <span>➔</span>
+          <span>${!storeCfg.is_open ? '🔴 ร้านปิดชั่วคราว' : 'สั่งสินค้า & ชำระเงิน'}</span>
+          <span>${!storeCfg.is_open ? '' : '➔'}</span>
         </button>
       </div>
     </div>
@@ -2074,18 +2609,16 @@ function renderCartModal() {
             }).join('')}
           </div>
 
-          <div style="border-top:1px dashed var(--co-border); padding-top:12px; display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-            <span style="font-size:14px; font-weight:700;">ยอดรวมสินค้า:</span>
-            <span style="font-size:18px; font-weight:800; color:#0d9488;">${formatMoney(subtotal)}</span>
-          </div>
+          ${renderPromoAndFeeSummary(subtotal, false)}
 
           <button
             type="button"
             class="co-checkout-btn"
-            style="width:100%; justify-content:center;"
+            style="width:100%; justify-content:center; ${!getStoreConfig().is_open ? 'background:#ef4444;' : ''}"
+            ${!getStoreConfig().is_open ? 'disabled' : ''}
             onclick="orderState.showCartModal=false; orderState.showCheckoutModal=true; renderCartAndModals();"
           >
-            ไปที่หน้าชำระเงิน ➔
+            ${!getStoreConfig().is_open ? '🔴 ร้านปิดรับออเดอร์ชั่วคราว' : 'ไปที่หน้าชำระเงิน ➔'}
           </button>
         `}
       </div>
@@ -2182,33 +2715,102 @@ function renderCheckoutModal() {
           </div>
         ` : ''}
 
-        <!-- Price Breakdown -->
-        <div style="background:#f8fafc; border:1px solid var(--co-border); border-radius:10px; padding:10px 14px; margin-bottom:16px;">
-          <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;">
-            <span style="color:var(--co-muted);">ยอดรวมสินค้า:</span>
-            <span>${formatMoney(subtotal)}</span>
-          </div>
-          ${disc > 0 ? `
-            <div style="display:flex; justify-content:space-between; font-size:12.5px; color:#ef4444; margin-bottom:4px;">
-              <span>ส่วนลดแต้มสะสม:</span>
-              <span>-${formatMoney(disc)}</span>
-            </div>
-          ` : ''}
-          <div style="display:flex; justify-content:space-between; font-size:15px; font-weight:800; border-top:1px solid var(--co-border); padding-top:6px; margin-top:4px;">
-            <span>ยอดสุทธิที่ต้องชำระ:</span>
-            <span style="color:#0d9488;">${formatMoney(netTotal)}</span>
-          </div>
-        </div>
+        <!-- Promo Code, Upsell Hints & Price Breakdown -->
+        ${renderPromoAndFeeSummary(subtotal, true)}
 
         <button
           type="button"
           class="co-checkout-btn"
-          style="width:100%; justify-content:center; padding:12px;"
-          ${orderState.isSubmitting ? 'disabled' : ''}
+          style="width:100%; justify-content:center; padding:12px; ${!getStoreConfig().is_open ? 'background:#ef4444;' : ''}"
+          ${orderState.isSubmitting || !getStoreConfig().is_open ? 'disabled' : ''}
           onclick="submitOrder()"
         >
-          ${orderState.isSubmitting ? '⏳ กำลังส่งคำสั่งซื้อ... กรุณารอสักครู่' : '✓ ยืนยันคำสั่งซื้อ'}
+          ${!getStoreConfig().is_open ? '🔴 ร้านปิดรับออเดอร์ชั่วคราว' : (orderState.isSubmitting ? '⏳ กำลังส่งคำสั่งซื้อ... กรุณารอสักครู่' : '✓ ยืนยันคำสั่งซื้อ')}
         </button>
+      </div>
+    </div>
+  `;
+}
+
+// สรุปโปรโมชั่น / โค้ดส่วนลด / ค่าส่งขั้นบันได / ส่วนลดแต้ม (ใช้ทั้งในตะกร้าและหน้าชำระเงิน)
+function renderPromoAndFeeSummary(subtotal, isCheckout) {
+  const promoEval = evaluateCustomerPromotions();
+  const delivInfo = getDeliveryFeeInfo(subtotal);
+  const ptsDisc = isCheckout ? getPointsDiscountBaht(orderState.redeemPoints) : 0;
+  const netTotal = Math.max(0, subtotal + delivInfo.fee - promoEval.totalDiscount - ptsDisc);
+  const hints = [...promoEval.upsellHints];
+  if (delivInfo.hint && delivInfo.fee > 0) hints.unshift(delivInfo.hint);
+  const safeCode = String(orderState.promoCodeInput || '').replace(/"/g, '&quot;');
+
+  return `
+    ${hints.length > 0 ? `
+      <div class="co-upsell-box">
+        ${hints.slice(0, 3).map(h => `<div>${h}</div>`).join('')}
+      </div>
+    ` : ''}
+
+    ${promoEval.appliedList.length > 0 ? `
+      <div class="co-applied-promo-box">
+        <div style="font-weight:800; margin-bottom:4px;">🎉 โปรโมชั่นที่ได้รับอัตโนมัติ:</div>
+        ${promoEval.appliedList.map(p => `
+          <div style="display:flex; justify-content:space-between; gap:8px;">
+            <span>${p.icon} ${p.name}</span>
+            <b style="white-space:nowrap;">-${formatMoney(p.amount)}</b>
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
+
+    <!-- Promo Code Input -->
+    <div style="margin-bottom:12px;">
+      <div class="co-label" style="margin-bottom:4px;">🎟️ โค้ดส่วนลด (ถ้ามี)</div>
+      <div style="display:flex; gap:8px;">
+        <input
+          id="co-promo-code-input"
+          type="text"
+          class="co-input"
+          style="flex:1; min-width:0; text-transform:uppercase;"
+          placeholder="เช่น ONGCO20"
+          value="${safeCode}"
+          oninput="orderState.promoCodeInput=this.value;"
+          onkeydown="if(event.key==='Enter') applyCustomerPromoCode(this.value);"
+        />
+        ${orderState.appliedPromoCode ? `
+          <button type="button" style="flex-shrink:0; border:none; background:#fee2e2; color:#b91c1c; font-weight:800; padding:0 12px; border-radius:10px; cursor:pointer;" onclick="applyCustomerPromoCode('')">ลบโค้ด</button>
+        ` : `
+          <button type="button" style="flex-shrink:0; border:none; background:#0f3238; color:#fff; font-weight:800; padding:0 14px; border-radius:10px; cursor:pointer;" onclick="applyCustomerPromoCode(document.getElementById('co-promo-code-input').value)">ใช้โค้ด</button>
+        `}
+      </div>
+      ${promoEval.codeError ? `<div style="font-size:11.5px; color:#dc2626; font-weight:700; margin-top:4px;">⚠️ ${promoEval.codeError}</div>` : ''}
+    </div>
+
+    <!-- Price Breakdown -->
+    <div style="background:#f8fafc; border:1px solid var(--co-border); border-radius:10px; padding:10px 14px; margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;">
+        <span style="color:var(--co-muted);">ยอดรวมสินค้า:</span>
+        <span>${formatMoney(subtotal)}</span>
+      </div>
+      ${orderState.orderMode === 'DELIVERY' ? `
+        <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;">
+          <span style="color:var(--co-muted);">🛵 ค่าส่งเดลิเวอรี่${delivInfo.matchedTier?.label ? ` (${delivInfo.matchedTier.label})` : ''}:</span>
+          <span style="${delivInfo.fee === 0 ? 'color:#16a34a; font-weight:800;' : ''}">${delivInfo.fee === 0 ? 'ส่งฟรี!' : '+' + formatMoney(delivInfo.fee)}</span>
+        </div>
+      ` : ''}
+      ${promoEval.totalDiscount > 0 ? `
+        <div style="display:flex; justify-content:space-between; font-size:12.5px; color:#ef4444; margin-bottom:4px;">
+          <span>🎁 ส่วนลดโปรโมชั่น:</span>
+          <span>-${formatMoney(promoEval.totalDiscount)}</span>
+        </div>
+      ` : ''}
+      ${ptsDisc > 0 ? `
+        <div style="display:flex; justify-content:space-between; font-size:12.5px; color:#ef4444; margin-bottom:4px;">
+          <span>⭐ ส่วนลดแต้มสะสม:</span>
+          <span>-${formatMoney(ptsDisc)}</span>
+        </div>
+      ` : ''}
+      <div style="display:flex; justify-content:space-between; font-size:15px; font-weight:800; border-top:1px solid var(--co-border); padding-top:6px; margin-top:4px;">
+        <span>${isCheckout ? 'ยอดสุทธิที่ต้องชำระ:' : 'ยอดสุทธิโดยประมาณ:'}</span>
+        <span style="color:#0d9488;">${formatMoney(netTotal)}</span>
       </div>
     </div>
   `;
@@ -2902,7 +3504,7 @@ function renderMyOrdersModal() {
                             🕒 ${new Date(ord.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })} • เลขบิล: ${ord.id}
                           </div>
                         </div>
-                        <span class="co-status-pill ${isDone ? 'is-paid' : 'is-pending'}">
+                        <span class="co-status-pill ${isDone ? ((ord.status === 'CANCELLED' || ord.status === 'VOIDED') ? 'is-cancelled' : 'is-paid') : 'is-pending'}">
                           ${badgeLabel}
                         </span>
                       </div>

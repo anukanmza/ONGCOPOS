@@ -409,6 +409,8 @@ async function apiCall(endpoint, method = 'GET', bodyObj = null) {
   if (endpoint === '/api/customers/save') return eng.saveCustomer(bodyObj || {});
   if (endpoint === '/api/customers/delete') return eng.deleteCustomer(bodyObj || {});
   if (endpoint === '/api/loyalty-settings/save') return eng.saveLoyaltySettings(bodyObj || {});
+  if (endpoint === '/api/store-config/save') return eng.saveStoreConfig(bodyObj || {});
+  if (endpoint === '/api/promotions/save') return eng.savePromotions(bodyObj || {});
   if (endpoint === '/api/categories/save') return eng.saveCategory(bodyObj || {});
   if (endpoint === '/api/categories/delete') return eng.deleteCategory(bodyObj || {});
   if (endpoint === '/api/modifier-groups/save') return eng.saveModifierGroup(bodyObj || {});
@@ -2072,7 +2074,7 @@ function setCheckoutRedeemPoints(pts) {
 
   state.checkoutRedeemPoints = requested;
   const ptsDisc = getPointsDiscountBaht(requested, remainingPayable);
-  const net = Math.max(0, (co.subtotal || 0) - manualDisc - ptsDisc);
+  const net = Math.max(0, (co.subtotal || 0) + (Number(co.deliveryFee) || 0) - manualDisc - ptsDisc);
   state.checkoutCashReceived = String(net);
   render();
 }
@@ -2147,6 +2149,7 @@ function openCheckoutModalByOrderId(orderId) {
     orderId: ord.id,
     subtotal: ord.subtotal,
     totalAmount: ord.total_amount,
+    deliveryFee: Math.max(0, Number(ord.delivery_fee) || extractAdminDeliveryFee(ord.bill_note)),
     customerId: ord.customer_id || state.selectedCustomerId || '',
     items: activeItems,
     label: ord.bill_title || (ord.table_name ? `เช็คบิล ${ord.table_name}` : `บิล ${ord.id}`)
@@ -2182,7 +2185,7 @@ async function confirmCheckoutPayment() {
   const remainingBeforePoints = Math.max(0, co.subtotal - manualDiscount);
   const ptsDiscount = cus ? getPointsDiscountBaht(redeemPts, remainingBeforePoints) : 0;
   const totalDiscount = Math.min(co.subtotal, manualDiscount + ptsDiscount);
-  const netTotal = Math.max(0, co.subtotal - totalDiscount);
+  const netTotal = Math.max(0, co.subtotal + (Number(co.deliveryFee) || 0) - totalDiscount);
   const cashRec = Number(state.checkoutCashReceived) || netTotal;
 
   const tierObj = cus ? (cfg.tiers || []).find(t => t.name === cus.tier) : null;
@@ -2257,6 +2260,556 @@ async function saveLoyaltySettingsForm() {
   state.loyaltyDraft = null;
   render();
   showToast('⚙️ บันทึกการตั้งค่าระดับสมาชิกและกติกาแต้มสะสมเรียบร้อยแล้ว!');
+}
+
+// ==========================================================================
+// STORE OPEN/CLOSE, TIERED DELIVERY FEE & PROMOTIONS (ADMIN)
+// ==========================================================================
+const ADMIN_DEFAULT_STORE_CONFIG = {
+  is_open: true,
+  closed_message: 'ขออภัย ขณะนี้ร้านปิดรับออเดอร์ชั่วคราว กรุณาแวะมาใหม่ในเวลาทำการครับ 🙏',
+  delivery_enabled: true,
+  takeaway_enabled: true,
+  dine_in_enabled: true,
+  delivery_fee_tiers: [
+    { id: 'TIER-1', min_amount: 0, max_amount: 99, fee: 20, label: 'สั่งต่ำกว่า ฿100' },
+    { id: 'TIER-2', min_amount: 100, max_amount: 199, fee: 10, label: 'สั่ง ฿100 - ฿199' },
+    { id: 'TIER-3', min_amount: 200, max_amount: null, fee: 0, label: 'สั่ง ฿200 ขึ้นไป (ส่งฟรี!)' }
+  ]
+};
+
+const PROMO_TYPE_LABELS = {
+  BILL_DISCOUNT: '1️⃣ ซื้อครบลดท้ายบิล',
+  COMBO_SET: '2️⃣ คอมโบจับคู่ข้ามหมวด',
+  BUY_X_GET_Y: '3️⃣ ซื้อครบ X ชิ้น ลด/แถม',
+  PROMO_CODE: '4️⃣ โค้ดส่วนลด / คูปอง',
+  HAPPY_HOUR: '5️⃣ Happy Hour ตามช่วงเวลา'
+};
+
+const DAY_LABELS_TH = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+
+function getAdminStoreConfig() {
+  const raw = state.data?.storeConfig;
+  if (!raw || typeof raw !== 'object') return ADMIN_DEFAULT_STORE_CONFIG;
+  return {
+    ...ADMIN_DEFAULT_STORE_CONFIG,
+    ...raw,
+    delivery_fee_tiers: Array.isArray(raw.delivery_fee_tiers) && raw.delivery_fee_tiers.length > 0
+      ? raw.delivery_fee_tiers
+      : ADMIN_DEFAULT_STORE_CONFIG.delivery_fee_tiers
+  };
+}
+
+function getAdminPromotions() {
+  const list = Array.isArray(state.data?.promotions) ? state.data.promotions : [];
+  return list.slice().sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+}
+
+function extractAdminDeliveryFee(billNote) {
+  const m = String(billNote || '').match(/\[ค่าส่ง\s*฿?(\d+(?:\.\d+)?)\]/);
+  return m ? (Number(m[1]) || 0) : 0;
+}
+
+function adminProdMatches(prod, prodIds = [], catIds = []) {
+  if (!prod) return false;
+  if (Array.isArray(prodIds) && prodIds.includes(prod.id)) return true;
+  if (Array.isArray(catIds) && catIds.includes(prod.category_id)) return true;
+  return false;
+}
+
+function adminHappyHourActive(pr) {
+  const now = new Date();
+  if (Array.isArray(pr.days_of_week) && pr.days_of_week.length > 0 && !pr.days_of_week.map(Number).includes(now.getDay())) return false;
+  const hhmm = now.toTimeString().slice(0, 5);
+  return hhmm >= (pr.start_time || '00:00') && hhmm <= (pr.end_time || '23:59');
+}
+
+// คำนวณโปรโมชั่นอัตโนมัติ (ประเภท 1, 2, 3, 5) สำหรับหน้าเช็คบิลแคชเชียร์
+function evaluateAdminPromotions(items = [], subtotal = 0) {
+  const prodMap = new Map((state.data?.products || []).map(p => [p.id, p]));
+  const units = [];
+  (items || []).forEach(it => {
+    const prod = prodMap.get(it.product_id) || (state.data?.products || []).find(p => p.name === (it.product_name || it.name));
+    const qty = Math.max(0, Number(it.quantity || 0) - Number(it.returned_qty || 0));
+    for (let i = 0; i < qty; i++) units.push({ prod, price: Number(it.unit_price) || 0 });
+  });
+
+  const appliedList = [];
+  let total = 0;
+  getAdminPromotions().filter(p => p.is_active !== false).forEach(pr => {
+    let disc = 0;
+    let label = pr.name;
+    if (pr.type === 'BILL_DISCOUNT') {
+      if (subtotal > 0 && subtotal >= (Number(pr.min_spend) || 0)) {
+        disc = pr.discount_type === 'PERCENT' ? Math.round(subtotal * (Number(pr.discount_value) || 0) / 100) : (Number(pr.discount_value) || 0);
+      }
+    } else if (pr.type === 'COMBO_SET') {
+      const a = units.filter(u => adminProdMatches(u.prod, pr.combo_group_a_products, pr.combo_group_a_categories)).length;
+      const b = units.filter(u => adminProdMatches(u.prod, pr.combo_group_b_products, pr.combo_group_b_categories)).length;
+      const pairs = Math.min(a, b);
+      if (pairs > 0) { disc = pairs * (Number(pr.discount_value) || 0); label += ` (×${pairs})`; }
+    } else if (pr.type === 'BUY_X_GET_Y') {
+      const matched = units.filter(u => adminProdMatches(u.prod, pr.target_products, pr.target_categories)).sort((x, y) => x.price - y.price);
+      const buyQty = Math.max(2, Number(pr.buy_qty) || 3);
+      const sets = Math.floor(matched.length / buyQty);
+      if (sets > 0) {
+        disc = pr.reward_type === 'FREE_CHEAPEST'
+          ? matched.slice(0, sets).reduce((s, u) => s + u.price, 0)
+          : sets * (Number(pr.reward_value ?? pr.discount_value) || 0);
+        label += ` (×${sets})`;
+      }
+    } else if (pr.type === 'HAPPY_HOUR') {
+      if (adminHappyHourActive(pr)) {
+        const matched = units.filter(u => adminProdMatches(u.prod, pr.target_products, pr.target_categories));
+        const sum = matched.reduce((s, u) => s + u.price, 0);
+        disc = pr.discount_type === 'PERCENT' ? Math.round(sum * (Number(pr.discount_value) || 0) / 100) : matched.length * (Number(pr.discount_value) || 0);
+      }
+    }
+    if (disc > 0) {
+      total += disc;
+      appliedList.push({ id: pr.id, name: label, icon: pr.icon || '🎁', amount: disc });
+    }
+  });
+  return { totalDiscount: Math.min(subtotal, total), appliedList };
+}
+
+function applyAdminAutoPromoDiscount(amount) {
+  const co = state.checkoutModalOrder;
+  if (!co) return;
+  state.checkoutDiscount = Math.max(0, Number(amount) || 0);
+  const rem = Math.max(0, co.subtotal - state.checkoutDiscount);
+  const pDisc = getPointsDiscountBaht(Number(state.checkoutRedeemPoints) || 0, rem);
+  state.checkoutCashReceived = String(Math.max(0, co.subtotal + (Number(co.deliveryFee) || 0) - state.checkoutDiscount - pDisc));
+  render();
+  showToast(`🎁 ใส่ส่วนลดโปรโมชั่น ${formatMoney(amount)} เรียบร้อย`);
+}
+
+async function saveAdminStoreConfig(cfg, successMsg) {
+  const out = await apiCall('/api/store-config/save', 'POST', cfg);
+  if (out && out.data) {
+    state.data = out.data;
+  } else if (out && out.storeConfig && state.data) {
+    state.data.storeConfig = out.storeConfig;
+  } else if (!out) {
+    return false;
+  }
+  render();
+  if (successMsg) showToast(successMsg);
+  return true;
+}
+
+async function toggleStoreOpenQuick() {
+  const cur = getAdminStoreConfig();
+  const next = { ...cur, is_open: !cur.is_open };
+  if (!next.is_open && !confirm('ยืนยันปิดร้านชั่วคราว? ลูกค้าจะไม่สามารถสั่งออเดอร์ออนไลน์ได้จนกว่าจะเปิดร้านอีกครั้ง')) return;
+  if (state.data) state.data.storeConfig = next; // optimistic update
+  render();
+  await saveAdminStoreConfig(next, next.is_open ? '🟢 เปิดร้านรับออเดอร์ออนไลน์แล้ว' : '🔴 ปิดร้านชั่วคราวเรียบร้อย (ลูกค้าจะเห็นป้ายร้านปิด)');
+}
+
+function openPromotionsModal(tab) {
+  state.showPromotionsModal = true;
+  state.promoModalTab = tab || state.promoModalTab || 'PROMOS';
+  state.editingPromotion = null;
+  state.storeConfigDraft = JSON.parse(JSON.stringify(getAdminStoreConfig()));
+  render();
+}
+
+function closePromotionsModal() {
+  state.showPromotionsModal = false;
+  state.editingPromotion = null;
+  state.storeConfigDraft = null;
+  render();
+}
+
+function newPromotionDraft(type = 'BILL_DISCOUNT') {
+  const base = {
+    id: `PROMO-${Date.now().toString(36).toUpperCase()}`,
+    name: '',
+    description: '',
+    type,
+    icon: '🎁',
+    badge_text: '',
+    is_active: true,
+    discount_type: 'FIXED',
+    discount_value: 10,
+    sort_order: getAdminPromotions().length + 1
+  };
+  if (type === 'BILL_DISCOUNT') Object.assign(base, { min_spend: 150, icon: '🎉' });
+  if (type === 'COMBO_SET') Object.assign(base, { combo_group_a_categories: [], combo_group_a_products: [], combo_group_b_categories: [], combo_group_b_products: [], icon: '🍛🥤' });
+  if (type === 'BUY_X_GET_Y') Object.assign(base, { target_categories: [], target_products: [], buy_qty: 3, reward_type: 'DISCOUNT_FIXED', reward_value: 5, icon: '🧺' });
+  if (type === 'PROMO_CODE') Object.assign(base, { promo_code: '', min_spend: 0, icon: '🎟️' });
+  if (type === 'HAPPY_HOUR') Object.assign(base, { start_time: '14:00', end_time: '17:00', days_of_week: [0, 1, 2, 3, 4, 5, 6], target_categories: [], target_products: [], discount_type: 'PERCENT', icon: '⏰' });
+  return base;
+}
+
+function startNewPromotion(type) {
+  state.editingPromotion = newPromotionDraft(type || 'BILL_DISCOUNT');
+  render();
+}
+
+function editPromotion(id) {
+  const pr = getAdminPromotions().find(p => p.id === id);
+  if (!pr) return;
+  state.editingPromotion = { ...newPromotionDraft(pr.type), ...JSON.parse(JSON.stringify(pr)), _isEdit: true };
+  render();
+}
+
+function changeEditingPromoType(type) {
+  const cur = state.editingPromotion || {};
+  state.editingPromotion = { ...newPromotionDraft(type), id: cur.id, name: cur.name, description: cur.description, is_active: cur.is_active, _isEdit: cur._isEdit };
+  render();
+}
+
+function togglePromoArrayValue(field, value) {
+  const d = state.editingPromotion;
+  if (!d) return;
+  const arr = Array.isArray(d[field]) ? d[field].slice() : [];
+  const idx = arr.findIndex(v => String(v) === String(value));
+  if (idx >= 0) arr.splice(idx, 1); else arr.push(value);
+  d[field] = arr;
+}
+
+async function persistPromotions(list, msg) {
+  const out = await apiCall('/api/promotions/save', 'POST', { promotions: list });
+  if (!out) return false;
+  if (out.data) state.data = out.data;
+  else if (state.data) state.data.promotions = out.promotions || list;
+  render();
+  if (msg) showToast(msg);
+  return true;
+}
+
+async function saveEditingPromotion() {
+  const d = state.editingPromotion;
+  if (!d) return;
+  if (!String(d.name || '').trim()) { showToast('⚠️ กรุณาตั้งชื่อโปรโมชั่น'); return; }
+  if (d.type === 'PROMO_CODE' && !String(d.promo_code || '').trim()) { showToast('⚠️ กรุณากรอกโค้ดส่วนลด'); return; }
+  const clean = { ...d };
+  delete clean._isEdit;
+  clean.name = String(clean.name).trim();
+  if (clean.promo_code) clean.promo_code = String(clean.promo_code).trim().toUpperCase();
+  ['min_spend', 'discount_value', 'buy_qty', 'reward_value', 'sort_order'].forEach(k => {
+    if (clean[k] !== undefined) clean[k] = Math.max(0, Number(clean[k]) || 0);
+  });
+  if (!clean.badge_text) {
+    clean.badge_text = clean.type === 'PROMO_CODE' ? `โค้ด ${clean.promo_code}`
+      : (clean.discount_type === 'PERCENT' ? `ลด ${clean.discount_value}%` : `ลด ฿${clean.type === 'BUY_X_GET_Y' ? clean.reward_value : clean.discount_value}`);
+  }
+  const list = getAdminPromotions().filter(p => p.id !== clean.id);
+  list.push(clean);
+  const ok = await persistPromotions(list, `🎁 บันทึกโปรโมชั่น "${clean.name}" เรียบร้อย`);
+  if (ok) {
+    state.editingPromotion = null;
+    render();
+  }
+}
+
+async function togglePromotionActive(id) {
+  const list = getAdminPromotions().map(p => p.id === id ? { ...p, is_active: p.is_active === false } : p);
+  if (state.data) state.data.promotions = list;
+  render();
+  await persistPromotions(list, '✓ อัปเดตสถานะโปรโมชั่นแล้ว');
+}
+
+async function deletePromotion(id) {
+  const pr = getAdminPromotions().find(p => p.id === id);
+  if (!pr || !confirm(`ลบโปรโมชั่น "${pr.name}" ?`)) return;
+  await persistPromotions(getAdminPromotions().filter(p => p.id !== id), '🗑️ ลบโปรโมชั่นเรียบร้อย');
+}
+
+function addDeliveryTierDraft() {
+  const d = state.storeConfigDraft;
+  if (!d) return;
+  const tiers = d.delivery_fee_tiers || [];
+  const last = tiers[tiers.length - 1];
+  const nextMin = last ? (Number(last.max_amount) || Number(last.min_amount) || 0) + 1 : 0;
+  tiers.push({ id: `TIER-${Date.now().toString(36)}`, min_amount: nextMin, max_amount: null, fee: 0, label: '' });
+  d.delivery_fee_tiers = tiers;
+  render();
+}
+
+function removeDeliveryTierDraft(idx) {
+  const d = state.storeConfigDraft;
+  if (!d) return;
+  d.delivery_fee_tiers.splice(idx, 1);
+  render();
+}
+
+async function saveStoreConfigDraft() {
+  const d = state.storeConfigDraft;
+  if (!d) return;
+  const tiers = (d.delivery_fee_tiers || []).map((t, i) => ({
+    id: t.id || `TIER-${i + 1}`,
+    min_amount: Math.max(0, Number(t.min_amount) || 0),
+    max_amount: (t.max_amount === null || t.max_amount === '' || t.max_amount === undefined) ? null : Math.max(0, Number(t.max_amount) || 0),
+    fee: Math.max(0, Number(t.fee) || 0),
+    label: String(t.label || '').trim()
+  })).sort((a, b) => a.min_amount - b.min_amount);
+  const payload = { ...d, delivery_fee_tiers: tiers };
+  const ok = await saveAdminStoreConfig(payload, '💾 บันทึกการตั้งค่าร้าน & ค่าส่งเดลิเวอรี่เรียบร้อย');
+  if (ok) state.storeConfigDraft = JSON.parse(JSON.stringify(getAdminStoreConfig()));
+}
+
+function describePromotion(pr) {
+  const catMap = new Map((state.data?.categories || []).map(c => [c.id, c.name]));
+  const cats = (ids) => (ids || []).map(id => catMap.get(id) || id).join(', ') || '-';
+  const discTxt = pr.discount_type === 'PERCENT' ? `${pr.discount_value}%` : formatMoney(pr.discount_value);
+  if (pr.type === 'BILL_DISCOUNT') return `ซื้อครบ ${formatMoney(pr.min_spend)} ลด ${discTxt}`;
+  if (pr.type === 'COMBO_SET') return `[${cats(pr.combo_group_a_categories)}] + [${cats(pr.combo_group_b_categories)}] ลดชุดละ ${formatMoney(pr.discount_value)}`;
+  if (pr.type === 'BUY_X_GET_Y') return `[${cats(pr.target_categories)}] ครบ ${pr.buy_qty} ชิ้น ${pr.reward_type === 'FREE_CHEAPEST' ? 'แถมชิ้นถูกสุดฟรี' : `ลด ${formatMoney(pr.reward_value)}`}`;
+  if (pr.type === 'PROMO_CODE') return `โค้ด ${pr.promo_code} • ขั้นต่ำ ${formatMoney(pr.min_spend)} • ลด ${discTxt}`;
+  if (pr.type === 'HAPPY_HOUR') return `${pr.start_time}-${pr.end_time} (${(pr.days_of_week || []).map(d => DAY_LABELS_TH[d]).join(' ')}) [${cats(pr.target_categories)}] ลด ${discTxt}`;
+  return '';
+}
+
+function renderPromoCategoryPicker(field) {
+  const d = state.editingPromotion;
+  const cats = state.data?.categories || [];
+  const selected = Array.isArray(d[field]) ? d[field] : [];
+  return `
+    <div style="display:flex; flex-wrap:wrap; gap:6px; padding:8px; border:1px solid var(--ttl-rule); border-radius:8px; background:var(--ttl-paper); max-height:120px; overflow-y:auto;">
+      ${cats.length === 0 ? '<span style="font-size:12px; color:var(--ttl-muted);">ยังไม่มีหมวดหมู่</span>' : cats.map(c => `
+        <label style="display:flex; align-items:center; gap:4px; font-size:12px; padding:3px 8px; border-radius:999px; border:1px solid var(--ttl-rule); cursor:pointer;">
+          <input type="checkbox" ${selected.includes(c.id) ? 'checked' : ''} onchange="togglePromoArrayValue('${field}', '${c.id}')" />
+          ${c.name}
+        </label>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderPromotionEditorForm() {
+  const d = state.editingPromotion;
+  if (!d) return '';
+  const lbl = 'font-size:12px; font-weight:700; display:block; margin-bottom:4px;';
+  const discountFields = `
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+      <div>
+        <label style="${lbl}">รูปแบบส่วนลด</label>
+        <select class="ttl-input" onchange="state.editingPromotion.discount_type=this.value;">
+          <option value="FIXED" ${d.discount_type !== 'PERCENT' ? 'selected' : ''}>ลดเป็นบาท (฿)</option>
+          <option value="PERCENT" ${d.discount_type === 'PERCENT' ? 'selected' : ''}>ลดเป็นเปอร์เซ็นต์ (%)</option>
+        </select>
+      </div>
+      <div>
+        <label style="${lbl}">มูลค่าส่วนลด${d.type === 'COMBO_SET' ? ' (ต่อชุด)' : ''}</label>
+        <input type="number" min="0" class="ttl-input" value="${d.discount_value ?? 0}" oninput="state.editingPromotion.discount_value=this.value;" />
+      </div>
+    </div>
+  `;
+
+  let typeFields = '';
+  if (d.type === 'BILL_DISCOUNT' || d.type === 'PROMO_CODE') {
+    typeFields = `
+      ${d.type === 'PROMO_CODE' ? `
+        <div>
+          <label style="${lbl}">โค้ดส่วนลด (ลูกค้ากรอก) *</label>
+          <input type="text" class="ttl-input" style="text-transform:uppercase; font-weight:800;" placeholder="เช่น ONGCO20" value="${d.promo_code || ''}" oninput="state.editingPromotion.promo_code=this.value.toUpperCase();" />
+        </div>
+      ` : ''}
+      <div>
+        <label style="${lbl}">ยอดซื้อขั้นต่ำ (บาท)</label>
+        <input type="number" min="0" class="ttl-input" value="${d.min_spend ?? 0}" oninput="state.editingPromotion.min_spend=this.value;" />
+      </div>
+      ${discountFields}
+    `;
+  } else if (d.type === 'COMBO_SET') {
+    typeFields = `
+      <div><label style="${lbl}">กลุ่ม A (เช่น อาหารจานหลัก)</label>${renderPromoCategoryPicker('combo_group_a_categories')}</div>
+      <div><label style="${lbl}">กลุ่ม B (เช่น เครื่องดื่มในตู้แช่)</label>${renderPromoCategoryPicker('combo_group_b_categories')}</div>
+      <div>
+        <label style="${lbl}">ส่วนลดต่อชุด (บาท)</label>
+        <input type="number" min="0" class="ttl-input" value="${d.discount_value ?? 0}" oninput="state.editingPromotion.discount_value=this.value; state.editingPromotion.discount_type='FIXED';" />
+      </div>
+      <div style="font-size:11.5px; color:var(--ttl-muted);">💡 ครัวยังได้รับเฉพาะรายการอาหาร และของชำยังตัดสต็อกตามปกติ — ระบบแค่หักส่วนลดท้ายบิลตามจำนวนคู่</div>
+    `;
+  } else if (d.type === 'BUY_X_GET_Y') {
+    typeFields = `
+      <div><label style="${lbl}">หมวดหมู่สินค้าที่ร่วมรายการ</label>${renderPromoCategoryPicker('target_categories')}</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+        <div>
+          <label style="${lbl}">ซื้อครบ (ชิ้น)</label>
+          <input type="number" min="2" class="ttl-input" value="${d.buy_qty ?? 3}" oninput="state.editingPromotion.buy_qty=this.value;" />
+        </div>
+        <div>
+          <label style="${lbl}">รางวัล</label>
+          <select class="ttl-input" onchange="state.editingPromotion.reward_type=this.value;">
+            <option value="DISCOUNT_FIXED" ${d.reward_type !== 'FREE_CHEAPEST' ? 'selected' : ''}>ลดเป็นบาท</option>
+            <option value="FREE_CHEAPEST" ${d.reward_type === 'FREE_CHEAPEST' ? 'selected' : ''}>แถมชิ้นถูกสุดฟรี</option>
+          </select>
+        </div>
+        <div>
+          <label style="${lbl}">ส่วนลด/ชุด (฿)</label>
+          <input type="number" min="0" class="ttl-input" value="${d.reward_value ?? 0}" oninput="state.editingPromotion.reward_value=this.value;" />
+        </div>
+      </div>
+    `;
+  } else if (d.type === 'HAPPY_HOUR') {
+    typeFields = `
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+        <div><label style="${lbl}">เริ่มเวลา</label><input type="time" class="ttl-input" value="${d.start_time || '14:00'}" onchange="state.editingPromotion.start_time=this.value;" /></div>
+        <div><label style="${lbl}">ถึงเวลา</label><input type="time" class="ttl-input" value="${d.end_time || '17:00'}" onchange="state.editingPromotion.end_time=this.value;" /></div>
+      </div>
+      <div>
+        <label style="${lbl}">วันที่ใช้ได้</label>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          ${DAY_LABELS_TH.map((dl, i) => `
+            <label style="display:flex; align-items:center; gap:3px; font-size:12px; padding:3px 8px; border:1px solid var(--ttl-rule); border-radius:999px; cursor:pointer;">
+              <input type="checkbox" ${(d.days_of_week || []).map(Number).includes(i) ? 'checked' : ''} onchange="togglePromoArrayValue('days_of_week', ${i})" /> ${dl}
+            </label>
+          `).join('')}
+        </div>
+      </div>
+      <div><label style="${lbl}">หมวดหมู่ที่ร่วมรายการ</label>${renderPromoCategoryPicker('target_categories')}</div>
+      ${discountFields}
+    `;
+  }
+
+  return `
+    <div style="padding:14px; border:2px solid var(--ttl-gold); border-radius:12px; background:var(--ttl-page); display:flex; flex-direction:column; gap:10px; margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <b style="font-size:14px;">${d._isEdit ? '✏️ แก้ไขโปรโมชั่น' : '➕ สร้างโปรโมชั่นใหม่'}</b>
+        <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" onclick="state.editingPromotion=null; render();">✕ ยกเลิก</button>
+      </div>
+      <div>
+        <label style="${lbl}">ประเภทโปรโมชั่น</label>
+        <select class="ttl-input" onchange="changeEditingPromoType(this.value)">
+          ${Object.entries(PROMO_TYPE_LABELS).map(([k, v]) => `<option value="${k}" ${d.type === k ? 'selected' : ''}>${v}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:grid; grid-template-columns:3fr 1fr; gap:8px;">
+        <div>
+          <label style="${lbl}">ชื่อโปรโมชั่น *</label>
+          <input type="text" class="ttl-input" placeholder="เช่น อิ่มคุ้ม! สั่งครบ ฿150 ลด ฿15" value="${String(d.name || '').replace(/"/g, '&quot;')}" oninput="state.editingPromotion.name=this.value;" />
+        </div>
+        <div>
+          <label style="${lbl}">ไอคอน</label>
+          <input type="text" class="ttl-input" value="${d.icon || ''}" oninput="state.editingPromotion.icon=this.value;" />
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:2fr 1fr; gap:8px;">
+        <div>
+          <label style="${lbl}">คำอธิบาย (แสดงบนแบนเนอร์หน้าลูกค้า)</label>
+          <input type="text" class="ttl-input" value="${String(d.description || '').replace(/"/g, '&quot;')}" oninput="state.editingPromotion.description=this.value;" />
+        </div>
+        <div>
+          <label style="${lbl}">ป้ายโปรฯ (Badge)</label>
+          <input type="text" class="ttl-input" placeholder="อัตโนมัติ" value="${String(d.badge_text || '').replace(/"/g, '&quot;')}" oninput="state.editingPromotion.badge_text=this.value;" />
+        </div>
+      </div>
+      ${typeFields}
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:700;">
+        <input type="checkbox" ${d.is_active !== false ? 'checked' : ''} onchange="state.editingPromotion.is_active=this.checked;" /> เปิดใช้งานโปรโมชั่นนี้ทันที
+      </label>
+      <button type="button" class="ttl-btn ttl-btn-dark" onclick="saveEditingPromotion()">💾 บันทึกโปรโมชั่น</button>
+    </div>
+  `;
+}
+
+function renderPromotionsAndStoreConfigModal() {
+  const tab = state.promoModalTab || 'PROMOS';
+  const promos = getAdminPromotions();
+  const draft = state.storeConfigDraft || JSON.parse(JSON.stringify(getAdminStoreConfig()));
+  if (!state.storeConfigDraft) state.storeConfigDraft = draft;
+  const liveCfg = getAdminStoreConfig();
+  const tabBtn = (key, label) => `
+    <button type="button" style="flex:1;" aria-selected="${tab === key}" onclick="state.promoModalTab='${key}'; render();">${label}</button>
+  `;
+
+  let body = '';
+  if (tab === 'PROMOS') {
+    body = `
+      ${state.editingPromotion ? renderPromotionEditorForm() : `
+        <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px;">
+          ${Object.entries(PROMO_TYPE_LABELS).map(([k, v]) => `
+            <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="startNewPromotion('${k}')">+ ${v}</button>
+          `).join('')}
+        </div>
+      `}
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        ${promos.length === 0 ? `<div style="text-align:center; padding:24px; color:var(--ttl-muted);">ยังไม่มีโปรโมชั่น กดปุ่มด้านบนเพื่อสร้าง</div>` : promos.map(pr => `
+          <div style="padding:10px 12px; border:1px solid var(--ttl-rule); border-radius:10px; background:var(--ttl-paper); display:flex; justify-content:space-between; align-items:center; gap:10px; opacity:${pr.is_active === false ? '0.55' : '1'};">
+            <div style="flex:1; min-width:0;">
+              <div style="font-size:11px; color:var(--ttl-accent); font-weight:700;">${PROMO_TYPE_LABELS[pr.type] || pr.type}</div>
+              <div style="font-weight:800; font-size:13.5px;">${pr.icon || '🎁'} ${pr.name}</div>
+              <div style="font-size:11.5px; color:var(--ttl-muted);">${describePromotion(pr)}</div>
+            </div>
+            <div style="display:flex; gap:6px; flex-shrink:0;">
+              <button type="button" class="ttl-btn ttl-btn-xs ${pr.is_active === false ? 'ttl-btn-ghost' : 'ttl-btn-good'}" onclick="togglePromotionActive('${pr.id}')">${pr.is_active === false ? '⏸ ปิดอยู่' : '✅ เปิดอยู่'}</button>
+              <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" onclick="editPromotion('${pr.id}')">✏️</button>
+              <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-danger-outline" onclick="deletePromotion('${pr.id}')">🗑️</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } else if (tab === 'DELIVERY') {
+    body = `
+      <div style="font-size:12.5px; color:var(--ttl-muted); margin-bottom:10px;">
+        กำหนดค่าส่งเป็นขั้นบันไดตามยอดสั่งซื้อ (ยอดสินค้าก่อนหักส่วนลด) — ช่อง "ถึง" เว้นว่าง = ไม่จำกัด
+      </div>
+      <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:10px;">
+        ${(draft.delivery_fee_tiers || []).map((t, i) => `
+          <div style="display:grid; grid-template-columns:1fr 1fr 1fr 2fr auto; gap:6px; align-items:end; padding:8px; border:1px solid var(--ttl-rule); border-radius:10px; background:var(--ttl-paper);">
+            <div><label style="font-size:11px; font-weight:700;">ตั้งแต่ (฿)</label><input type="number" min="0" class="ttl-input" value="${t.min_amount ?? 0}" oninput="state.storeConfigDraft.delivery_fee_tiers[${i}].min_amount=this.value;" /></div>
+            <div><label style="font-size:11px; font-weight:700;">ถึง (฿)</label><input type="number" min="0" class="ttl-input" placeholder="ไม่จำกัด" value="${t.max_amount ?? ''}" oninput="state.storeConfigDraft.delivery_fee_tiers[${i}].max_amount=this.value;" /></div>
+            <div><label style="font-size:11px; font-weight:700;">ค่าส่ง (฿)</label><input type="number" min="0" class="ttl-input" value="${t.fee ?? 0}" oninput="state.storeConfigDraft.delivery_fee_tiers[${i}].fee=this.value;" /></div>
+            <div><label style="font-size:11px; font-weight:700;">ป้ายแสดงลูกค้า</label><input type="text" class="ttl-input" placeholder="เช่น สั่ง ฿200 ขึ้นไป ส่งฟรี" value="${String(t.label || '').replace(/"/g, '&quot;')}" oninput="state.storeConfigDraft.delivery_fee_tiers[${i}].label=this.value;" /></div>
+            <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-danger-outline" style="height:36px;" onclick="removeDeliveryTierDraft(${i})">🗑️</button>
+          </div>
+        `).join('')}
+      </div>
+      <div style="display:flex; gap:8px; justify-content:space-between;">
+        <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" onclick="addDeliveryTierDraft()">+ เพิ่มขั้นค่าส่ง</button>
+        <button type="button" class="ttl-btn ttl-btn-dark" onclick="saveStoreConfigDraft()">💾 บันทึกอัตราค่าส่ง</button>
+      </div>
+    `;
+  } else {
+    body = `
+      <div style="padding:16px; border-radius:12px; background:${liveCfg.is_open ? '#f0fdf4' : '#fef2f2'}; border:2px solid ${liveCfg.is_open ? '#86efac' : '#fca5a5'}; display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+        <div>
+          <div style="font-size:16px; font-weight:900; color:${liveCfg.is_open ? '#166534' : '#991b1b'};">${liveCfg.is_open ? '🟢 ร้านเปิดรับออเดอร์ออนไลน์อยู่' : '🔴 ร้านปิดรับออเดอร์ชั่วคราว'}</div>
+          <div style="font-size:12px; color:var(--ttl-muted);">มีผลทันทีกับหน้าสั่งของลูกค้า (/order)</div>
+        </div>
+        <button type="button" class="ttl-btn" style="color:#fff; border:none; background:${liveCfg.is_open ? '#dc2626' : '#16a34a'};" onclick="toggleStoreOpenQuick()">
+          ${liveCfg.is_open ? '🔴 กดปิดร้านชั่วคราว' : '🟢 กดเปิดร้าน'}
+        </button>
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">ข้อความแจ้งลูกค้าเมื่อร้านปิด</label>
+        <textarea class="ttl-input" rows="2" style="width:100%; resize:vertical;" oninput="state.storeConfigDraft.closed_message=this.value;">${draft.closed_message || ''}</textarea>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px; font-size:13px;">
+        <label><input type="checkbox" ${draft.delivery_enabled !== false ? 'checked' : ''} onchange="state.storeConfigDraft.delivery_enabled=this.checked;" /> 🛵 เปิดรับเดลิเวอรี่</label>
+        <label><input type="checkbox" ${draft.takeaway_enabled !== false ? 'checked' : ''} onchange="state.storeConfigDraft.takeaway_enabled=this.checked;" /> 🛍️ เปิดรับสั่งกลับบ้าน</label>
+        <label><input type="checkbox" ${draft.dine_in_enabled !== false ? 'checked' : ''} onchange="state.storeConfigDraft.dine_in_enabled=this.checked;" /> 🍽️ เปิดรับสั่งทานที่ร้าน (QR โต๊ะ)</label>
+      </div>
+      <div style="text-align:right;">
+        <button type="button" class="ttl-btn ttl-btn-dark" onclick="state.storeConfigDraft.is_open = getAdminStoreConfig().is_open; saveStoreConfigDraft()">💾 บันทึกการตั้งค่าร้าน</button>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="ttl-modal-backdrop" onclick="if(event.target===this){closePromotionsModal();}">
+      <div class="ttl-modal" style="max-width:760px; width:96vw; max-height:92vh; overflow-y:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; position:sticky; top:-1px; background:var(--ttl-paper); z-index:5; padding-bottom:8px;">
+          <div>
+            <div class="ttl-k">PROMOTIONS • DELIVERY FEE • STORE STATUS</div>
+            <h3 style="margin:4px 0 0; font-size:19px;">🎁 โปรโมชั่น & ค่าส่ง & เปิด-ปิดร้าน</h3>
+          </div>
+          <button type="button" class="ttl-btn ttl-btn-xs ttl-btn-ghost" onclick="closePromotionsModal()">✕</button>
+        </div>
+        <div class="ttl-seg" style="width:100%; margin-bottom:14px;">
+          ${tabBtn('PROMOS', `🎁 โปรโมชั่น (${promos.filter(p => p.is_active !== false).length}/${promos.length})`)}
+          ${tabBtn('DELIVERY', '🛵 ค่าส่งขั้นบันได')}
+          ${tabBtn('STORE', liveCfg.is_open ? '🟢 เปิด-ปิดร้าน' : '🔴 เปิด-ปิดร้าน')}
+        </div>
+        ${body}
+      </div>
+    </div>
+  `;
 }
 
 async function updateKdsStatus(orderItemId, nextStatus) {
@@ -4893,6 +5446,11 @@ function renderDashboardView() {
 function renderModals() {
   let html = '';
 
+  // 0. Promotions / Delivery Fee Tiers / Store Open-Close Modal
+  if (state.showPromotionsModal) {
+    html += renderPromotionsAndStoreConfigModal();
+  }
+
   // 1. Food Modifier Modal
   if (state.modifierModalProduct) {
     const p = state.modifierModalProduct;
@@ -5020,9 +5578,11 @@ function renderModals() {
     const remainingBeforePoints = Math.max(0, co.subtotal - manualDiscount);
     const pointsDiscount = getPointsDiscountBaht(redeemPts, remainingBeforePoints);
     const totalDiscount = Math.min(co.subtotal, manualDiscount + pointsDiscount);
-    const netTotal = Math.max(0, co.subtotal - totalDiscount);
+    const coDeliveryFee = Math.max(0, Number(co.deliveryFee) || 0);
+    const netTotal = Math.max(0, co.subtotal + coDeliveryFee - totalDiscount);
     const cashRec = Number(state.checkoutCashReceived) || 0;
     const change = Math.max(0, cashRec - netTotal);
+    const autoPromo = evaluateAdminPromotions(activeItems, co.subtotal);
 
     // คำนวณแต้มที่จะได้รับจากยอดสุทธิของบิลนี้ (หลังหักส่วนลดทั้งหมดแล้ว)
     const spendUnit = Math.max(1, Number(ls.spend_per_point) || 25);
@@ -5156,12 +5716,35 @@ function renderModals() {
             `}
           </div>
 
+          <!-- โปรโมชั่นอัตโนมัติ & ค่าส่งเดลิเวอรี่ -->
+          ${(coDeliveryFee > 0 || autoPromo.appliedList.length > 0) ? `
+            <div style="padding:10px 12px; border-radius:12px; background:#f0fdf4; border:1px solid #86efac; margin-bottom:12px; font-size:12.5px; color:#166534;">
+              ${coDeliveryFee > 0 ? `
+                <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <span>🛵 ค่าส่งเดลิเวอรี่ (บวกเข้ายอดบิล)</span><b>+${formatMoney(coDeliveryFee)}</b>
+                </div>
+              ` : ''}
+              ${autoPromo.appliedList.length > 0 ? `
+                <div style="font-weight:800; margin:4px 0;">🎁 โปรโมชั่นที่เข้าเงื่อนไข (รวม -${formatMoney(autoPromo.totalDiscount)}):</div>
+                ${autoPromo.appliedList.map(p => `<div style="display:flex; justify-content:space-between;"><span>${p.icon} ${p.name}</span><b>-${formatMoney(p.amount)}</b></div>`).join('')}
+                <button
+                  type="button"
+                  class="ttl-btn ttl-btn-xs ttl-btn-good"
+                  style="margin-top:6px;"
+                  onclick="applyAdminAutoPromoDiscount(${autoPromo.totalDiscount})"
+                >
+                  ✓ ใช้ส่วนลดโปรฯ ${formatMoney(autoPromo.totalDiscount)} เป็นส่วนลดท้ายบิล
+                </button>
+              ` : ''}
+            </div>
+          ` : ''}
+
           <div style="padding:14px 16px; border-radius:12px; background:var(--ttl-deep); color:var(--ttl-deep-ink); display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
             <div>
               <div>ยอดสุทธิที่ต้องชำระ</div>
               ${totalDiscount > 0 ? `
                 <div style="font-size:11.5px; color:var(--ttl-deep-muted);">
-                  ก่อนลด ${formatMoney(co.subtotal)} • ส่วนลดรวม -${formatMoney(totalDiscount)} ${pointsDiscount > 0 ? `(แต้ม -฿${pointsDiscount})` : ''}
+                  ก่อนลด ${formatMoney(co.subtotal)}${coDeliveryFee > 0 ? ` + ค่าส่ง ${formatMoney(coDeliveryFee)}` : ''} • ส่วนลดรวม -${formatMoney(totalDiscount)} ${pointsDiscount > 0 ? `(แต้ม -฿${pointsDiscount})` : ''}
                 </div>
               ` : ''}
             </div>
@@ -5189,7 +5772,7 @@ function renderModals() {
                   const mDisc = Math.max(0, Number(this.value) || 0);
                   const rem = Math.max(0, ${co.subtotal} - mDisc);
                   const pDisc = getPointsDiscountBaht(Number(state.checkoutRedeemPoints) || 0, rem);
-                  const nextNet = Math.max(0, ${co.subtotal} - mDisc - pDisc);
+                  const nextNet = Math.max(0, ${co.subtotal} + ${coDeliveryFee} - mDisc - pDisc);
                   state.checkoutCashReceived = String(nextNet);
                   render();
                 "
@@ -7926,7 +8509,24 @@ function render() {
             </button>
           </nav>
 
-          <div class="ttl-nav-end" style="display:flex; align-items:center; gap:8px;">
+          <div class="ttl-nav-end" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <button
+              type="button"
+              class="ttl-btn ttl-btn-sm"
+              style="height:30px; padding:0 10px; font-size:11.5px; font-weight:800; color:#fff; border:none; background:${getAdminStoreConfig().is_open ? '#16a34a' : '#dc2626'};"
+              title="กดเพื่อสลับสถานะเปิด/ปิดรับออเดอร์ออนไลน์ของหน้าร้านลูกค้า"
+              onclick="toggleStoreOpenQuick()"
+            >
+              ${getAdminStoreConfig().is_open ? '🟢 เปิดร้านรับออเดอร์' : '🔴 ปิดร้านชั่วคราว'}
+            </button>
+            <button
+              type="button"
+              class="ttl-btn ttl-btn-sm ttl-btn-ghost"
+              style="height:30px; padding:0 10px; font-size:11.5px; font-weight:800;"
+              onclick="openPromotionsModal()"
+            >
+              🎁 โปรฯ & ค่าส่ง
+            </button>
             <button
               type="button"
               class="ttl-btn ttl-btn-sm ${state.backendMode === 'CLOUD_API' ? 'ttl-btn-good' : 'ttl-btn-danger-outline'}"

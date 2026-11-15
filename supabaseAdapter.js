@@ -130,6 +130,100 @@ const DEFAULT_STORE_ZONES = [
   }
 ];
 
+const DEFAULT_STORE_CONFIG = {
+  is_open: true,
+  closed_message: 'ขณะนี้ร้านปิดให้บริการชั่วคราว สามารถเลือกชมสินค้าและเมนูอาหารไว้ก่อนได้ครับ',
+  delivery_enabled: true,
+  takeaway_enabled: true,
+  dine_in_enabled: true,
+  delivery_fee_tiers: [
+    { id: 'TIER-1', min_amount: 0, max_amount: 99, fee: 20, label: 'สั่งต่ำกว่า ฿100' },
+    { id: 'TIER-2', min_amount: 100, max_amount: 199, fee: 10, label: 'สั่งระหว่าง ฿100 - ฿199' },
+    { id: 'TIER-3', min_amount: 200, max_amount: null, fee: 0, label: 'สั่งตั้งแต่ ฿200 ขึ้นไป (ส่งฟรี!)' }
+  ]
+};
+
+const DEFAULT_PROMOTIONS = [
+  {
+    id: 'PROMO-SPEND-200',
+    name: 'อิ่มคุ้มครบ 200 ลดทันที 20.-',
+    description: 'สั่งอาหารและของชำครบ ฿200 ลดท้ายบิลทันที ฿20',
+    promo_type: 'BILL_DISCOUNT', // 1. ลดท้ายบิลเมื่อซื้อครบยอด
+    is_active: true,
+    badge_text: 'ครบ ฿200 ลด ฿20',
+    min_spend: 200,
+    discount_unit: 'FIXED', // 'FIXED' | 'PERCENT'
+    discount_value: 20,
+    max_discount: 0,
+    order_modes: ['ALL']
+  },
+  {
+    id: 'PROMO-COMBO-FOOD-DRINK',
+    name: 'จับคู่สุดคุ้ม: อาหารตามสั่ง + เครื่องดื่ม ลด 10.-',
+    description: 'สั่งเมนูอาหารตามสั่งคู่กับเครื่องดื่มในตู้แช่หรือบาร์น้ำ ลดทันทีชุดละ ฿10',
+    promo_type: 'COMBO_SET', // 2. จับคู่ข้ามหมวด / เซ็ตสุดคุ้ม
+    is_active: true,
+    badge_text: 'คู่หูอาหาร+น้ำ ลด ฿10',
+    combo_a_type: 'CATEGORY',
+    combo_a_ids: ['CAT-RICE', 'CAT-NOODLE'],
+    combo_a_qty: 1,
+    combo_b_type: 'CATEGORY',
+    combo_b_ids: ['CAT-DRINK'],
+    combo_b_qty: 1,
+    discount_unit: 'FIXED',
+    discount_value: 10
+  },
+  {
+    id: 'PROMO-MULTIBUY-SNACK',
+    name: 'ขนมขบเคี้ยว ซื้อครบ 3 ชิ้น ลดทันที 10.-',
+    description: 'หยิบขนมในชั้นวางครบทุก 3 ชิ้น รับส่วนลดทันที ฿10',
+    promo_type: 'BUY_X_GET_Y', // 3. ซื้อครบจำนวน / ซื้อแถม
+    is_active: true,
+    badge_text: 'ขนม 3 ชิ้น ลด ฿10',
+    target_type: 'CATEGORY',
+    target_ids: ['CAT-SNACK'],
+    buy_qty: 3,
+    reward_type: 'FIXED_DISCOUNT', // 'FIXED_DISCOUNT' | 'FREE_CHEAPEST' | 'BUNDLE_PRICE'
+    free_qty: 1,
+    discount_value: 10,
+    bundle_price: 50
+  },
+  {
+    id: 'PROMO-CODE-ONGCO20',
+    name: 'คูปองส่วนลดพิเศษ ONGCO20',
+    description: 'กรอกโค้ด ONGCO20 ลดทันที ฿20 (เมื่อสั่งขั้นต่ำ ฿150)',
+    promo_type: 'PROMO_CODE', // 4. โค้ดส่วนลด / คูปอง
+    is_active: true,
+    badge_text: 'โค้ด ONGCO20 ลด ฿20',
+    promo_code: 'ONGCO20',
+    min_spend: 150,
+    discount_unit: 'FIXED',
+    discount_value: 20,
+    max_discount: 0
+  },
+  {
+    id: 'PROMO-HAPPY-HOUR',
+    name: 'Happy Hour บ่ายคลายร้อน (14:00 - 17:00)',
+    description: 'ช่วงเวลา 14:00 - 17:00 น. สินค้าหมวดเครื่องดื่มลด 10% อัตโนมัติ',
+    promo_type: 'HAPPY_HOUR', // 5. โปรช่วงเวลาพิเศษ Happy Hour
+    is_active: false,
+    badge_text: 'Happy Hour ลด 10%',
+    start_time: '14:00',
+    end_time: '17:00',
+    days_of_week: [0, 1, 2, 3, 4, 5, 6],
+    target_type: 'CATEGORY',
+    target_ids: ['CAT-DRINK'],
+    discount_unit: 'PERCENT',
+    discount_value: 10
+  }
+];
+
+function extractDeliveryFeeFromNote(billNote) {
+  const str = String(billNote || '');
+  const m = str.match(/\[ค่าส่ง\s*฿?(\d+(?:\.\d+)?)\]/);
+  return m ? (Number(m[1]) || 0) : 0;
+}
+
 function computeCustomerLoyaltyUpdate(customer, netTotal, redeemPoints, loyaltySettings = DEFAULT_LOYALTY_SETTINGS) {
   const cfg = { ...DEFAULT_LOYALTY_SETTINGS, ...(loyaltySettings || {}) };
   const spendPerPt = Math.max(1, Number(cfg.spend_per_point) || 25);
@@ -637,14 +731,42 @@ async function getSupabaseBootstrapData() {
     } catch {}
   }
 
+  let storeConfig = { ...DEFAULT_STORE_CONFIG };
+  const sysStoreCfgRow = rawCustomers.find(c => c.id === 'SYS-STORE-CONFIG');
+  if (sysStoreCfgRow && sysStoreCfgRow.note) {
+    try {
+      const parsed = JSON.parse(sysStoreCfgRow.note);
+      if (parsed && typeof parsed === 'object') {
+        storeConfig = {
+          ...DEFAULT_STORE_CONFIG,
+          ...parsed,
+          delivery_fee_tiers: Array.isArray(parsed.delivery_fee_tiers)
+            ? parsed.delivery_fee_tiers
+            : DEFAULT_STORE_CONFIG.delivery_fee_tiers
+        };
+      }
+    } catch {}
+  }
+
+  let promotions = [...DEFAULT_PROMOTIONS];
+  const sysPromosRow = rawCustomers.find(c => c.id === 'SYS-PROMOTIONS');
+  if (sysPromosRow && sysPromosRow.note) {
+    try {
+      const parsed = JSON.parse(sysPromosRow.note);
+      if (Array.isArray(parsed)) promotions = parsed;
+    } catch {}
+  }
+
   const customers = rawCustomers.filter(c => !String(c.id || '').startsWith('SYS-'));
 
   const allBills = allValidOrders.map(o => {
     const tbl = o.table_id ? tableMap.get(o.table_id) : null;
+    const deliveryFee = extractDeliveryFeeFromNote(o.bill_note);
     return {
       ...o,
       subtotal: Number(o.subtotal || 0),
       discount: Number(o.discount || 0),
+      delivery_fee: deliveryFee,
       total_amount: Number(o.total_amount || 0),
       total_cost: Number(o.total_cost || 0),
       table_name: tbl ? tbl.name : null,
@@ -679,6 +801,8 @@ async function getSupabaseBootstrapData() {
     deliveryPoints,
     deliveryMapConfig,
     storeZones,
+    storeConfig,
+    promotions,
     tableServiceRequests,
     customers: customers.map(c => ({ ...c, points: Number(c.points || 0), total_spent: Number(c.total_spent || 0) })),
     loyaltySettings,
@@ -721,6 +845,9 @@ module.exports = {
   DEFAULT_DELIVERY_POINTS,
   DEFAULT_DELIVERY_MAP_CONFIG,
   DEFAULT_STORE_ZONES,
+  DEFAULT_STORE_CONFIG,
+  DEFAULT_PROMOTIONS,
+  extractDeliveryFeeFromNote,
   computeCustomerLoyaltyUpdate,
   setRuntimeSupabaseConfig,
   getSupabaseConfig,

@@ -1,4 +1,4 @@
-const { DEFAULT_LOYALTY_SETTINGS, DEFAULT_STORE_ZONES, computeCustomerLoyaltyUpdate, setRuntimeSupabaseConfig, getSupabaseConfig, sbRest, getSupabaseSyncCheck, getSupabaseBootstrapData } = require('../supabaseAdapter');
+const { DEFAULT_LOYALTY_SETTINGS, DEFAULT_STORE_ZONES, DEFAULT_STORE_CONFIG, DEFAULT_PROMOTIONS, extractDeliveryFeeFromNote, computeCustomerLoyaltyUpdate, setRuntimeSupabaseConfig, getSupabaseConfig, sbRest, getSupabaseSyncCheck, getSupabaseBootstrapData } = require('../supabaseAdapter');
 
 // ต้นทุนเฉลี่ยถ่วงน้ำหนักตามจำนวน: (ของเดิม × ทุนเดิม + ยอดซื้อล็อตใหม่) ÷ (จำนวนเดิม + จำนวนใหม่)
 // หมายเหตุ: ค่าที่ได้จะถูกเก็บใน stock_in_items.purchase_cost_per_base_unit (= ต้นทุนเฉลี่ยหลังรับของใบนี้)
@@ -89,9 +89,10 @@ async function recalculateSupabaseOrderTotals(orderId) {
     }
   }
 
-  const orders = await sbRest(`orders?select=discount&id=eq.${encodeURIComponent(orderId)}`);
+  const orders = await sbRest(`orders?select=discount,bill_note&id=eq.${encodeURIComponent(orderId)}`);
   const discount = orders[0] ? Number(orders[0].discount || 0) : 0;
-  const totalAmount = Math.max(0, subtotal - discount);
+  const deliveryFee = orders[0] ? extractDeliveryFeeFromNote(orders[0].bill_note) : 0;
+  const totalAmount = Math.max(0, subtotal + deliveryFee - discount);
 
   await sbRest(`orders?id=eq.${encodeURIComponent(orderId)}`, {
     method: 'PATCH',
@@ -475,7 +476,7 @@ module.exports = async (req, res) => {
             customer_name,
             status: 'OPEN',
             subtotal: 0,
-            discount: 0,
+            discount: Number(discount) || 0,
             total_amount: 0,
             total_cost: 0,
             payment_method,
@@ -717,7 +718,8 @@ module.exports = async (req, res) => {
       subtotal = Math.round(subtotal * 100) / 100;
       totalCost = Math.round(totalCost * 100) / 100;
       const disc = Math.max(0, Number(discount) || 0);
-      const totalAmt = Math.round(Math.max(0, subtotal - disc) * 100) / 100;
+      const deliveryFeeAmt = extractDeliveryFeeFromNote(refreshed.bill_note);
+      const totalAmt = Math.round(Math.max(0, subtotal + deliveryFeeAmt - disc) * 100) / 100;
       const received = Number(cash_received) >= totalAmt ? Number(cash_received) : totalAmt;
       const change = Math.round(Math.max(0, received - totalAmt) * 100) / 100;
       const redeemPts = Math.max(0, Math.floor(Number(redeem_points) || 0));
@@ -1837,7 +1839,7 @@ module.exports = async (req, res) => {
             customer_name: srcOrd.customer_name || '',
             status: 'OPEN',
             subtotal: 0,
-            discount: 0,
+            discount: Number(discount) || 0,
             total_amount: 0,
             total_cost: 0,
             payment_method: 'CASH',
@@ -1854,7 +1856,7 @@ module.exports = async (req, res) => {
             table_id: null,
             status: 'OPEN',
             subtotal: 0,
-            discount: 0,
+            discount: Number(discount) || 0,
             total_amount: 0,
             total_cost: 0,
             payment_method: 'CASH',
@@ -2015,6 +2017,62 @@ module.exports = async (req, res) => {
         }
       } catch {}
       return send(200, { success: true, loyaltySettings: merged, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/store-config/save') {
+      const merged = {
+        ...DEFAULT_STORE_CONFIG,
+        is_open: body.is_open !== false,
+        closed_message: String(body.closed_message || DEFAULT_STORE_CONFIG.closed_message).trim(),
+        delivery_enabled: body.delivery_enabled !== false,
+        takeaway_enabled: body.takeaway_enabled !== false,
+        dine_in_enabled: body.dine_in_enabled !== false,
+        delivery_fee_tiers: Array.isArray(body.delivery_fee_tiers)
+          ? body.delivery_fee_tiers.map((t, i) => ({
+              id: t.id || `TIER-${i + 1}`,
+              min_amount: Math.max(0, Number(t.min_amount) || 0),
+              max_amount: (t.max_amount === null || t.max_amount === '' || t.max_amount === undefined) ? null : Math.max(0, Number(t.max_amount)),
+              fee: Math.max(0, Number(t.fee) || 0),
+              label: String(t.label || '').trim()
+            }))
+          : DEFAULT_STORE_CONFIG.delivery_fee_tiers
+      };
+      try {
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-STORE-CONFIG',
+            name: '__STORE_CONFIG__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(merged)
+          }
+        });
+      } catch {}
+      return send(200, { success: true, storeConfig: merged, data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/promotions/save') {
+      const list = Array.isArray(body.promotions) ? body.promotions : DEFAULT_PROMOTIONS;
+      try {
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-PROMOTIONS',
+            name: '__PROMOTIONS__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(list)
+          }
+        });
+      } catch {}
+      return send(200, { success: true, promotions: list, data: await getSupabaseBootstrapData() });
     }
 
     if (req.method === 'POST' && pathname === '/api/stock-in/update') {

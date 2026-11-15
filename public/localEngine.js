@@ -432,6 +432,102 @@ function buildLocalBootstrap() {
   };
   const loyaltySettings = { ...defaultLoyaltySettings, ...(db.loyaltySettings || {}) };
 
+  const defaultStoreConfig = {
+    is_open: true,
+    closed_message: 'ขณะนี้ร้านปิดให้บริการชั่วคราว สามารถเลือกชมสินค้าและเมนูอาหารไว้ก่อนได้ครับ',
+    delivery_enabled: true,
+    takeaway_enabled: true,
+    dine_in_enabled: true,
+    delivery_fee_tiers: [
+      { id: 'TIER-1', min_amount: 0, max_amount: 99, fee: 20, label: 'สั่งต่ำกว่า ฿100' },
+      { id: 'TIER-2', min_amount: 100, max_amount: 199, fee: 10, label: 'สั่งระหว่าง ฿100 - ฿199' },
+      { id: 'TIER-3', min_amount: 200, max_amount: null, fee: 0, label: 'สั่งตั้งแต่ ฿200 ขึ้นไป (ส่งฟรี!)' }
+    ]
+  };
+  const storeConfig = {
+    ...defaultStoreConfig,
+    ...(db.storeConfig || {}),
+    delivery_fee_tiers: Array.isArray(db.storeConfig?.delivery_fee_tiers)
+      ? db.storeConfig.delivery_fee_tiers
+      : defaultStoreConfig.delivery_fee_tiers
+  };
+
+  const defaultPromotions = [
+    {
+      id: 'PROMO-SPEND-200',
+      name: 'อิ่มคุ้มครบ 200 ลดทันที 20.-',
+      description: 'สั่งอาหารและของชำครบ ฿200 ลดท้ายบิลทันที ฿20',
+      promo_type: 'BILL_DISCOUNT',
+      is_active: true,
+      badge_text: 'ครบ ฿200 ลด ฿20',
+      min_spend: 200,
+      discount_unit: 'FIXED',
+      discount_value: 20,
+      max_discount: 0,
+      order_modes: ['ALL']
+    },
+    {
+      id: 'PROMO-COMBO-FOOD-DRINK',
+      name: 'จับคู่สุดคุ้ม: อาหารตามสั่ง + เครื่องดื่ม ลด 10.-',
+      description: 'สั่งเมนูอาหารตามสั่งคู่กับเครื่องดื่มในตู้แช่หรือบาร์น้ำ ลดทันทีชุดละ ฿10',
+      promo_type: 'COMBO_SET',
+      is_active: true,
+      badge_text: 'คู่หูอาหาร+น้ำ ลด ฿10',
+      combo_a_type: 'CATEGORY',
+      combo_a_ids: ['CAT-RICE', 'CAT-NOODLE'],
+      combo_a_qty: 1,
+      combo_b_type: 'CATEGORY',
+      combo_b_ids: ['CAT-DRINK'],
+      combo_b_qty: 1,
+      discount_unit: 'FIXED',
+      discount_value: 10
+    },
+    {
+      id: 'PROMO-MULTIBUY-SNACK',
+      name: 'ขนมขบเคี้ยว ซื้อครบ 3 ชิ้น ลดทันที 10.-',
+      description: 'หยิบขนมในชั้นวางครบทุก 3 ชิ้น รับส่วนลดทันที ฿10',
+      promo_type: 'BUY_X_GET_Y',
+      is_active: true,
+      badge_text: 'ขนม 3 ชิ้น ลด ฿10',
+      target_type: 'CATEGORY',
+      target_ids: ['CAT-SNACK'],
+      buy_qty: 3,
+      reward_type: 'FIXED_DISCOUNT',
+      free_qty: 1,
+      discount_value: 10,
+      bundle_price: 50
+    },
+    {
+      id: 'PROMO-CODE-ONGCO20',
+      name: 'คูปองส่วนลดพิเศษ ONGCO20',
+      description: 'กรอกโค้ด ONGCO20 ลดทันที ฿20 (เมื่อสั่งขั้นต่ำ ฿150)',
+      promo_type: 'PROMO_CODE',
+      is_active: true,
+      badge_text: 'โค้ด ONGCO20 ลด ฿20',
+      promo_code: 'ONGCO20',
+      min_spend: 150,
+      discount_unit: 'FIXED',
+      discount_value: 20,
+      max_discount: 0
+    },
+    {
+      id: 'PROMO-HAPPY-HOUR',
+      name: 'Happy Hour บ่ายคลายร้อน (14:00 - 17:00)',
+      description: 'ช่วงเวลา 14:00 - 17:00 น. สินค้าหมวดเครื่องดื่มลด 10% อัตโนมัติ',
+      promo_type: 'HAPPY_HOUR',
+      is_active: false,
+      badge_text: 'Happy Hour ลด 10%',
+      start_time: '14:00',
+      end_time: '17:00',
+      days_of_week: [0, 1, 2, 3, 4, 5, 6],
+      target_type: 'CATEGORY',
+      target_ids: ['CAT-DRINK'],
+      discount_unit: 'PERCENT',
+      discount_value: 10
+    }
+  ];
+  const promotions = Array.isArray(db.promotions) ? db.promotions : defaultPromotions;
+
   return {
     categories: db.categories,
     products,
@@ -445,6 +541,8 @@ function buildLocalBootstrap() {
       custom_landmarks: []
     },
     storeZones: (db.storeZones || []).slice().sort((a,b) => (a.sort_order||0) - (b.sort_order||0)),
+    storeConfig,
+    promotions,
     tableServiceRequests: Array.isArray(db.tableServiceRequests) ? db.tableServiceRequests : [],
     ingredients: db.ingredients,
     recipeItems: enrichedRecipes,
@@ -495,8 +593,11 @@ function recalcLocalOrder(db, orderId) {
   }
   const ord = db.orders.find(o => o.id === orderId);
   if (ord) {
+    const feeMatch = String(ord.bill_note || '').match(/\[ค่าส่ง\s*฿?(\d+(?:\.\d+)?)\]/);
+    const deliveryFee = feeMatch ? (Number(feeMatch[1]) || 0) : 0;
     ord.subtotal = Math.round(subtotal * 100) / 100;
-    ord.total_amount = Math.max(0, Math.round((subtotal - (ord.discount || 0)) * 100) / 100);
+    ord.delivery_fee = deliveryFee;
+    ord.total_amount = Math.max(0, Math.round((subtotal + deliveryFee - (ord.discount || 0)) * 100) / 100);
     ord.total_cost = Math.round(totalCost * 100) / 100;
   }
 }
@@ -1711,12 +1812,29 @@ window.LocalPosEngine = {
     return (boot.allBills || []).filter(o => {
       if (ids.length > 0 && ids.includes(o.id)) return true;
       if (tableId && o.table_id === tableId && o.status === 'OPEN') return true;
-      if (cleanPhone && cleanPhone.length >= 8) {
-        const text = ((o.bill_note || '') + ' ' + (o.bill_title || '')).replace(/\D/g, '');
+      if (cleanPhone && cleanPhone.length >= 6) {
+        const text = ((o.bill_note || '') + ' ' + (o.bill_title || '') + ' ' + (o.customer_name || '')).replace(/\D/g, '');
         if (text.includes(cleanPhone)) return true;
       }
       return false;
     });
+  },
+
+  saveStoreConfig(body) {
+    const db = loadLocalDb();
+    db.storeConfig = {
+      ...(db.storeConfig || {}),
+      ...body
+    };
+    saveLocalDb(db);
+    return { success: true, storeConfig: db.storeConfig, data: buildLocalBootstrap() };
+  },
+
+  savePromotions(body) {
+    const db = loadLocalDb();
+    db.promotions = Array.isArray(body.promotions) ? body.promotions : [];
+    saveLocalDb(db);
+    return { success: true, promotions: db.promotions, data: buildLocalBootstrap() };
   }
 };
 

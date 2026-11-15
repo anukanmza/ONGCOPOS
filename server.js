@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { db, recalculateAllFoodCosts } = require('./db');
 const { parseVoiceCommand, getRecipePreviewForProduct } = require('./voiceParser');
-const { DEFAULT_LOYALTY_SETTINGS, computeCustomerLoyaltyUpdate, getSupabaseConfig, computeKdsSyncSig, computeAllSyncSig } = require('./supabaseAdapter');
+const { DEFAULT_LOYALTY_SETTINGS, DEFAULT_STORE_CONFIG, DEFAULT_PROMOTIONS, extractDeliveryFeeFromNote, computeCustomerLoyaltyUpdate, getSupabaseConfig, computeKdsSyncSig, computeAllSyncSig } = require('./supabaseAdapter');
 const supabaseApiHandler = require('./api/index');
 
 function getLoyaltySettingsFromDb() {
@@ -72,9 +72,10 @@ function recalculateOrderTotals(orderId) {
     }
   }
 
-  const order = db.prepare('SELECT discount FROM orders WHERE id = ?').get(orderId);
+  const order = db.prepare('SELECT discount, bill_note FROM orders WHERE id = ?').get(orderId);
   const discount = order ? (order.discount || 0) : 0;
-  const totalAmount = Math.max(0, subtotal - discount);
+  const deliveryFee = order ? extractDeliveryFeeFromNote(order.bill_note) : 0;
+  const totalAmount = Math.max(0, subtotal + deliveryFee - discount);
 
   db.prepare(`
     UPDATE orders
@@ -190,6 +191,30 @@ function getFullBootstrapData() {
       if (Array.isArray(parsed)) tableServiceRequests = parsed;
     }
   } catch {}
+  let storeConfig = { ...DEFAULT_STORE_CONFIG };
+  try {
+    const scRow = db.prepare("SELECT note FROM customers WHERE id = 'SYS-STORE-CONFIG'").get();
+    if (scRow && scRow.note) {
+      const parsed = JSON.parse(scRow.note);
+      if (parsed && typeof parsed === 'object') {
+        storeConfig = {
+          ...DEFAULT_STORE_CONFIG,
+          ...parsed,
+          delivery_fee_tiers: Array.isArray(parsed.delivery_fee_tiers)
+            ? parsed.delivery_fee_tiers
+            : DEFAULT_STORE_CONFIG.delivery_fee_tiers
+        };
+      }
+    }
+  } catch {}
+  let promotions = [...DEFAULT_PROMOTIONS];
+  try {
+    const prRow = db.prepare("SELECT note FROM customers WHERE id = 'SYS-PROMOTIONS'").get();
+    if (prRow && prRow.note) {
+      const parsed = JSON.parse(prRow.note);
+      if (Array.isArray(parsed)) promotions = parsed;
+    }
+  } catch {}
 
   const openOrders = db.prepare("SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at DESC").all();
   const allRecentOrders = db.prepare("SELECT * FROM orders WHERE status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED') ORDER BY created_at DESC LIMIT 1000").all();
@@ -225,6 +250,7 @@ function getFullBootstrapData() {
     const tbl = o.table_id ? tableMap.get(o.table_id) : null;
     return {
       ...o,
+      delivery_fee: extractDeliveryFeeFromNote(o.bill_note),
       table_name: tbl ? tbl.name : null,
       zone_name: tbl ? tbl.zone_name : null,
       items: allOrderItemsWithMeta.filter(i => i.order_id === o.id)
@@ -394,6 +420,8 @@ function getFullBootstrapData() {
     deliveryPoints,
     deliveryMapConfig,
     storeZones,
+    storeConfig,
+    promotions,
     tableServiceRequests,
     customers,
     loyaltySettings,
@@ -2145,6 +2173,50 @@ const server = http.createServer(async (req, res) => {
 
       broadcastUpdate('expense_saved', { expId });
       return sendJson(res, 200, { success: true, expId, data: getFullBootstrapData() });
+    }
+
+    // Save Store Config (Open/Close Status + Tiered Delivery Fees)
+    if (req.method === 'POST' && pathname === '/api/store-config/save') {
+      const body = await parseJsonBody(req);
+      const merged = {
+        ...DEFAULT_STORE_CONFIG,
+        is_open: body.is_open !== false,
+        closed_message: String(body.closed_message || DEFAULT_STORE_CONFIG.closed_message).trim(),
+        delivery_enabled: body.delivery_enabled !== false,
+        takeaway_enabled: body.takeaway_enabled !== false,
+        dine_in_enabled: body.dine_in_enabled !== false,
+        delivery_fee_tiers: Array.isArray(body.delivery_fee_tiers)
+          ? body.delivery_fee_tiers.map((t, i) => ({
+              id: t.id || `TIER-${i + 1}`,
+              min_amount: Math.max(0, Number(t.min_amount) || 0),
+              max_amount: (t.max_amount === null || t.max_amount === '' || t.max_amount === undefined) ? null : Math.max(0, Number(t.max_amount)),
+              fee: Math.max(0, Number(t.fee) || 0),
+              label: String(t.label || '').trim()
+            }))
+          : DEFAULT_STORE_CONFIG.delivery_fee_tiers
+      };
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO customers (id, name, phone, tier, points, total_spent, note, created_at)
+        VALUES ('SYS-STORE-CONFIG', '__STORE_CONFIG__', '', 'SYSTEM', 0, 0, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET note = excluded.note
+      `).run(JSON.stringify(merged), now);
+      broadcastUpdate('store_config_updated', {});
+      return sendJson(res, 200, { success: true, storeConfig: merged, data: getFullBootstrapData() });
+    }
+
+    // Save Promotions List
+    if (req.method === 'POST' && pathname === '/api/promotions/save') {
+      const body = await parseJsonBody(req);
+      const list = Array.isArray(body.promotions) ? body.promotions : DEFAULT_PROMOTIONS;
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO customers (id, name, phone, tier, points, total_spent, note, created_at)
+        VALUES ('SYS-PROMOTIONS', '__PROMOTIONS__', '', 'SYSTEM', 0, 0, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET note = excluded.note
+      `).run(JSON.stringify(list), now);
+      broadcastUpdate('promotions_updated', {});
+      return sendJson(res, 200, { success: true, promotions: list, data: getFullBootstrapData() });
     }
 
     // Static Files from /public
