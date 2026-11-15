@@ -2103,7 +2103,7 @@ function renderPixelStorefront(products = []) {
         <div class="co-pixel-modules">
           <div class="co-pixel-zone">
             <div class="${(curZone.type || curZone.zone_type) === 'CHILLER' ? 'co-cooler-case' : ((curZone.type || curZone.zone_type) === 'KITCHEN' ? 'co-kitchen-case' : 'co-shelf-case')}">
-              <div class="co-cooler-shelf">
+              <div class="co-cooler-shelf" data-total-prods="${displayedProds.length}" onscroll="handleShelfScroll(this)">
                 ${displayedProds.length === 0 ? `
                   <div style="grid-column: 1 / -1; text-align:center; padding:40px 16px; color:#94a3b8;">
                     <div style="font-size:32px; margin-bottom:8px;">📦</div>
@@ -2146,7 +2146,7 @@ function renderPixelStorefront(products = []) {
                 }).join('')}
               </div>
               ${displayedProds.length > 8 ? `
-                <div style="text-align:center; padding:8px 12px; background:rgba(15,23,42,0.9); border-top:1px solid #334155; font-size:11.5px; color:#38bdf8; font-weight:700;">
+                <div data-shelf-hint style="text-align:center; padding:8px 12px; background:rgba(15,23,42,0.9); border-top:1px solid #334155; font-size:11.5px; color:#38bdf8; font-weight:700; transition:color 0.2s;">
                   ⬇️ เลื่อนลงเพื่อดูสินค้าเพิ่มเติม (ทั้งหมด ${displayedProds.length} รายการ)
                 </div>
               ` : ''}
@@ -3677,6 +3677,91 @@ function renderMyOrdersModal() {
     </div>
   `;
 }
+
+// อัปเดตข้อความแถบแจ้งเตือนเมื่อเลื่อนดูสินค้าในตู้จนครบ
+function handleShelfScroll(el) {
+  if (!el) return;
+  const hintEl = el.nextElementSibling;
+  if (!hintEl || !hintEl.hasAttribute('data-shelf-hint')) return;
+  const isBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 6);
+  const total = el.getAttribute('data-total-prods') || '';
+  if (isBottom) {
+    hintEl.innerHTML = `✅ ครบทุก ${total} รายการแล้ว • เลื่อนลงต่อเพื่อดูส่วนถัดไปของหน้าเว็บ ⬇️`;
+    hintEl.style.color = '#4ade80';
+  } else {
+    hintEl.innerHTML = `⬇️ เลื่อนลงเพื่อดูสินค้าเพิ่มเติม (ทั้งหมด ${total} รายการ)`;
+    hintEl.style.color = '#38bdf8';
+  }
+}
+
+// ==========================================================================
+// SMART TOUCH & SCROLL CHAINING FOR COOLER SHELVES (แนวทางที่ 1)
+// ป้องกันการติดกับดักเลื่อนจอ (Scroll Trap) โดยเฉพาะสำหรับผู้สูงอายุ:
+// เมื่อเลื่อนนิ้วในตู้จนสุดก้นตู้ หรือสุดบนตู้ จะส่งแรงเลื่อนต่อให้หน้าเว็บหลักทันที
+// ==========================================================================
+(function initShelfScrollChaining() {
+  let touchY = 0;
+  let touchX = 0;
+  let activeShelf = null;
+
+  document.addEventListener('touchstart', (e) => {
+    if (!e.touches || e.touches.length !== 1) {
+      activeShelf = null;
+      return;
+    }
+    const shelf = e.target.closest('.co-cooler-shelf');
+    if (shelf) {
+      activeShelf = shelf;
+      touchY = e.touches[0].clientY;
+      touchX = e.touches[0].clientX;
+    } else {
+      activeShelf = null;
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!activeShelf || !e.touches || e.touches.length !== 1) return;
+
+    const curY = e.touches[0].clientY;
+    const curX = e.touches[0].clientX;
+    const dy = touchY - curY;
+    const dx = touchX - curX;
+
+    // ละเว้นการปัดในแนวนอน (Horizontal swipe)
+    if (Math.abs(dx) > Math.abs(dy)) {
+      touchY = curY;
+      touchX = curX;
+      return;
+    }
+
+    const shelf = activeShelf;
+    const maxScroll = Math.max(0, shelf.scrollHeight - shelf.clientHeight);
+    const atTop = shelf.scrollTop <= 1;
+    const atBottom = shelf.scrollTop >= maxScroll - 1;
+
+    if (maxScroll <= 1) {
+      // ตู้มีสินค้าน้อย ไม่ต้องเลื่อนภายในตู้ ส่งแรงเลื่อนไปที่หน้าเว็บหลักทันที
+      window.scrollBy({ top: dy, behavior: 'auto' });
+    } else if (dy > 0 && atBottom) {
+      // เลื่อนลงจนสุดก้นตู้แล้ว -> เลื่อนหน้าเว็บหลักลงต่อทันที
+      window.scrollBy({ top: dy, behavior: 'auto' });
+    } else if (dy < 0 && atTop) {
+      // เลื่อนขึ้นจนสุดบนตู้แล้ว -> เลื่อนหน้าเว็บหลักขึ้นต่อทันที
+      window.scrollBy({ top: dy, behavior: 'auto' });
+    }
+
+    touchY = curY;
+    touchX = curX;
+  }, { passive: true });
+
+  document.addEventListener('touchend', () => {
+    activeShelf = null;
+  }, { passive: true });
+
+  document.addEventListener('touchcancel', () => {
+    activeShelf = null;
+  }, { passive: true });
+})();
 
 // Start App
 fetchBootstrap();

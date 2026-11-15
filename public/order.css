@@ -1500,6 +1500,8 @@ body {
     gap: 10px !important;
     max-height: 740px !important; /* ล็อกความสูงไว้ 4 บรรทัด พอดีสำหรับ 8 ชิ้นแรกบนมือถือ */
     overflow-y: auto !important;
+    overscroll-behavior: auto !important;
+    overscroll-behavior-y: auto !important;
     -webkit-overflow-scrolling: touch;
   }
   .co-pixel-item {
@@ -2036,11 +2038,12 @@ body {
   }
 }
 
-/* Shelf lock 4 rows on desktop */
+/* Shelf lock 4 rows on desktop & mobile with smooth scroll chaining */
 .co-cooler-shelf {
   max-height: 750px;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: auto;
+  overscroll-behavior-y: auto;
   -webkit-overflow-scrolling: touch;
 }
 
