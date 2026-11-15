@@ -13,6 +13,21 @@ const orderState = {
   viewMode: 'PIXEL', // 'PIXEL' (แบบ C: Virtual Storefront) | 'LIST' (รายการเมนูด่วน)
   orderMode: 'DELIVERY', // 'DELIVERY' | 'DINE_IN' | 'TAKEAWAY'
   tableId: '',
+  isTableLocked: false, // true เมื่อเข้าผ่าน QR Code ประจำโต๊ะ (?table=...)
+  // Takeaway Pickup Time
+  pickupTimeType: 'ASAP', // 'ASAP' (15 นาที) | '30M' | '45M' | '60M' | 'CUSTOM'
+  pickupCustomTime: '',
+  // Map Zoom State
+  mapZoom: 1.0, // 1.0 ถึง 2.5
+  // My Orders Modal
+  showMyOrdersModal: false,
+  myOrdersSearchPhone: '',
+  myOrdersTab: 'ACTIVE', // 'ACTIVE' | 'HISTORY'
+  searchedOrders: null,
+  isSearchingOrders: false,
+  // Table Bill Modal
+  showTableBillModal: false,
+  tableBillData: null,
   selectedStoreZoneId: null, // null = หน้าโถงร้านจำลอง (เลือกตู้/ชั้น/ครัว) | string = ID ของตู้/พื้นที่ที่เลือก
   storefrontView: 'ROOM', // 'ROOM' (ผังห้อง RPG เหมือนรูปที่ 2) | 'CARDS' (การ์ดแยกตู้)
   activeZoneCategory: 'ALL', // กรองหมวดหมู่ย่อยในตู้นั้น
@@ -41,7 +56,7 @@ const orderState = {
   data: null
 };
 
-// URL Parameters initialization
+// URL Parameters initialization: Isolated Table QR Code vs Online Customers
 (function initUrlParams() {
   const params = new URLSearchParams(window.location.search);
   const tbl = params.get('table');
@@ -49,14 +64,18 @@ const orderState = {
   const view = params.get('view');
 
   if (tbl) {
+    // สแกน QR โต๊ะมา: ล็อกโต๊ะนั้นทันที ซ่อนการสลับโหมด และบังคับโหมดทานที่ร้าน
     orderState.tableId = tbl;
     orderState.orderMode = 'DINE_IN';
-  } else if (mode === 'delivery') {
-    orderState.orderMode = 'DELIVERY';
-  } else if (mode === 'takeaway') {
-    orderState.orderMode = 'TAKEAWAY';
-  } else if (mode === 'dine_in') {
-    orderState.orderMode = 'DINE_IN';
+    orderState.isTableLocked = true;
+  } else {
+    // ลูกค้าภายนอก: ป้องกันคนนอกร้านสั่งแกล้งโต๊ะ ซ่อนโหมดทานที่ร้าน เหลือเฉพาะเดลิเวอรี่และรับกลับบ้าน
+    orderState.isTableLocked = false;
+    if (mode === 'takeaway') {
+      orderState.orderMode = 'TAKEAWAY';
+    } else {
+      orderState.orderMode = 'DELIVERY';
+    }
   }
 
   if (view === 'list') {
@@ -362,6 +381,10 @@ async function submitOrder() {
     alert('กรุณาระบุเบอร์โทรศัพท์สำหรับติดต่อส่งของ');
     return;
   }
+  if (orderState.orderMode === 'TAKEAWAY' && !orderState.customerPhone) {
+    alert('กรุณาระบุเบอร์โทรศัพท์สำหรับติดต่อรับอาหาร');
+    return;
+  }
 
   const netTotal = getCartNetTotal();
   const subtotal = getCartSubtotal();
@@ -379,8 +402,15 @@ async function submitOrder() {
     billTitle = `🍽️ ${tblObj ? tblObj.name : 'โต๊ะ ' + orderState.tableId} (${orderState.customerName || 'ลูกค้า'})`;
     billNote = orderState.deliveryNote || 'ทานที่ร้าน';
   } else {
-    billTitle = `🛍️ สั่งกลับบ้าน (${orderState.customerName || 'ลูกค้า'})`;
-    billNote = `เบอร์โทร: ${orderState.customerPhone || '-'} ${orderState.deliveryNote ? '| หมายเหตุ: ' + orderState.deliveryNote : ''}`;
+    // โหมดรับกลับบ้าน (Takeaway) พร้อมช่วงเวลามารับ
+    let pickupText = 'มารับทันที (~15 นาที)';
+    if (orderState.pickupTimeType === '30M') pickupText = 'อีก 30 นาที';
+    else if (orderState.pickupTimeType === '45M') pickupText = 'อีก 45 นาที';
+    else if (orderState.pickupTimeType === '60M') pickupText = 'อีก 1 ชั่วโมง';
+    else if (orderState.pickupTimeType === 'CUSTOM' && orderState.pickupCustomTime) pickupText = `เวลา ${orderState.pickupCustomTime}`;
+
+    billTitle = `🛍️ รับกลับบ้าน: ${pickupText} (${orderState.customerName || 'ลูกค้า'})`;
+    billNote = `เวลามารับ: ${pickupText} | โทร: ${orderState.customerPhone || '-'} ${orderState.deliveryNote ? '| หมายเหตุ: ' + orderState.deliveryNote : ''}`;
   }
 
   const payload = {
@@ -420,6 +450,7 @@ async function submitOrder() {
         items: [...orderState.cart],
         created_at: new Date().toISOString()
       };
+      saveOrderToMyHistory(orderState.activeOrder);
       orderState.cart = [];
       orderState.showCheckoutModal = false;
       orderState.showCartModal = false;
@@ -445,11 +476,46 @@ async function submitOrder() {
       items: [...orderState.cart],
       created_at: new Date().toISOString()
     };
+    saveOrderToMyHistory(orderState.activeOrder);
     orderState.cart = [];
     orderState.showCheckoutModal = false;
     orderState.showCartModal = false;
     startLivePolling(orderState.activeOrder.id);
     render();
+  }
+}
+
+// Save Order to LocalStorage History (แนวทาง A)
+function saveOrderToMyHistory(orderObj) {
+  if (!orderObj || !orderObj.id) return;
+  try {
+    let list = JSON.parse(localStorage.getItem('co_my_orders') || '[]');
+    if (!Array.isArray(list)) list = [];
+    list = list.filter(o => o.id !== orderObj.id);
+    list.unshift({
+      id: orderObj.id,
+      title: orderObj.title,
+      netTotal: orderObj.netTotal,
+      orderMode: orderObj.orderMode,
+      phone: orderState.customerPhone || '',
+      name: orderState.customerName || '',
+      pointName: orderObj.pointName || '',
+      created_at: orderObj.created_at || new Date().toISOString(),
+      items: (orderObj.items || []).map(it => ({
+        product_id: it.product_id,
+        name: it.product?.name || it.name,
+        price: it.product?.price || it.price,
+        quantity: it.quantity,
+        modifiers: (it.modifiers || []).map(m => m.name || m)
+      }))
+    });
+    if (list.length > 40) list = list.slice(0, 40);
+    localStorage.setItem('co_my_orders', JSON.stringify(list));
+    if (orderState.customerPhone) {
+      localStorage.setItem('co_customer_phone', orderState.customerPhone);
+    }
+  } catch (err) {
+    console.warn('saveOrderToMyHistory error:', err);
   }
 }
 
@@ -555,62 +621,94 @@ function render() {
             <div class="co-store-sub">ริมแม่น้ำโขง ตลาดอินโดจีน มุกดาหาร</div>
           </div>
         </a>
-        <div class="co-view-toggle">
+        <div class="co-header-actions">
           <button
             type="button"
-            class="co-view-btn"
-            data-active="${orderState.viewMode === 'PIXEL'}"
-            onclick="orderState.viewMode='PIXEL'; render();"
+            class="co-orders-nav-btn"
+            onclick="openMyOrdersModal();"
+            title="ดูสถานะออเดอร์สดและประวัติการสั่งซื้อ"
           >
-            🏪 ร้านจำลอง
+            📋 ออเดอร์ของฉัน
           </button>
-          <button
-            type="button"
-            class="co-view-btn"
-            data-active="${orderState.viewMode === 'LIST'}"
-            onclick="orderState.viewMode='LIST'; render();"
-          >
-            📋 รายการเมนู
-          </button>
+          <div class="co-view-toggle">
+            <button
+              type="button"
+              class="co-view-btn"
+              data-active="${orderState.viewMode === 'PIXEL'}"
+              onclick="orderState.viewMode='PIXEL'; render();"
+            >
+              🏪 ร้านจำลอง
+            </button>
+            <button
+              type="button"
+              class="co-view-btn"
+              data-active="${orderState.viewMode === 'LIST'}"
+              onclick="orderState.viewMode='LIST'; render();"
+            >
+              📋 เมนูด่วน
+            </button>
+          </div>
         </div>
       </div>
     </header>
 
     <div class="co-container">
       <!-- Order Mode Selector -->
-      <div class="co-mode-tabs">
-        <div
-          class="co-mode-tab"
-          data-active="${orderState.orderMode === 'DELIVERY'}"
-          onclick="orderState.orderMode='DELIVERY'; render();"
-        >
-          <span class="co-mode-icon">🛵</span>
-          <span class="co-mode-title">ส่งเดลิเวอรี่</span>
-          <span class="co-mode-desc">เส้นตลาดอินโดจีน</span>
+      ${orderState.isTableLocked ? `
+        <!-- Table Mode Locked (สแกน QR โต๊ะมา ล็อคโต๊ะทันที ซ่อนแท็บสลับโหมด) -->
+        <div class="co-table-locked-card">
+          <div class="co-table-locked-header">
+            <div class="co-table-locked-info">
+              <span class="co-table-locked-icon">🍽️</span>
+              <div>
+                <div class="co-table-locked-title">โต๊ะ: ${(orderState.data?.tables || []).find(t => t.id === orderState.tableId)?.name || 'โต๊ะ ' + orderState.tableId}</div>
+                <div class="co-table-locked-sub">สั่งอาหารทานที่ร้าน • อาหารจะเสิร์ฟตรงถึงโต๊ะคุณ</div>
+              </div>
+            </div>
+            <button type="button" class="co-table-bill-status-btn" onclick="openTableBillModal()">
+              📋 ดูสถานะบิลโต๊ะ
+            </button>
+          </div>
+          <div class="co-table-service-bar">
+            <button type="button" class="co-svc-btn" onclick="requestTableService('CALL_STAFF')">
+              🔔 เรียกพนักงาน
+            </button>
+            <button type="button" class="co-svc-btn" onclick="requestTableService('ICE')">
+              🧊 ขอน้ำแข็ง
+            </button>
+            <button type="button" class="co-svc-btn" onclick="requestTableService('CHECKOUT')">
+              🧾 ขอเช็คบิล
+            </button>
+          </div>
         </div>
-        <div
-          class="co-mode-tab"
-          data-active="${orderState.orderMode === 'DINE_IN'}"
-          onclick="orderState.orderMode='DINE_IN'; render();"
-        >
-          <span class="co-mode-icon">🍽️</span>
-          <span class="co-mode-title">ทานที่ร้าน</span>
-          <span class="co-mode-desc">${orderState.tableId ? 'โต๊ะ ' + orderState.tableId : 'เลือกโต๊ะ'}</span>
+      ` : `
+        <!-- Normal Customer: Only 2 Modes (Delivery & Takeaway) - ซ่อนทานที่ร้าน ป้องกันสั่งแกล้ง -->
+        <div class="co-mode-tabs">
+          <div
+            class="co-mode-tab"
+            data-active="${orderState.orderMode === 'DELIVERY'}"
+            onclick="orderState.orderMode='DELIVERY'; render();"
+          >
+            <span class="co-mode-icon">🛵</span>
+            <span class="co-mode-title">ส่งเดลิเวอรี่</span>
+            <span class="co-mode-desc">เส้นตลาดอินโดจีน</span>
+          </div>
+          <div
+            class="co-mode-tab"
+            data-active="${orderState.orderMode === 'TAKEAWAY'}"
+            onclick="orderState.orderMode='TAKEAWAY'; render();"
+          >
+            <span class="co-mode-icon">🛍️</span>
+            <span class="co-mode-title">รับกลับบ้าน</span>
+            <span class="co-mode-desc">มารับที่หน้าร้าน</span>
+          </div>
         </div>
-        <div
-          class="co-mode-tab"
-          data-active="${orderState.orderMode === 'TAKEAWAY'}"
-          onclick="orderState.orderMode='TAKEAWAY'; render();"
-        >
-          <span class="co-mode-icon">🛍️</span>
-          <span class="co-mode-title">รับกลับบ้าน</span>
-          <span class="co-mode-desc">มารับที่หน้าร้าน</span>
-        </div>
-      </div>
+      `}
 
-      <!-- Mode-specific Notices & Delivery Map -->
+      <!-- Mode-specific Sections -->
       ${orderState.orderMode === 'DELIVERY' ? renderDeliverySection() : ''}
-      ${orderState.orderMode === 'DINE_IN' ? renderDineInSection() : ''}
+      ${orderState.orderMode === 'TAKEAWAY' ? renderTakeawaySection() : ''}
+      ${orderState.orderMode === 'DINE_IN' && !orderState.isTableLocked ? renderDineInSection() : ''}
 
       <!-- Main Storefront Content (Pixel or List) -->
       <div id="co-storefront-root">
@@ -628,6 +726,8 @@ function render() {
       ${orderState.foodModalProduct ? renderFoodModifierModal() : ''}
       ${orderState.showCartModal ? renderCartModal() : ''}
       ${orderState.showCheckoutModal ? renderCheckoutModal() : ''}
+      ${orderState.showMyOrdersModal ? renderMyOrdersModal() : ''}
+      ${orderState.showTableBillModal ? renderTableBillModal() : ''}
     </div>
   `;
 
@@ -642,7 +742,8 @@ function render() {
 // Render Delivery Section with Indochina Market Pixel Map (Horizontal: North on Left, South on Right, Mekong River on Top)
 function renderDeliverySection() {
   const pts = (orderState.data?.deliveryPoints || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-  const curPt = pts.find(p => p.id === orderState.selectedDeliveryPointId) || pts[0];
+  const curPtIndex = pts.findIndex(p => p.id === orderState.selectedDeliveryPointId);
+  const curPt = curPtIndex >= 0 ? pts[curPtIndex] : pts[0];
   const mapCfg = orderState.data?.deliveryMapConfig || { orientation: 'HORIZONTAL', river_position: 'TOP', custom_image_url: '', custom_landmarks: [] };
   const customLandmarks = Array.isArray(mapCfg.custom_landmarks) ? mapCfg.custom_landmarks : [];
 
@@ -651,7 +752,7 @@ function renderDeliverySection() {
       <span style="font-size:18px;">📍</span>
       <div>
         <b>บริการส่งด่วนเฉพาะเส้น ตลาดอินโดจีน มุกดาหาร</b>
-        <div style="font-size:11px; color:#155e75;">เลือกจุดรับของบนแผนที่ด้านล่าง ไรเดอร์จะนำส่งถึงจุดที่ใกล้คุณที่สุด (เหนืออยู่ซ้าย ◀ | ใต้อยู่ขวา ▶ | โขงอยู่บน ▲)</div>
+        <div style="font-size:11px; color:#155e75;">เลือกหมุดจุดรับของบนแผนที่ด้านล่าง ไรเดอร์จะนำส่งถึงจุดที่ใกล้คุณที่สุด (กดซูม 🔍 เพื่อดูชัดๆ บนมือถือได้)</div>
       </div>
     </div>
 
@@ -660,184 +761,199 @@ function renderDeliverySection() {
         <div class="co-map-title">
           <span>🗺️ แผนผังตลาดอินโดจีน มุกดาหาร (เลียบโขง)</span>
         </div>
-        <div style="font-size:11.5px; color:#0d9488; font-weight:700;">
-          จุดรับที่เลือก: <b>${curPt ? curPt.name : '-'}</b>
+        <div class="co-map-zoom-tools">
+          <button type="button" class="co-zoom-btn" onclick="zoomMap(0.25)" title="ซูมเข้า">🔍 +</button>
+          <button type="button" class="co-zoom-btn" onclick="zoomMap(-0.25)" title="ซูมออก">🔍 −</button>
+          <button type="button" class="co-zoom-btn" onclick="resetMapZoom()" title="รีเซ็ตขนาดปกติ">↺ <span id="co-zoom-label">${Math.round(orderState.mapZoom * 100)}%</span></button>
         </div>
       </div>
 
-      <!-- Interactive Pixel Map (Horizontal Orientation) -->
-      <div class="co-map-wrapper">
-        ${mapCfg.custom_image_url ? `
-          <!-- Custom Drawn Map Background -->
-          <img
-            src="${mapCfg.custom_image_url}"
-            alt="แผนผังที่วาดเอง"
-            style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block;"
-          />
-        ` : `
-          <!-- แผนผัง Pixel Art มาตรฐานแบบแนวนอน (ทิศเหนืออยู่ซ้าย, ทิศใต้อยู่ขวา, แม่น้ำโขงอยู่ด้านบน) -->
-          <svg viewBox="0 0 1000 380" preserveAspectRatio="none" style="width:100%; height:100%; display:block;">
-            <defs>
-              <linearGradient id="odMekongHorizontalWater" x1="0%" y1="0%" x2="0%" y2="100%">
-                <stop offset="0%" stop-color="#0284c7" />
-                <stop offset="60%" stop-color="#0369a1" />
-                <stop offset="100%" stop-color="#075985" />
-              </linearGradient>
-              <pattern id="odPixelWaveH" width="24" height="12" patternUnits="userSpaceOnUse">
-                <rect x="0" y="2" width="10" height="2" fill="#38bdf8" opacity="0.6"/>
-                <rect x="12" y="8" width="10" height="2" fill="#bae6fd" opacity="0.5"/>
-              </pattern>
-            </defs>
+      <!-- Interactive Pixel Map (Horizontal Orientation with Zoom & Pan) -->
+      <div class="co-map-viewport" id="co-map-viewport">
+        <div class="co-map-canvas" id="co-map-canvas" style="transform: scale(${orderState.mapZoom});">
+          ${mapCfg.custom_image_url ? `
+            <!-- Custom Drawn Map Background -->
+            <img
+              src="${mapCfg.custom_image_url}"
+              alt="แผนผังที่วาดเอง"
+              style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block;"
+            />
+          ` : `
+            <!-- แผนผัง Pixel Art มาตรฐานแบบแนวนอน (ทิศเหนืออยู่ซ้าย, ทิศใต้อยู่ขวา, แม่น้ำโขงอยู่ด้านบน) -->
+            <svg viewBox="0 0 1000 380" preserveAspectRatio="none" style="width:100%; height:100%; display:block;">
+              <defs>
+                <linearGradient id="odMekongHorizontalWater" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stop-color="#0284c7" />
+                  <stop offset="60%" stop-color="#0369a1" />
+                  <stop offset="100%" stop-color="#075985" />
+                </linearGradient>
+                <pattern id="odPixelWaveH" width="24" height="12" patternUnits="userSpaceOnUse">
+                  <rect x="0" y="2" width="10" height="2" fill="#38bdf8" opacity="0.6"/>
+                  <rect x="12" y="8" width="10" height="2" fill="#bae6fd" opacity="0.5"/>
+                </pattern>
+              </defs>
 
-            <!-- 1. Top Section (Y: 0 to 110): แม่น้ำโขง (Mekong River) ทอดยาวจากซ้าย (เหนือ) ไปขวา (ใต้) -->
-            <rect x="0" y="0" width="1000" height="110" fill="url(#odMekongHorizontalWater)" />
-            <rect x="0" y="0" width="1000" height="110" fill="url(#odPixelWaveH)" />
+              <!-- 1. Top Section (Y: 0 to 110): แม่น้ำโขง (Mekong River) -->
+              <rect x="0" y="0" width="1000" height="110" fill="url(#odMekongHorizontalWater)" />
+              <rect x="0" y="0" width="1000" height="110" fill="url(#odPixelWaveH)" />
 
-            <!-- Longtail Boats on River -->
-            <g transform="translate(180, 40)">
-              <polygon points="0,10 42,10 32,22 -8,22" fill="#b45309" />
-              <rect x="6" y="2" width="20" height="8" fill="#f59e0b" />
-              <line x1="42" y1="10" x2="58" y2="2" stroke="#475569" stroke-width="2" />
-              <text x="0" y="34" fill="#e0f2fe" font-size="8.5" font-family="monospace">เรือหางยาว</text>
-            </g>
+              <!-- Longtail Boats on River -->
+              <g transform="translate(180, 40)">
+                <polygon points="0,10 42,10 32,22 -8,22" fill="#b45309" />
+                <rect x="6" y="2" width="20" height="8" fill="#f59e0b" />
+                <line x1="42" y1="10" x2="58" y2="2" stroke="#475569" stroke-width="2" />
+                <text x="0" y="34" fill="#e0f2fe" font-size="8.5" font-family="monospace">เรือหางยาว</text>
+              </g>
 
-            <g transform="translate(680, 30)">
-              <polygon points="0,10 45,10 35,22 -8,22" fill="#b45309" />
-              <rect x="8" y="2" width="22" height="8" fill="#ef4444" />
-              <line x1="45" y1="10" x2="62" y2="2" stroke="#475569" stroke-width="2" />
-              <text x="4" y="34" fill="#e0f2fe" font-size="8.5" font-family="monospace">เรือข้ามฟาก</text>
-            </g>
+              <g transform="translate(680, 30)">
+                <polygon points="0,10 45,10 35,22 -8,22" fill="#b45309" />
+                <rect x="8" y="2" width="22" height="8" fill="#ef4444" />
+                <line x1="45" y1="10" x2="62" y2="2" stroke="#475569" stroke-width="2" />
+                <text x="4" y="34" fill="#e0f2fe" font-size="8.5" font-family="monospace">เรือข้ามฟาก</text>
+              </g>
 
-            <text x="500" y="42" fill="#bae6fd" font-size="16" font-family="monospace" font-weight="bold" text-anchor="middle" opacity="0.85">แม่น้ำโขง • MEKONG RIVER</text>
-            <text x="500" y="58" fill="#7dd3fc" font-size="9" font-family="monospace" text-anchor="middle" opacity="0.75">(มองข้ามไปเป็นฝั่ง สปป.ลาว / แขวงสะหวันนะเขต)</text>
+              <text x="500" y="42" fill="#bae6fd" font-size="16" font-family="monospace" font-weight="bold" text-anchor="middle" opacity="0.85">แม่น้ำโขง • MEKONG RIVER</text>
+              <text x="500" y="58" fill="#7dd3fc" font-size="9" font-family="monospace" text-anchor="middle" opacity="0.75">(มองข้ามไปเป็นฝั่ง สปป.ลาว / แขวงสะหวันนะเขต)</text>
 
-            <!-- 2. Embankment & Promenade (Y: 110 to 170): ลานคนเดินเลียบแม่น้ำโขง -->
-            <rect x="0" y="110" width="1000" height="60" fill="#78716c" />
-            <line x1="120" y1="110" x2="120" y2="170" stroke="#a8a29e" stroke-width="1.5" />
-            <line x1="260" y1="110" x2="260" y2="170" stroke="#a8a29e" stroke-width="1.5" />
-            <line x1="410" y1="110" x2="410" y2="170" stroke="#a8a29e" stroke-width="1.5" />
-            <line x1="560" y1="110" x2="560" y2="170" stroke="#a8a29e" stroke-width="1.5" />
-            <line x1="720" y1="110" x2="720" y2="170" stroke="#a8a29e" stroke-width="1.5" />
-            <line x1="860" y1="110" x2="860" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+              <!-- 2. Embankment & Promenade (Y: 110 to 170): ลานคนเดินเลียบแม่น้ำโขง -->
+              <rect x="0" y="110" width="1000" height="60" fill="#78716c" />
+              <line x1="120" y1="110" x2="120" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+              <line x1="260" y1="110" x2="260" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+              <line x1="410" y1="110" x2="410" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+              <line x1="560" y1="110" x2="560" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+              <line x1="720" y1="110" x2="720" y2="170" stroke="#a8a29e" stroke-width="1.5" />
+              <line x1="860" y1="110" x2="860" y2="170" stroke="#a8a29e" stroke-width="1.5" />
 
-            <text x="70" y="142" fill="#f5f5f4" font-size="9" font-family="monospace" font-weight="bold">ลานคนเดินริมโขง</text>
-            <text x="780" y="142" fill="#f5f5f4" font-size="9" font-family="monospace" font-weight="bold">ลานคนเดินริมโขง</text>
+              <text x="70" y="142" fill="#f5f5f4" font-size="9" font-family="monospace" font-weight="bold">ลานคนเดินริมโขง</text>
+              <text x="780" y="142" fill="#f5f5f4" font-size="9" font-family="monospace" font-weight="bold">ลานคนเดินริมโขง</text>
 
-            <!-- ศาลาขาว Rau Rak Mukdahan Pavilion on the promenade (Center) -->
-            <rect x="430" y="114" width="115" height="50" fill="#ffffff" stroke="#0f172a" stroke-width="2" rx="4"/>
-            <rect x="434" y="118" width="107" height="42" fill="#f8fafc"/>
-            <text x="487" y="136" fill="#0f172a" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">ศาลาขาวริมโขง</text>
-            <text x="487" y="150" fill="#475569" font-size="8" font-family="monospace" text-anchor="middle">Rau Rak Mukdahan</text>
+              <!-- ศาลาขาว Rau Rak Mukdahan Pavilion on the promenade (Center) -->
+              <rect x="430" y="114" width="115" height="50" fill="#ffffff" stroke="#0f172a" stroke-width="2" rx="4"/>
+              <rect x="434" y="118" width="107" height="42" fill="#f8fafc"/>
+              <text x="487" y="136" fill="#0f172a" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">ศาลาขาวริมโขง</text>
+              <text x="487" y="150" fill="#475569" font-size="8" font-family="monospace" text-anchor="middle">Rau Rak Mukdahan</text>
 
-            <!-- 3. Road (Y: 170 to 230): ถนนสำราญชายโขง แนวนอน -->
-            <rect x="0" y="170" width="1000" height="60" fill="#1e293b" />
-            <line x1="0" y1="200" x2="1000" y2="200" stroke="#facc15" stroke-width="2.5" stroke-dasharray="16,12" />
-            <text x="220" y="194" fill="#e2e8f0" font-size="9" font-family="monospace">◀ ทิศเหนือ (ไปสะพานมิตรภาพ 2)</text>
-            <text x="500" y="218" fill="#fde047" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">ถนนสำราญชายโขง (SAMRAN CHAI KHONG RD)</text>
-            <text x="760" y="194" fill="#e2e8f0" font-size="9" font-family="monospace">ทิศใต้ (ไปสะพานห้วยมุก) ▶</text>
+              <!-- 3. Road (Y: 170 to 230): ถนนสำราญชายโขง แนวนอน -->
+              <rect x="0" y="170" width="1000" height="60" fill="#1e293b" />
+              <line x1="0" y1="200" x2="1000" y2="200" stroke="#facc15" stroke-width="2.5" stroke-dasharray="16,12" />
+              <text x="220" y="194" fill="#e2e8f0" font-size="9" font-family="monospace">◀ ทิศเหนือ (ไปสะพานมิตรภาพ 2)</text>
+              <text x="500" y="218" fill="#fde047" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">ถนนสำราญชายโขง (SAMRAN CHAI KHONG RD)</text>
+              <text x="760" y="194" fill="#e2e8f0" font-size="9" font-family="monospace">ทิศใต้ (ไปสะพานห้วยมุก) ▶</text>
 
-            <!-- 4. City / Buildings / Alleys (Y: 230 to 380): ตัวเมืองมุกดาหารและซอยต่างๆ -->
-            <rect x="0" y="230" width="1000" height="150" fill="#334155" />
+              <!-- 4. City / Buildings / Alleys (Y: 230 to 380) -->
+              <rect x="0" y="230" width="1000" height="150" fill="#334155" />
 
-            <!-- North/Left Block: หอเจ้าแม่สองนางพี่น้อง & วัดศรีมงคลใต้ -->
-            <rect x="14" y="244" width="105" height="110" fill="#b45309" stroke="#1e293b" stroke-width="2" rx="4"/>
-            <text x="66" y="295" fill="#fef3c7" font-size="9.5" font-family="monospace" font-weight="bold" text-anchor="middle">หอเจ้าแม่สองนาง</text>
-            <text x="66" y="312" fill="#fde68a" font-size="8" font-family="monospace" text-anchor="middle">& ต้นไม้ศักดิ์สิทธิ์</text>
+              <!-- North/Left Block: หอเจ้าแม่สองนางพี่น้อง -->
+              <rect x="14" y="244" width="105" height="110" fill="#b45309" stroke="#1e293b" stroke-width="2" rx="4"/>
+              <text x="66" y="295" fill="#fef3c7" font-size="9.5" font-family="monospace" font-weight="bold" text-anchor="middle">หอเจ้าแม่สองนาง</text>
+              <text x="66" y="312" fill="#fde68a" font-size="8" font-family="monospace" text-anchor="middle">& ต้นไม้ศักดิ์สิทธิ์</text>
 
-            <!-- Alley 1: ซอยสองนางสถิตย์ -->
-            <rect x="125" y="230" width="36" height="150" fill="#1e293b"/>
-            <text x="143" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 143, 290)">ซ.สองนางสถิตย์ ▼</text>
+              <!-- Alley 1: ซอยสองนางสถิตย์ -->
+              <rect x="125" y="230" width="36" height="150" fill="#1e293b"/>
+              <text x="143" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 143, 290)">ซ.สองนางสถิตย์ ▼</text>
 
-            <!-- วัดศรีมงคลใต้ -->
-            <rect x="168" y="244" width="95" height="110" fill="#991b1b" stroke="#1e293b" stroke-width="2" rx="4"/>
-            <text x="215" y="295" fill="#fee2e2" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">วัดศรีมงคลใต้</text>
-            <text x="215" y="312" fill="#fecaca" font-size="8" font-family="monospace" text-anchor="middle">พระอารามหลวง</text>
+              <!-- วัดศรีมงคลใต้ -->
+              <rect x="168" y="244" width="95" height="110" fill="#991b1b" stroke="#1e293b" stroke-width="2" rx="4"/>
+              <text x="215" y="295" fill="#fee2e2" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">วัดศรีมงคลใต้</text>
+              <text x="215" y="312" fill="#fecaca" font-size="8" font-family="monospace" text-anchor="middle">พระอารามหลวง</text>
 
-            <!-- Alley 2: ซอยบริหารชนบท -->
-            <rect x="270" y="230" width="34" height="150" fill="#1e293b"/>
-            <text x="287" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 287, 290)">ซ.บริหารชนบท ▼</text>
+              <!-- Alley 2: ซอยบริหารชนบท -->
+              <rect x="270" y="230" width="34" height="150" fill="#1e293b"/>
+              <text x="287" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 287, 290)">ซ.บริหารชนบท ▼</text>
 
-            <!-- ตึกแถว 1 -->
-            <rect x="310" y="244" width="48" height="110" fill="#065f46" stroke="#1e293b" stroke-width="2"/>
-            <text x="334" y="300" fill="#d1fae5" font-size="8" font-family="monospace" text-anchor="middle">ร้านค้า</text>
+              <!-- ตึกแถว 1 -->
+              <rect x="310" y="244" width="48" height="110" fill="#065f46" stroke="#1e293b" stroke-width="2"/>
+              <text x="334" y="300" fill="#d1fae5" font-size="8" font-family="monospace" text-anchor="middle">ร้านค้า</text>
 
-            <!-- Alley 3: ซอยวิเศษมุกดารักษ์ -->
-            <rect x="364" y="230" width="34" height="150" fill="#1e293b"/>
-            <text x="381" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 381, 290)">ซ.วิเศษมุกดารักษ์ ▼</text>
+              <!-- Alley 3: ซอยวิเศษมุกดารักษ์ -->
+              <rect x="364" y="230" width="34" height="150" fill="#1e293b"/>
+              <text x="381" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 381, 290)">ซ.วิเศษมุกดารักษ์ ▼</text>
 
-            <!-- ตลาดอินโดจีน อาคารใหญ่ (Center) -->
-            <rect x="406" y="244" width="95" height="110" fill="#ca8a04" stroke="#1e293b" stroke-width="2" rx="4"/>
-            <text x="453" y="290" fill="#ffffff" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">อาคารตลาดอินโดจีน</text>
-            <text x="453" y="306" fill="#fef08a" font-size="8" font-family="monospace" text-anchor="middle">INDOCHINA MARKET</text>
+              <!-- ตลาดอินโดจีน อาคารใหญ่ (Center) -->
+              <rect x="406" y="244" width="95" height="110" fill="#ca8a04" stroke="#1e293b" stroke-width="2" rx="4"/>
+              <text x="453" y="290" fill="#ffffff" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">อาคารตลาดอินโดจีน</text>
+              <text x="453" y="306" fill="#fef08a" font-size="8" font-family="monospace" text-anchor="middle">INDOCHINA MARKET</text>
 
-            <!-- ถนนพิทักษ์พนมเขต (ทางเข้าหลัก) -->
-            <rect x="508" y="230" width="44" height="150" fill="#0f172a"/>
-            <text x="530" y="290" fill="#fbbf24" font-size="9" font-family="monospace" font-weight="bold" transform="rotate(90, 530, 290)">ถ.พิทักษ์พนมเขต ▼</text>
+              <!-- ถนนพิทักษ์พนมเขต (ทางเข้าหลัก) -->
+              <rect x="508" y="230" width="44" height="150" fill="#0f172a"/>
+              <text x="530" y="290" fill="#fbbf24" font-size="9" font-family="monospace" font-weight="bold" transform="rotate(90, 530, 290)">ถ.พิทักษ์พนมเขต ▼</text>
 
-            <!-- วัดยอดแก้วศรีวิชัย -->
-            <rect x="560" y="244" width="115" height="110" fill="#991b1b" stroke="#1e293b" stroke-width="2" rx="4"/>
-            <text x="617" y="295" fill="#fee2e2" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">วัดยอดแก้วศรีวิชัย</text>
-            <text x="617" y="312" fill="#fecaca" font-size="8" font-family="monospace" text-anchor="middle">ศูนย์กลางชุมชน</text>
+              <!-- วัดยอดแก้วศรีวิชัย -->
+              <rect x="560" y="244" width="115" height="110" fill="#991b1b" stroke="#1e293b" stroke-width="2" rx="4"/>
+              <text x="617" y="295" fill="#fee2e2" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">วัดยอดแก้วศรีวิชัย</text>
+              <text x="617" y="312" fill="#fecaca" font-size="8" font-family="monospace" text-anchor="middle">ศูนย์กลางชุมชน</text>
 
-            <!-- Alley 4: ซอยศศิวงศ์ -->
-            <rect x="682" y="230" width="34" height="150" fill="#1e293b"/>
-            <text x="699" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 699, 290)">ซ.ศศิวงศ์ ▼</text>
+              <!-- Alley 4: ซอยศศิวงศ์ -->
+              <rect x="682" y="230" width="34" height="150" fill="#1e293b"/>
+              <text x="699" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 699, 290)">ซ.ศศิวงศ์ ▼</text>
 
-            <!-- ตึกแถว 2 -->
-            <rect x="722" y="244" width="48" height="110" fill="#374151" stroke="#1e293b" stroke-width="2"/>
-            <text x="746" y="300" fill="#e5e7eb" font-size="8" font-family="monospace" text-anchor="middle">ร้านค้า</text>
+              <!-- ตึกแถว 2 -->
+              <rect x="722" y="244" width="48" height="110" fill="#374151" stroke="#1e293b" stroke-width="2"/>
+              <text x="746" y="300" fill="#e5e7eb" font-size="8" font-family="monospace" text-anchor="middle">ร้านค้า</text>
 
-            <!-- Alley 5: ซอยจันทร์เทพ -->
-            <rect x="776" y="230" width="34" height="150" fill="#1e293b"/>
-            <text x="793" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 793, 290)">ซ.จันทร์เทพ ▼</text>
+              <!-- Alley 5: ซอยจันทร์เทพ -->
+              <rect x="776" y="230" width="34" height="150" fill="#1e293b"/>
+              <text x="793" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 793, 290)">ซ.จันทร์เทพ ▼</text>
 
-            <!-- South/Right Block: Riverfront Hotel & คุ้นคุ้น คิทเช่น -->
-            <rect x="818" y="244" width="110" height="110" fill="#1e3a8a" stroke="#1e293b" stroke-width="2" rx="4"/>
-            <text x="873" y="290" fill="#bfdbfe" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">Riverfront Hotel</text>
-            <text x="873" y="306" fill="#93c5fd" font-size="8.5" font-family="monospace" text-anchor="middle">คุ้นคุ้น คิทเช่น</text>
+              <!-- South/Right Block: Riverfront Hotel -->
+              <rect x="818" y="244" width="110" height="110" fill="#1e3a8a" stroke="#1e293b" stroke-width="2" rx="4"/>
+              <text x="873" y="290" fill="#bfdbfe" font-size="10" font-family="monospace" font-weight="bold" text-anchor="middle">Riverfront Hotel</text>
+              <text x="873" y="306" fill="#93c5fd" font-size="8.5" font-family="monospace" text-anchor="middle">คุ้นคุ้น คิทเช่น</text>
 
-            <!-- Alley 6: ซอยจ่างวาง -->
-            <rect x="934" y="230" width="34" height="150" fill="#1e293b"/>
-            <text x="951" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 951, 290)">ซ.จ่างวาง ▼</text>
+              <!-- Alley 6: ซอยจ่างวาง -->
+              <rect x="934" y="230" width="34" height="150" fill="#1e293b"/>
+              <text x="951" y="290" fill="#94a3b8" font-size="8.5" font-family="monospace" transform="rotate(90, 951, 290)">ซ.จ่างวาง ▼</text>
 
-            <!-- เข็มทิศ (Compass) แสดงทิศทางชัดเจน -->
-            <g transform="translate(48, 48)">
-              <rect x="-36" y="-36" width="72" height="72" fill="#0f172a" opacity="0.88" rx="8" stroke="#334155" stroke-width="1.5"/>
-              <text x="-24" y="4" fill="#f87171" font-size="10" font-weight="bold">◀ N เหนือ</text>
-              <text x="24" y="4" fill="#94a3b8" font-size="9" text-anchor="end">ใต้ ▶</text>
-              <text x="0" y="-18" fill="#38bdf8" font-size="8.5" text-anchor="middle">▲ แม่น้ำโขง</text>
-              <text x="0" y="24" fill="#94a3b8" font-size="8.5" text-anchor="middle">▼ ในเมือง</text>
-            </g>
-          </svg>
-        `}
+              <!-- เข็มทิศ (Compass) -->
+              <g transform="translate(48, 48)">
+                <rect x="-36" y="-36" width="72" height="72" fill="#0f172a" opacity="0.88" rx="8" stroke="#334155" stroke-width="1.5"/>
+                <text x="-24" y="4" fill="#f87171" font-size="10" font-weight="bold">◀ N เหนือ</text>
+                <text x="24" y="4" fill="#94a3b8" font-size="9" text-anchor="end">ใต้ ▶</text>
+                <text x="0" y="-18" fill="#38bdf8" font-size="8.5" text-anchor="middle">▲ แม่น้ำโขง</text>
+                <text x="0" y="24" fill="#94a3b8" font-size="8.5" text-anchor="middle">▼ ในเมือง</text>
+              </g>
+            </svg>
+          `}
 
-        <!-- User-defined Custom Landmarks on Map -->
-        ${customLandmarks.map(lm => `
-          <div
-            style="position:absolute; left:${lm.map_x}%; top:${lm.map_y}%; transform:translate(-50%, -50%); z-index:8; pointer-events:none;"
-            title="${lm.name}${lm.details ? ` (${lm.details})` : ''}"
-          >
-            <div style="background:rgba(15,23,42,0.88); color:#f1f5f9; font-size:9.5px; font-weight:700; padding:2px 6px; border-radius:6px; border:1px solid #38bdf8; display:flex; align-items:center; gap:3px; white-space:nowrap; box-shadow:0 2px 4px rgba(0,0,0,0.6);">
-              <span>${lm.icon || '📍'}</span>
-              <span>${lm.name}</span>
+          <!-- User-defined Custom Landmarks on Map -->
+          ${customLandmarks.map(lm => `
+            <div
+              style="position:absolute; left:${lm.map_x}%; top:${lm.map_y}%; transform:translate(-50%, -50%); z-index:8; pointer-events:none;"
+              title="${lm.name}${lm.details ? ` (${lm.details})` : ''}"
+            >
+              <div style="background:rgba(15,23,42,0.88); color:#f1f5f9; font-size:9.5px; font-weight:700; padding:2px 6px; border-radius:6px; border:1px solid #38bdf8; display:flex; align-items:center; gap:3px; white-space:nowrap; box-shadow:0 2px 4px rgba(0,0,0,0.6);">
+                <span>${lm.icon || '📍'}</span>
+                <span>${lm.name}</span>
+              </div>
             </div>
-          </div>
-        `).join('')}
+          `).join('')}
 
-        <!-- Dynamic Pins from Database -->
-        ${pts.map((p, idx) => `
-          <div
-            class="co-map-pin"
-            data-selected="${p.id === orderState.selectedDeliveryPointId}"
-            style="left:${p.map_x}%; top:${p.map_y}%;"
-            onclick="orderState.selectedDeliveryPointId='${p.id}'; render();"
-          >
-            <div class="co-pin-badge">
-              <span>📍 ${idx + 1}. ${p.name.split('/')[0].split('(')[0].trim()}</span>
-            </div>
-            <div class="co-pin-arrow"></div>
-          </div>
-        `).join('')}
+          <!-- Dynamic Compact Pins (โชว์เฉพาะหมุดตัวเลข ไม่บังรูปและตัวหนังสือ) -->
+          ${pts.map((p, idx) => {
+            const isSelected = p.id === orderState.selectedDeliveryPointId;
+            return `
+              <div
+                class="co-compact-pin ${isSelected ? 'is-selected' : ''}"
+                style="left:${p.map_x}%; top:${p.map_y}%;"
+                onclick="selectDeliveryPoint('${p.id}')"
+                title="จุดที่ ${idx + 1}: ${p.name}"
+              >
+                <div class="co-compact-pin-dot">
+                  <span class="co-compact-pin-num">${idx + 1}</span>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- สรุปจุดรับที่เลือก (ใต้แผนที่) -->
+      <div class="co-selected-point-banner">
+        <span class="co-selected-point-tag">📍 จุดที่ ${curPtIndex >= 0 ? curPtIndex + 1 : 1}</span>
+        <div style="flex:1;">
+          <div style="font-weight:800; font-size:13.5px; color:#0f172a;">${curPt ? curPt.name : '-'}</div>
+          ${curPt?.landmark_desc ? `<div style="font-size:11.5px; color:#0284c7; margin-top:2px;">${curPt.landmark_desc}</div>` : ''}
+        </div>
       </div>
 
       <!-- Delivery Contact Form -->
@@ -848,9 +964,9 @@ function renderDeliverySection() {
             class="co-select"
             onchange="orderState.selectedDeliveryPointId=this.value; render();"
           >
-            ${pts.map(p => `
+            ${pts.map((p, idx) => `
               <option value="${p.id}" ${p.id === orderState.selectedDeliveryPointId ? 'selected' : ''}>
-                ${p.name} ${p.landmark_desc ? `(${p.landmark_desc})` : ''}
+                📍 จุดที่ ${idx + 1}: ${p.name} ${p.landmark_desc ? `(${p.landmark_desc})` : ''}
               </option>
             `).join('')}
           </select>
@@ -894,6 +1010,104 @@ function renderDeliverySection() {
       </div>
 
       <div id="co-member-badge" style="${orderState.member ? 'display:block;' : 'display:none;'}">
+        ${orderState.member ? `
+          <div style="margin-top:10px; padding:8px 12px; background:#fef3c7; border:1px solid #fde68a; border-radius:8px; display:flex; justify-content:space-between; align-items:center; font-size:12px;">
+            <span>⭐ สมาชิก: <b>${orderState.member.name}</b> (${orderState.member.tier})</span>
+            <span style="color:#b45309; font-weight:700;">แต้มสะสม: ${orderState.member.points} แต้ม</span>
+          </div>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// Render Takeaway Section (หน้ารับกลับบ้าน พร้อมเลือกเวลามารับ)
+function renderTakeawaySection() {
+  const pickupOptions = [
+    { type: 'ASAP', label: '⚡ ทันที (~15 นาที)' },
+    { type: '30M', label: '🕒 อีก 30 นาที' },
+    { type: '45M', label: '🕒 อีก 45 นาที' },
+    { type: '60M', label: '🕒 อีก 1 ชั่วโมง' },
+    { type: 'CUSTOM', label: '⏰ ระบุเวลาเอง' }
+  ];
+
+  return `
+    <div class="co-takeaway-card">
+      <div class="co-notice-banner" style="background:#fdf4ff; border-color:#f0abfc;">
+        <span style="font-size:20px;">🛍️</span>
+        <div>
+          <b style="color:#86198f;">สั่งล่วงหน้า & มารับที่หน้าร้าน (Takeaway)</b>
+          <div style="font-size:11px; color:#a21caf;">สั่งล่วงหน้าตามเวลานัดหมาย ทางร้านจะปรุงสดและแพ็คของไว้ให้พร้อมรับทันทีที่มาถึงหน้าร้าน</div>
+        </div>
+      </div>
+
+      <div class="co-delivery-form">
+        <div class="co-form-group">
+          <label class="co-label">⏰ ช่วงเวลาที่จะมารับของ</label>
+          <div class="co-pickup-time-pills">
+            ${pickupOptions.map(opt => `
+              <button
+                type="button"
+                class="co-pickup-pill"
+                data-active="${orderState.pickupTimeType === opt.type}"
+                onclick="orderState.pickupTimeType='${opt.type}'; render();"
+              >
+                ${opt.label}
+              </button>
+            `).join('')}
+          </div>
+          ${orderState.pickupTimeType === 'CUSTOM' ? `
+            <div style="margin-top:10px; display:flex; align-items:center; gap:8px;">
+              <label style="font-size:12px; font-weight:700;">ระบุเวลาที่มารับ:</label>
+              <input
+                type="time"
+                class="co-input"
+                style="width:140px; font-weight:700; font-size:14px;"
+                value="${orderState.pickupCustomTime || '12:00'}"
+                onchange="orderState.pickupCustomTime=this.value;"
+              />
+            </div>
+          ` : ''}
+        </div>
+
+        <div class="co-form-group">
+          <label class="co-label">เบอร์โทรศัพท์ (จำเป็นสำหรับการติดต่อรับอาหาร & สะสมแต้ม)</label>
+          <input
+            id="co-input-takeaway-phone"
+            type="tel"
+            class="co-input"
+            placeholder="เช่น 0812345678"
+            value="${orderState.customerPhone}"
+            oninput="handlePhoneInput(this.value)"
+          />
+        </div>
+
+        <div class="co-form-group">
+          <label class="co-label">ชื่อผู้สั่ง</label>
+          <input
+            id="co-input-takeaway-name"
+            type="text"
+            class="co-input"
+            placeholder="เช่น คุณเอก / พี่นิด"
+            value="${orderState.customerName}"
+            oninput="orderState.customerName=this.value;"
+          />
+        </div>
+
+        <div class="co-form-group">
+          <label class="co-label">หมายเหตุเพิ่มเติม (เช่น แยกน้ำแข็ง, ขอช้อนส้อม)</label>
+          <input
+            id="co-input-takeaway-note"
+            type="text"
+            class="co-input"
+            placeholder="เช่น แยกน้ำแข็ง, ไม่ใส่ผักชี, ขอช้อนส้อม"
+            value="${orderState.deliveryNote}"
+            oninput="orderState.deliveryNote=this.value;"
+          />
+        </div>
+      </div>
+
+      <div id="co-takeaway-member-badge" style="${orderState.member ? 'display:block;' : 'display:none;'}">
         ${orderState.member ? `
           <div style="margin-top:10px; padding:8px 12px; background:#fef3c7; border:1px solid #fde68a; border-radius:8px; display:flex; justify-content:space-between; align-items:center; font-size:12px;">
             <span>⭐ สมาชิก: <b>${orderState.member.name}</b> (${orderState.member.tier})</span>
@@ -1284,6 +1498,11 @@ function renderPixelStorefront(products = []) {
                   `;
                 }).join('')}
               </div>
+              ${displayedProds.length > 8 ? `
+                <div style="text-align:center; padding:8px 12px; background:rgba(15,23,42,0.9); border-top:1px solid #334155; font-size:11.5px; color:#38bdf8; font-weight:700;">
+                  ⬇️ เลื่อนลงเพื่อดูสินค้าเพิ่มเติม (ทั้งหมด ${displayedProds.length} รายการ)
+                </div>
+              ` : ''}
             </div>
           </div>
         </div>
@@ -2004,6 +2223,495 @@ function renderLiveTrackerView() {
         >
           + สั่งออเดอร์ใหม่
         </button>
+      </div>
+    </div>
+  `;
+}
+
+// ==========================================================================
+// TABLE SERVICE ACTIONS & MAP ZOOM CONTROLS
+// ==========================================================================
+
+function zoomMap(delta) {
+  const next = Math.max(1.0, Math.min(2.5, Math.round((orderState.mapZoom + delta) * 100) / 100));
+  orderState.mapZoom = next;
+  const canvas = document.getElementById('co-map-canvas');
+  if (canvas) canvas.style.transform = `scale(${next})`;
+  const label = document.getElementById('co-zoom-label');
+  if (label) label.textContent = `${Math.round(next * 100)}%`;
+}
+
+function resetMapZoom() {
+  orderState.mapZoom = 1.0;
+  const canvas = document.getElementById('co-map-canvas');
+  if (canvas) canvas.style.transform = 'scale(1.0)';
+  const label = document.getElementById('co-zoom-label');
+  if (label) label.textContent = '100%';
+}
+
+function selectDeliveryPoint(id) {
+  orderState.selectedDeliveryPointId = id;
+  render();
+}
+
+async function requestTableService(type) {
+  if (!orderState.tableId) {
+    alert('กรุณาระบุโต๊ะของคุณก่อนทำรายการ');
+    return;
+  }
+  const labelMap = {
+    CALL_STAFF: '🔔 เรียกพนักงาน',
+    ICE: '🧊 ขอน้ำแข็ง',
+    CHECKOUT: '🧾 ขอเช็คบิล'
+  };
+  const label = labelMap[type] || '🔔 บริการ';
+  const tblObj = (orderState.data?.tables || []).find(t => t.id === orderState.tableId);
+  const tblName = tblObj ? tblObj.name : `โต๊ะ ${orderState.tableId}`;
+
+  if (!confirm(`ยืนยันการส่งคำขอ "${label}" สำหรับ ${tblName} ไปยังพนักงานร้าน?`)) return;
+
+  try {
+    const res = await fetch('/api/tables/service-call', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table_id: orderState.tableId,
+        request_type: type,
+        note: ''
+      })
+    });
+    const json = await res.json().catch(() => null);
+    if (res.ok && json && json.success) {
+      alert(`✓ ส่งคำขอ "${label}" ให้ ${tblName} เรียบร้อยแล้ว พนักงานกำลังมาให้บริการครับ`);
+      return;
+    }
+  } catch {}
+
+  if (window.LocalPosEngine) {
+    window.LocalPosEngine.callTableService({
+      table_id: orderState.tableId,
+      request_type: type,
+      note: ''
+    });
+    alert(`✓ ส่งคำขอ "${label}" ให้ ${tblName} เรียบร้อยแล้ว (ออฟไลน์)`);
+  }
+}
+
+// ==========================================================================
+// TABLE BILL STATUS MODAL
+// ==========================================================================
+
+async function openTableBillModal() {
+  if (!orderState.tableId) {
+    alert('กรุณาเลือกโต๊ะก่อนดูสถานะบิล');
+    return;
+  }
+  orderState.showTableBillModal = true;
+  orderState.tableBillData = null;
+  renderModalsOnly();
+
+  try {
+    const res = await fetch(`/api/customer/orders?table_id=${encodeURIComponent(orderState.tableId)}&_t=${Date.now()}`);
+    const json = await res.json().catch(() => null);
+    if (res.ok && json && Array.isArray(json.orders)) {
+      orderState.tableBillData = json.orders[0] || null;
+      renderModalsOnly();
+      return;
+    }
+  } catch {}
+
+  const tbl = (orderState.data?.tables || []).find(t => t.id === orderState.tableId);
+  if (tbl && tbl.active_order) {
+    orderState.tableBillData = tbl.active_order;
+  }
+  renderModalsOnly();
+}
+
+function closeTableBillModal() {
+  orderState.showTableBillModal = false;
+  renderModalsOnly();
+}
+
+function renderTableBillModal() {
+  const tblObj = (orderState.data?.tables || []).find(t => t.id === orderState.tableId);
+  const tblName = tblObj ? tblObj.name : `โต๊ะ ${orderState.tableId}`;
+  const bill = orderState.tableBillData;
+  const items = bill?.items || [];
+  const activeItems = items.filter(i => i.item_status === 'ACTIVE' || !i.item_status);
+  const subtotal = activeItems.reduce((sum, it) => sum + (Number(it.unit_price || it.price || 0) * (it.quantity || 1)), 0);
+
+  return `
+    <div class="co-modal-backdrop" onclick="if(event.target===this) closeTableBillModal();">
+      <div class="co-modal" style="max-width:480px;">
+        <div class="co-modal-header">
+          <div>
+            <div style="font-size:11px; font-weight:700; color:#0d9488; text-transform:uppercase; letter-spacing:0.5px;">TABLE BILL STATUS</div>
+            <h3 style="margin:2px 0 0; font-size:18px; font-weight:800; color:var(--co-ink);">🍽️ สถานะบิล: ${tblName}</h3>
+          </div>
+          <button type="button" class="co-modal-close" onclick="closeTableBillModal();">✕</button>
+        </div>
+
+        <div class="co-modal-body">
+          ${!bill ? `
+            <div style="text-align:center; padding:40px 16px; color:var(--co-muted);">
+              <div style="font-size:40px; margin-bottom:8px;">🍽️</div>
+              <div style="font-weight:700; font-size:15px; color:var(--co-ink);">ยังไม่มีบิลที่เปิดอยู่สำหรับ ${tblName}</div>
+              <div style="font-size:12.5px; margin-top:4px;">เลือกสั่งอาหารหรือเครื่องดื่มจากเมนูด้านล่าง แล้วอาหารจะเสิร์ฟตรงถึงโต๊ะคุณ</div>
+            </div>
+          ` : `
+            <div style="background:#f8fafc; border:1px solid var(--co-border); border-radius:12px; padding:12px 14px; margin-bottom:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:12px; color:var(--co-muted);">
+                <span>เลขบิล: <b>${bill.id}</b></span>
+                <span class="co-status-pill ${bill.status === 'PAID' ? 'is-paid' : 'is-pending'}">
+                  ${bill.status === 'PAID' ? '✅ ชำระแล้ว' : '⏳ กำลังรับประทาน'}
+                </span>
+              </div>
+              <div style="font-size:12px; color:var(--co-muted);">
+                🕒 สั่งเมื่อ: ${new Date(bill.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
+              </div>
+            </div>
+
+            <div style="font-size:13px; font-weight:800; margin-bottom:8px; color:var(--co-ink);">
+              รายการอาหารที่สั่ง (${activeItems.length} รายการ):
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
+              ${activeItems.map(it => {
+                const kStatus = it.kitchen_status;
+                let kLabel = '⏳ ได้รับออเดอร์';
+                let kColor = '#0284c7';
+                let kBg = '#e0f2fe';
+                if (kStatus === 'COOKING') {
+                  kLabel = '🍳 กำลังปรุง';
+                  kColor = '#d97706';
+                  kBg = '#fef3c7';
+                } else if (kStatus === 'SERVED') {
+                  kLabel = '🍽️ เสิร์ฟแล้ว';
+                  kColor = '#16a34a';
+                  kBg = '#dcfce7';
+                }
+                const price = Number(it.unit_price || it.price || 0) * (it.quantity || 1);
+
+                return `
+                  <div style="background:#fff; border:1px solid var(--co-border); border-radius:10px; padding:10px 12px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <div style="flex:1;">
+                      <div style="font-weight:700; font-size:13.5px; color:var(--co-ink);">
+                        ${it.product_name || it.name} × ${it.quantity}
+                      </div>
+                      ${it.modifiers && it.modifiers.length > 0 ? `
+                        <div style="font-size:11px; color:#d97706; margin-top:2px;">+ ${it.modifiers.join(', ')}</div>
+                      ` : ''}
+                    </div>
+                    <div style="text-align:right;">
+                      <div style="font-weight:800; font-size:13.5px; color:#0f172a;">${formatMoney(price)}</div>
+                      <span style="font-size:10px; font-weight:700; color:${kColor}; background:${kBg}; padding:2px 6px; border-radius:4px; display:inline-block; margin-top:2px;">
+                        ${kLabel}
+                      </span>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+
+            <div style="background:#f0fdf4; border:1.5px solid #86efac; border-radius:12px; padding:12px 14px; margin-bottom:16px; display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-weight:800; font-size:14px; color:#166534;">ยอดรวมปัจจุบัน:</span>
+              <span style="font-weight:900; font-size:20px; color:#15803d;">${formatMoney(bill.net_total || bill.total_amount || subtotal)}</span>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px;">
+              <button type="button" class="co-svc-btn" onclick="requestTableService('ICE')">
+                🧊 ขอน้ำแข็ง
+              </button>
+              <button type="button" class="co-svc-btn" onclick="requestTableService('CALL_STAFF')">
+                🔔 เรียกพนักงาน
+              </button>
+            </div>
+
+            <button
+              type="button"
+              class="co-checkout-btn"
+              style="width:100%; justify-content:center; background:#0f3238; font-size:15px; padding:12px;"
+              onclick="requestTableService('CHECKOUT')"
+            >
+              🧾 ขอเช็คบิล / ชำระเงิน
+            </button>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ==========================================================================
+// MY ORDERS MODAL (แนวทาง A: ดูสถานะออเดอร์สด & ประวัติการสั่งซื้อ)
+// ==========================================================================
+
+function openMyOrdersModal() {
+  orderState.showMyOrdersModal = true;
+  if (!orderState.myOrdersSearchPhone) {
+    orderState.myOrdersSearchPhone = orderState.customerPhone || localStorage.getItem('co_customer_phone') || '';
+  }
+  renderModalsOnly();
+}
+
+function closeMyOrdersModal() {
+  orderState.showMyOrdersModal = false;
+  renderModalsOnly();
+}
+
+async function searchCustomerOrders(phone) {
+  const clean = String(phone || '').replace(/\D/g, '');
+  if (clean.length < 8) {
+    alert('กรุณากรอกเบอร์โทรศัพท์อย่างน้อย 8-10 หลัก');
+    return;
+  }
+  orderState.myOrdersSearchPhone = clean;
+  orderState.isSearchingOrders = true;
+  renderModalsOnly();
+
+  try {
+    const res = await fetch(`/api/customer/orders?phone=${encodeURIComponent(clean)}&_t=${Date.now()}`);
+    const json = await res.json().catch(() => null);
+    if (res.ok && json && Array.isArray(json.orders)) {
+      orderState.searchedOrders = json.orders;
+      orderState.isSearchingOrders = false;
+      renderModalsOnly();
+      return;
+    }
+  } catch {}
+
+  if (window.LocalPosEngine) {
+    orderState.searchedOrders = window.LocalPosEngine.getCustomerOrders(clean);
+  }
+  orderState.isSearchingOrders = false;
+  renderModalsOnly();
+}
+
+function getMyStoredOrders() {
+  try {
+    const raw = localStorage.getItem('co_my_orders');
+    const parsed = JSON.parse(raw || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function reorderPastOrder(orderId) {
+  const storedList = getMyStoredOrders();
+  const foundStored = storedList.find(o => o.id === orderId);
+  const foundSearched = orderState.searchedOrders ? orderState.searchedOrders.find(o => o.id === orderId) : null;
+  const target = foundSearched || foundStored;
+  if (!target || !target.items || target.items.length === 0) {
+    alert('ไม่พบรายการอาหารในคำสั่งซื้อนี้');
+    return;
+  }
+
+  const allProds = orderState.data?.products || [];
+  let addedCount = 0;
+  target.items.forEach(it => {
+    const pid = it.product_id;
+    const prod = allProds.find(p => p.id === pid);
+    if (prod) {
+      for (let i = 0; i < (it.quantity || 1); i++) {
+        orderState.cart.push({
+          cartId: `C-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          product_id: prod.id,
+          product: prod,
+          quantity: 1,
+          modifiers: [],
+          unitPrice: prod.price,
+          special_instructions: ''
+        });
+        addedCount++;
+      }
+    }
+  });
+
+  if (addedCount > 0) {
+    closeMyOrdersModal();
+    orderState.showCartModal = true;
+    render();
+    alert(`✓ นำรายการอาหาร ${addedCount} ชิ้น ใส่ตะกร้าเรียบร้อยแล้ว ตรวจสอบและกดยืนยันสั่งได้เลยครับ`);
+  } else {
+    alert('สินค้าในคำสั่งซื้อเดิมไม่พร้อมให้บริการในขณะนี้');
+  }
+}
+
+function renderMyOrdersModal() {
+  const storedOrders = getMyStoredOrders();
+  const displayOrders = orderState.searchedOrders !== null ? orderState.searchedOrders : storedOrders;
+  const activeOrders = displayOrders.filter(o => o.status === 'PENDING' || o.status === 'COOKING' || o.status === 'OPEN' || o.status === 'DELIVERING');
+  const pastOrders = displayOrders.filter(o => o.status === 'PAID' || o.status === 'COMPLETED' || o.status === 'CANCELLED' || o.status === 'VOIDED' || (!activeOrders.includes(o)));
+
+  return `
+    <div class="co-modal-backdrop" onclick="if(event.target===this) closeMyOrdersModal();">
+      <div class="co-modal" style="max-width:540px;">
+        <div class="co-modal-header">
+          <div>
+            <div style="font-size:11px; font-weight:700; color:#0d9488; text-transform:uppercase; letter-spacing:0.5px;">ORDER TRACKING & HISTORY</div>
+            <h3 style="margin:2px 0 0; font-size:18px; font-weight:800; color:var(--co-ink);">📋 ออเดอร์ของฉัน</h3>
+          </div>
+          <button type="button" class="co-modal-close" onclick="closeMyOrdersModal();">✕</button>
+        </div>
+
+        <div class="co-modal-body">
+          <!-- Search Phone Box -->
+          <div style="background:#f8fafc; border:1px solid var(--co-border); border-radius:12px; padding:12px; margin-bottom:14px;">
+            <label style="font-size:11.5px; font-weight:700; color:#475569; display:block; margin-bottom:6px;">
+              🔍 ค้นหาประวัติด้วยเบอร์โทรศัพท์ (สั่งจากเครื่องอื่น / ล้างประวัติแล้ว):
+            </label>
+            <div style="display:flex; gap:8px;">
+              <input
+                type="tel"
+                id="co-orders-search-input"
+                class="co-input"
+                style="flex:1;"
+                placeholder="เช่น 0812345678"
+                value="${orderState.myOrdersSearchPhone}"
+                onkeydown="if(event.key==='Enter') searchCustomerOrders(this.value);"
+              />
+              <button
+                type="button"
+                class="co-item-add-btn"
+                style="padding:0 16px; white-space:nowrap; background:#0f3238;"
+                onclick="searchCustomerOrders(document.getElementById('co-orders-search-input').value);"
+              >
+                ${orderState.isSearchingOrders ? 'กำลังค้น...' : '🔍 ค้นหา'}
+              </button>
+            </div>
+            ${orderState.searchedOrders !== null ? `
+              <div style="font-size:11.5px; color:#0d9488; font-weight:700; margin-top:6px; display:flex; justify-content:space-between; align-items:center;">
+                <span>ผลการค้นหา: พบ ${orderState.searchedOrders.length} ออเดอร์</span>
+                <button type="button" style="border:none; background:none; color:#dc2626; font-size:11px; cursor:pointer;" onclick="orderState.searchedOrders=null; renderModalsOnly();">✕ ล้างการค้นหา</button>
+              </div>
+            ` : ''}
+          </div>
+
+          <!-- Tab Selector: Active Orders vs Past History -->
+          <div style="display:flex; border-bottom:2px solid var(--co-border); margin-bottom:14px;">
+            <button
+              type="button"
+              style="flex:1; padding:10px; font-size:13px; font-weight:800; border:none; background:none; cursor:pointer; border-bottom:3px solid ${orderState.myOrdersTab === 'ACTIVE' ? '#0d9488' : 'transparent'}; color:${orderState.myOrdersTab === 'ACTIVE' ? '#0d9488' : 'var(--co-muted)'};"
+              onclick="orderState.myOrdersTab='ACTIVE'; renderModalsOnly();"
+            >
+              ⏳ กำลังดำเนินการ (${activeOrders.length})
+            </button>
+            <button
+              type="button"
+              style="flex:1; padding:10px; font-size:13px; font-weight:800; border:none; background:none; cursor:pointer; border-bottom:3px solid ${orderState.myOrdersTab === 'HISTORY' ? '#0d9488' : 'transparent'}; color:${orderState.myOrdersTab === 'HISTORY' ? '#0d9488' : 'var(--co-muted)'};"
+              onclick="orderState.myOrdersTab='HISTORY'; renderModalsOnly();"
+            >
+              📜 ประวัติสั่งซื้อ (${pastOrders.length})
+            </button>
+          </div>
+
+          <!-- Orders List -->
+          ${(function() {
+            const list = orderState.myOrdersTab === 'ACTIVE' ? activeOrders : pastOrders;
+            if (list.length === 0) {
+              return `
+                <div style="text-align:center; padding:36px 16px; color:var(--co-muted);">
+                  <div style="font-size:36px; margin-bottom:8px;">📦</div>
+                  <div style="font-weight:700; font-size:14px; color:var(--co-ink);">
+                    ${orderState.myOrdersTab === 'ACTIVE' ? 'ไม่มีออเดอร์ที่กำลังดำเนินการ' : 'ยังไม่มีประวัติการสั่งซื้อ'}
+                  </div>
+                  <div style="font-size:12px; margin-top:4px;">
+                    ${orderState.myOrdersTab === 'ACTIVE' ? 'เมื่อสั่งอาหารหรือของชำ ระบบจะแสดงขั้นตอนการปรุงและจัดส่งสดๆ ที่นี่' : 'สั่งซื้ออาหารและของชำได้จากหน้าร้านเลยครับ'}
+                  </div>
+                </div>
+              `;
+            }
+
+            return `
+              <div style="display:flex; flex-direction:column; gap:12px;">
+                ${list.map(ord => {
+                  const items = ord.items || [];
+                  const isDone = ord.status === 'PAID' || ord.status === 'COMPLETED';
+                  const isDelivering = ord.status === 'DELIVERING';
+                  const isCooking = ord.status === 'COOKING';
+                  const isPending = ord.status === 'PENDING' || ord.status === 'OPEN';
+
+                  return `
+                    <div style="background:#fff; border:1.5px solid var(--co-border); border-radius:12px; padding:12px 14px; box-shadow:0 2px 6px rgba(0,0,0,0.04);">
+                      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px; flex-wrap:wrap; gap:6px;">
+                        <div>
+                          <div style="font-weight:800; font-size:14px; color:var(--co-ink);">${ord.bill_title || ord.title || `ออเดอร์ #${ord.id}`}</div>
+                          <div style="font-size:11px; color:var(--co-muted);">
+                            🕒 ${new Date(ord.created_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })} • เลขบิล: ${ord.id}
+                          </div>
+                        </div>
+                        <span class="co-status-pill ${isDone ? 'is-paid' : 'is-pending'}">
+                          ${isDone ? '✅ สำเร็จ / ชำระแล้ว' : (isDelivering ? '🛵 กำลังส่ง / พร้อมรับ' : (isCooking ? '🍳 กำลังปรุง' : '⏳ ได้รับออเดอร์'))}
+                        </span>
+                      </div>
+
+                      ${orderState.myOrdersTab === 'ACTIVE' ? `
+                        <!-- Step Tracker Indicator -->
+                        <div class="co-tracker-steps" style="margin:12px 0 10px;">
+                          <div class="co-tracker-step" data-active="true" data-done="${isCooking || isDelivering || isDone}">
+                            <div class="co-step-dot">1</div>
+                            <span class="co-step-label">รับออเดอร์</span>
+                          </div>
+                          <div class="co-tracker-step" data-active="${isCooking || isDelivering || isDone}" data-done="${isDelivering || isDone}">
+                            <div class="co-step-dot">2</div>
+                            <span class="co-step-label">กำลังปรุง</span>
+                          </div>
+                          <div class="co-tracker-step" data-active="${isDelivering || isDone}" data-done="${isDone}">
+                            <div class="co-step-dot">3</div>
+                            <span class="co-step-label">นำส่ง/พร้อมรับ</span>
+                          </div>
+                          <div class="co-tracker-step" data-active="${isDone}" data-done="${isDone}">
+                            <div class="co-step-dot">4</div>
+                            <span class="co-step-label">สำเร็จ</span>
+                          </div>
+                        </div>
+                      ` : ''}
+
+                      <!-- Item List Summary -->
+                      <div style="background:#f8fafc; border-radius:8px; padding:8px 10px; margin:8px 0; font-size:12px;">
+                        ${items.map(it => `
+                          <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+                            <span>• ${it.product_name || it.name} × ${it.quantity}</span>
+                            <span style="font-weight:700;">${formatMoney(Number(it.unit_price || it.price || 0) * (it.quantity || 1))}</span>
+                          </div>
+                        `).join('')}
+                      </div>
+
+                      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px dashed var(--co-border);">
+                        <div>
+                          <span style="font-size:12px; color:var(--co-muted);">ยอดรวม: </span>
+                          <b style="font-size:15px; color:#0d9488;">${formatMoney(ord.net_total || ord.total_amount || ord.netTotal)}</b>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                          ${isDone ? `
+                            <button
+                              type="button"
+                              class="co-item-add-btn"
+                              style="padding:4px 12px; font-size:12px; background:#0f3238;"
+                              onclick="reorderPastOrder('${ord.id}')"
+                            >
+                              🔄 สั่งซ้ำ
+                            </button>
+                          ` : `
+                            <button
+                              type="button"
+                              class="co-item-add-btn"
+                              style="padding:4px 10px; font-size:11.5px; background:#0284c7;"
+                              onclick="searchCustomerOrders(orderState.myOrdersSearchPhone || ord.phone || '');"
+                            >
+                              🔄 อัปเดตสถานะ
+                            </button>
+                          `}
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            `;
+          })()}
+        </div>
       </div>
     </div>
   `;

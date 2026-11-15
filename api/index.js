@@ -1530,6 +1530,144 @@ module.exports = async (req, res) => {
       return send(200, { success: true, storeZones, data: await getSupabaseBootstrapData() });
     }
 
+    // Table Service Requests (Call Staff, Ice, Request Bill)
+    if (req.method === 'POST' && pathname === '/api/tables/service-call') {
+      const { table_id, request_type, note } = body || {};
+      if (!table_id) return send(400, { error: 'table_id is required' });
+
+      let tableServiceRequests = [];
+      try {
+        const rows = await sbRest("customers?select=note&id=eq.SYS-TABLE-REQUESTS");
+        if (rows && rows[0] && rows[0].note) {
+          const parsed = JSON.parse(rows[0].note);
+          if (Array.isArray(parsed)) tableServiceRequests = parsed;
+        }
+      } catch {}
+
+      const tbls = await sbRest(`dining_tables?select=*&id=eq.${encodeURIComponent(table_id)}`);
+      const tbl = tbls && tbls[0] ? tbls[0] : null;
+      const tableName = tbl ? tbl.name : `โต๊ะ ${table_id}`;
+
+      const newReq = {
+        id: `REQ-${Date.now()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
+        table_id,
+        table_name: tableName,
+        zone_name: tbl ? tbl.zone_name : '',
+        request_type: request_type || 'CALL_STAFF',
+        note: note ? String(note).trim() : '',
+        status: 'PENDING',
+        created_at: new Date().toISOString()
+      };
+
+      tableServiceRequests = tableServiceRequests.filter(r => !(r.table_id === table_id && r.request_type === newReq.request_type));
+      tableServiceRequests.unshift(newReq);
+      if (tableServiceRequests.length > 50) tableServiceRequests = tableServiceRequests.slice(0, 50);
+
+      try {
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-TABLE-REQUESTS',
+            name: '__TABLE_REQUESTS__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(tableServiceRequests)
+          }
+        });
+      } catch (err) {
+        console.warn('Saving SYS-TABLE-REQUESTS error:', err.message);
+      }
+
+      return send(200, { success: true, request: newReq, tableServiceRequests, message: 'ส่งคำขอไปยังพนักงานแล้ว', data: await getSupabaseBootstrapData() });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/tables/service-dismiss') {
+      const { id, table_id, request_type } = body || {};
+      let tableServiceRequests = [];
+      try {
+        const rows = await sbRest("customers?select=note&id=eq.SYS-TABLE-REQUESTS");
+        if (rows && rows[0] && rows[0].note) {
+          const parsed = JSON.parse(rows[0].note);
+          if (Array.isArray(parsed)) tableServiceRequests = parsed;
+        }
+      } catch {}
+
+      if (id) {
+        tableServiceRequests = tableServiceRequests.filter(r => r.id !== id);
+      } else if (table_id) {
+        tableServiceRequests = tableServiceRequests.filter(r => {
+          if (r.table_id !== table_id) return true;
+          if (request_type && r.request_type !== request_type) return true;
+          return false;
+        });
+      }
+
+      try {
+        await sbRest('customers', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=representation',
+          body: {
+            id: 'SYS-TABLE-REQUESTS',
+            name: '__TABLE_REQUESTS__',
+            phone: '',
+            tier: 'SYSTEM',
+            points: 0,
+            total_spent: 0,
+            note: JSON.stringify(tableServiceRequests)
+          }
+        });
+      } catch (err) {
+        console.warn('Updating SYS-TABLE-REQUESTS error:', err.message);
+      }
+
+      return send(200, { success: true, tableServiceRequests, data: await getSupabaseBootstrapData() });
+    }
+
+    // Customer Order Lookup
+    if (req.method === 'GET' && pathname === '/api/customer/orders') {
+      const phone = (req.query?.phone || '').replace(/\D/g, '');
+      const billIds = (req.query?.bill_ids || '').split(',').map(s => s.trim()).filter(Boolean);
+      const tableId = req.query?.table_id;
+
+      const allRecentOrders = await sbRest("orders?select=*&order=created_at.desc&limit=200");
+      const allOrderIds = (allRecentOrders || []).map(o => o.id);
+      let allItems = [];
+      if (allOrderIds.length > 0) {
+        allItems = await sbRest(`order_items?select=*&order_id=in.(${allOrderIds.map(encodeURIComponent).join(',')})&order=created_at.asc`);
+      }
+
+      const allTables = await sbRest("dining_tables?select=id,name,zone_name");
+      const tableMap = new Map((allTables || []).map(t => [t.id, t]));
+
+      const matched = (allRecentOrders || []).filter(o => {
+        if (billIds.length > 0 && billIds.includes(o.id)) return true;
+        if (tableId && o.table_id === tableId && o.status === 'OPEN') return true;
+        if (phone && phone.length >= 8) {
+          const oNote = o.bill_note || '';
+          const oTitle = o.bill_title || '';
+          const digits = (oNote + ' ' + oTitle).replace(/\D/g, '');
+          if (digits.includes(phone)) return true;
+        }
+        return false;
+      }).map(o => {
+        const tbl = o.table_id ? tableMap.get(o.table_id) : null;
+        return {
+          ...o,
+          table_name: tbl ? tbl.name : null,
+          zone_name: tbl ? tbl.zone_name : null,
+          items: (allItems || []).filter(it => it.order_id === o.id).map(it => ({
+            ...it,
+            modifiers: typeof it.modifiers_json === 'string' ? JSON.parse(it.modifiers_json || '[]') : (it.modifiers || [])
+          }))
+        };
+      });
+
+      return send(200, { success: true, orders: matched });
+    }
+
     if (req.method === 'POST' && pathname === '/api/orders/cancel') {
       const { order_id, mode = 'RETURNED_RESTOCK' } = body;
       const ords = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(order_id)}`);

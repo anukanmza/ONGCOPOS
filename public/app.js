@@ -1271,6 +1271,20 @@ async function deleteStoreZoneById(zoneId, zoneName) {
   showToast(`🗑️ ลบพื้นที่จัดวาง "${zoneName || zoneId}" เรียบร้อยแล้ว`);
 }
 
+async function dismissTableServiceRequest(id) {
+  if (!id) return;
+  const out = await apiCall('/api/tables/service-dismiss', 'POST', { id });
+  if (out && out.data) {
+    state.data = out.data;
+  } else {
+    if (state.data && Array.isArray(state.data.tableServiceRequests)) {
+      state.data.tableServiceRequests = state.data.tableServiceRequests.filter(r => r.id !== id);
+    }
+  }
+  render();
+  showToast('✓ รับทราบคำขอเรียบร้อยแล้ว');
+}
+
 function getActiveContextOrder() {
   if (!state.data) return null;
   if (state.posMode === 'DINE_IN') {
@@ -3405,6 +3419,32 @@ function renderTablesView() {
         </div>
       </div>
 
+      ${(function() {
+        const reqs = (state.data?.tableServiceRequests || []).filter(r => r.status === 'PENDING');
+        if (reqs.length === 0) return '';
+        return `
+          <div style="background:#fef2f2; border:1.5px solid #ef4444; border-radius:12px; padding:12px 16px; margin-bottom:16px; box-shadow:0 4px 12px rgba(239,68,68,0.15);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+              <span style="color:#b91c1c; font-weight:800; font-size:14px; display:flex; align-items:center; gap:6px;">
+                🔔 มีคำขอบริการจากลูกค้าที่โต๊ะ (${reqs.length} คำขอ)
+              </span>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+              ${reqs.map(r => {
+                const label = r.request_type === 'ICE' ? '🧊 ขอน้ำแข็ง' : (r.request_type === 'CHECKOUT' ? '🧾 เช็คบิล' : '🔔 เรียกพนักงาน');
+                return `
+                  <div style="background:#fff; border:1.5px solid #f87171; border-radius:8px; padding:6px 12px; display:flex; align-items:center; gap:8px; box-shadow:0 2px 4px rgba(0,0,0,0.06);">
+                    <span style="font-weight:700; font-size:13px; color:#991b1b;">${r.table_name || ('โต๊ะ ' + r.table_id)}: ${label}</span>
+                    ${r.note ? `<span style="font-size:11.5px; color:#475569;">(${r.note})</span>` : ''}
+                    <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-success" style="height:24px; padding:0 8px; font-size:11px;" onclick="dismissTableServiceRequest('${r.id}')">✓ รับทราบ</button>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `;
+      })()}
+
       <div class="tables-grid">
         ${visibleTables.map(t => {
           const ord = t.active_order;
@@ -3412,6 +3452,21 @@ function renderTablesView() {
           const safeTableJson = JSON.stringify({ id: t.id, name: t.name, zone_name: t.zone_name, capacity: t.capacity || 4 }).replace(/"/g, '&quot;');
           return `
             <div class="table-card" data-status="${t.status}">
+              ${(function() {
+                const tableReqs = (state.data?.tableServiceRequests || []).filter(r => r.table_id === t.id && r.status === 'PENDING');
+                if (tableReqs.length === 0) return '';
+                return tableReqs.map(r => {
+                  const label = r.request_type === 'ICE' ? '🧊 ขอน้ำแข็ง' : (r.request_type === 'CHECKOUT' ? '🧾 ขอเช็คบิล' : '🔔 เรียกพนักงาน');
+                  return `
+                    <div style="background:#fee2e2; border:1.5px solid #ef4444; border-radius:8px; padding:6px 10px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+                      <span style="color:#b91c1c; font-weight:800; font-size:12px;">
+                        ${label} ${r.note ? `(${r.note})` : ''}
+                      </span>
+                      <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-success" style="height:22px; padding:0 6px; font-size:10.5px;" onclick="dismissTableServiceRequest('${r.id}')">✓ รับทราบ</button>
+                    </div>
+                  `;
+                }).join('');
+              })()}
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
                 <div>
                   <span class="ttl-k">${t.zone_name} • ${t.capacity || 4} ที่นั่ง</span>
@@ -7183,8 +7238,8 @@ function renderStoreZonesModal() {
           <form id="ttl-store-zone-form" onsubmit="event.preventDefault(); saveStoreZoneForm(this);">
             <input type="hidden" name="zone_id" value="${isEditingExisting ? ez.id : ''}" />
 
-            <div style="display:grid; grid-template-columns:1.5fr 1fr 90px; gap:12px; margin-bottom:12px;">
-              <div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px; margin-bottom:12px;">
+              <div style="grid-column: 1 / -1;">
                 <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ชื่อพื้นที่จัดวาง *</label>
                 <input
                   type="text"
@@ -7261,7 +7316,7 @@ function renderStoreZonesModal() {
             </div>
 
             <!-- Sprite / Pixel Art Image Selection -->
-            <div style="display:grid; grid-template-columns:1fr 1.2fr 80px; gap:12px; margin-bottom:12px; align-items:start;">
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px; margin-bottom:12px; align-items:start;">
               <div>
                 <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">รูป Pixel Art เริ่มต้น (Sprite)</label>
                 <select name="zone_pixel_sprite" class="ttl-input">
@@ -7278,7 +7333,7 @@ function renderStoreZonesModal() {
               <div>
                 <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">หรืออัปโหลดรูปภาพที่วาดเอง</label>
                 <div style="display:flex; gap:8px; align-items:center;">
-                  <input type="file" accept="image/*" class="ttl-input" style="padding:4px;" onchange="uploadCustomZoneImage(this)" />
+                  <input type="file" accept="image/*" class="ttl-input" style="padding:4px; max-width:160px;" onchange="uploadCustomZoneImage(this)" />
                   <input type="hidden" id="ttl-zone-custom-img-url" name="zone_custom_image_url" value="${((ez && ez.custom_image_url) || '').replace(/"/g, '&quot;')}" />
                   <div id="ttl-zone-img-preview" style="min-width:36px; min-height:36px; display:flex; align-items:center; justify-content:center;">
                     ${ez && ez.custom_image_url ? `<img src="${ez.custom_image_url}" style="max-height:36px; max-width:36px; object-fit:contain; image-rendering:pixelated;" />` : ''}
@@ -7287,7 +7342,7 @@ function renderStoreZonesModal() {
               </div>
 
               <div>
-                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ลำดับ</label>
+                <label style="font-size:11.5px; font-weight:600; display:block; margin-bottom:4px;">ลำดับการแสดงผล</label>
                 <input
                   type="number"
                   name="zone_sort_order"
@@ -7477,6 +7532,7 @@ function render() {
             <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'tables'}" onclick="switchMainView('tables')">
               🍽️ ผังโต๊ะ
               <span class="ttl-badge-count">${occupiedCount}/${tables.length}</span>
+              ${(state.data?.tableServiceRequests || []).filter(r => r.status === 'PENDING').length > 0 ? `<span class="ttl-badge-count" style="background:#ef4444; margin-left:4px; font-weight:800;">🔔 ${(state.data?.tableServiceRequests || []).filter(r => r.status === 'PENDING').length}</span>` : ''}
             </button>
             <button type="button" class="ttl-nav-tab" data-active="${state.activeView === 'kds'}" onclick="switchMainView('kds')">
               👩‍🍳 จอครัว

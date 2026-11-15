@@ -628,6 +628,15 @@ async function getSupabaseBootstrapData() {
     } catch {}
   }
 
+  let tableServiceRequests = [];
+  const sysReqRow = rawCustomers.find(c => c.id === 'SYS-TABLE-REQUESTS');
+  if (sysReqRow && sysReqRow.note) {
+    try {
+      const parsed = JSON.parse(sysReqRow.note);
+      if (Array.isArray(parsed)) tableServiceRequests = parsed;
+    } catch {}
+  }
+
   const customers = rawCustomers.filter(c => !String(c.id || '').startsWith('SYS-'));
 
   const allBills = allValidOrders.map(o => {
@@ -670,6 +679,7 @@ async function getSupabaseBootstrapData() {
     deliveryPoints,
     deliveryMapConfig,
     storeZones,
+    tableServiceRequests,
     customers: customers.map(c => ({ ...c, points: Number(c.points || 0), total_spent: Number(c.total_spent || 0) })),
     loyaltySettings,
     allBills,

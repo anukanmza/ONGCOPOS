@@ -182,6 +182,15 @@ function getFullBootstrapData() {
       }
     }
   } catch {}
+  let tableServiceRequests = [];
+  try {
+    const reqRow = db.prepare("SELECT note FROM customers WHERE id = 'SYS-TABLE-REQUESTS'").get();
+    if (reqRow && reqRow.note) {
+      const parsed = JSON.parse(reqRow.note);
+      if (Array.isArray(parsed)) tableServiceRequests = parsed;
+    }
+  } catch {}
+
   const openOrders = db.prepare("SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at DESC").all();
   const allRecentOrders = db.prepare("SELECT * FROM orders WHERE status IN ('OPEN', 'PAID', 'CANCELLED', 'VOIDED') ORDER BY created_at DESC LIMIT 1000").all();
   const allOrderIds = allRecentOrders.map(o => o.id);
@@ -385,6 +394,7 @@ function getFullBootstrapData() {
     deliveryPoints,
     deliveryMapConfig,
     storeZones,
+    tableServiceRequests,
     customers,
     loyaltySettings,
     allBills,
@@ -1989,6 +1999,129 @@ const server = http.createServer(async (req, res) => {
       db.prepare("DELETE FROM customers WHERE id = 'SYS-STORE-ZONES'").run();
       broadcastUpdate('store_zones_reset', {});
       return sendJson(res, 200, { success: true, data: getFullBootstrapData() });
+    }
+
+    // Table Service Requests (Call Staff, Ice, Request Bill)
+    if (req.method === 'POST' && pathname === '/api/tables/service-call') {
+      const body = await parseJsonBody(req);
+      const { table_id, request_type, note } = body || {};
+      if (!table_id) return sendJson(res, 400, { error: 'table_id is required' });
+
+      let tableServiceRequests = [];
+      try {
+        const row = db.prepare("SELECT note FROM customers WHERE id = 'SYS-TABLE-REQUESTS'").get();
+        if (row && row.note) {
+          const parsed = JSON.parse(row.note);
+          if (Array.isArray(parsed)) tableServiceRequests = parsed;
+        }
+      } catch {}
+
+      const tbl = db.prepare("SELECT * FROM dining_tables WHERE id = ?").get(table_id);
+      const tableName = tbl ? tbl.name : `โต๊ะ ${table_id}`;
+
+      const newReq = {
+        id: `REQ-${Date.now()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
+        table_id,
+        table_name: tableName,
+        zone_name: tbl ? tbl.zone_name : '',
+        request_type: request_type || 'CALL_STAFF', // 'CALL_STAFF' | 'ICE' | 'CHECKOUT' | 'OTHER'
+        note: note ? String(note).trim() : '',
+        status: 'PENDING',
+        created_at: new Date().toISOString()
+      };
+
+      // กรองคำขอประเภทเดียวกันของโต๊ะนี้ที่ยังค้างอยู่ ให้เป็นคำขอล่าสุด
+      tableServiceRequests = tableServiceRequests.filter(r => !(r.table_id === table_id && r.request_type === newReq.request_type));
+      tableServiceRequests.unshift(newReq);
+      if (tableServiceRequests.length > 50) tableServiceRequests = tableServiceRequests.slice(0, 50);
+
+      db.prepare(`
+        INSERT INTO customers (id, name, phone, tier, points, total_spent, note, created_at)
+        VALUES ('SYS-TABLE-REQUESTS', '__TABLE_REQUESTS__', '', 'SYSTEM', 0, 0, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET note = excluded.note
+      `).run(JSON.stringify(tableServiceRequests), new Date().toISOString());
+
+      broadcastUpdate('table_service_called', { request: newReq });
+      return sendJson(res, 200, { success: true, request: newReq, tableServiceRequests, message: 'ส่งคำขอไปยังพนักงานแล้ว' });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/tables/service-dismiss') {
+      const body = await parseJsonBody(req);
+      const { id, table_id, request_type } = body || {};
+
+      let tableServiceRequests = [];
+      try {
+        const row = db.prepare("SELECT note FROM customers WHERE id = 'SYS-TABLE-REQUESTS'").get();
+        if (row && row.note) {
+          const parsed = JSON.parse(row.note);
+          if (Array.isArray(parsed)) tableServiceRequests = parsed;
+        }
+      } catch {}
+
+      if (id) {
+        tableServiceRequests = tableServiceRequests.filter(r => r.id !== id);
+      } else if (table_id) {
+        tableServiceRequests = tableServiceRequests.filter(r => {
+          if (r.table_id !== table_id) return true;
+          if (request_type && r.request_type !== request_type) return true;
+          return false;
+        });
+      }
+
+      db.prepare(`
+        INSERT INTO customers (id, name, phone, tier, points, total_spent, note, created_at)
+        VALUES ('SYS-TABLE-REQUESTS', '__TABLE_REQUESTS__', '', 'SYSTEM', 0, 0, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET note = excluded.note
+      `).run(JSON.stringify(tableServiceRequests), new Date().toISOString());
+
+      broadcastUpdate('table_service_dismissed', { id, table_id, request_type });
+      return sendJson(res, 200, { success: true, tableServiceRequests });
+    }
+
+    // Customer Order Lookup (By Phone, Bill IDs, or Table ID)
+    if (req.method === 'GET' && pathname === '/api/customer/orders') {
+      const urlObj = new URL(req.url, 'http://localhost');
+      const phone = (urlObj.searchParams.get('phone') || '').replace(/\D/g, '');
+      const billIds = (urlObj.searchParams.get('bill_ids') || '').split(',').map(s => s.trim()).filter(Boolean);
+      const tableId = urlObj.searchParams.get('table_id');
+
+      const allRecentOrders = db.prepare("SELECT * FROM orders ORDER BY created_at DESC LIMIT 300").all();
+      const allOrderIds = allRecentOrders.map(o => o.id);
+      let allItems = [];
+      if (allOrderIds.length > 0) {
+        allItems = db.prepare(`
+          SELECT * FROM order_items
+          WHERE order_id IN (${allOrderIds.map(() => '?').join(',')})
+          ORDER BY created_at ASC
+        `).all(...allOrderIds).map(it => ({
+          ...it,
+          modifiers: JSON.parse(it.modifiers_json || '[]')
+        }));
+      }
+
+      const tableMap = new Map(db.prepare('SELECT id, name, zone_name FROM dining_tables').all().map(t => [t.id, t]));
+
+      const matched = allRecentOrders.filter(o => {
+        if (billIds.length > 0 && billIds.includes(o.id)) return true;
+        if (tableId && o.table_id === tableId && o.status === 'OPEN') return true;
+        if (phone && phone.length >= 8) {
+          const oNote = o.bill_note || '';
+          const oTitle = o.bill_title || '';
+          const digits = (oNote + ' ' + oTitle).replace(/\D/g, '');
+          if (digits.includes(phone)) return true;
+        }
+        return false;
+      }).map(o => {
+        const tbl = o.table_id ? tableMap.get(o.table_id) : null;
+        return {
+          ...o,
+          table_name: tbl ? tbl.name : null,
+          zone_name: tbl ? tbl.zone_name : null,
+          items: allItems.filter(it => it.order_id === o.id)
+        };
+      });
+
+      return sendJson(res, 200, { success: true, orders: matched });
     }
 
     // Add Daily Expense

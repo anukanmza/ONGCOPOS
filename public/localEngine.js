@@ -445,6 +445,7 @@ function buildLocalBootstrap() {
       custom_landmarks: []
     },
     storeZones: (db.storeZones || []).slice().sort((a,b) => (a.sort_order||0) - (b.sort_order||0)),
+    tableServiceRequests: Array.isArray(db.tableServiceRequests) ? db.tableServiceRequests : [],
     ingredients: db.ingredients,
     recipeItems: enrichedRecipes,
     tables,
@@ -1664,6 +1665,58 @@ window.LocalPosEngine = {
     delete db.storeZones;
     saveLocalDb(db);
     return { success: true, data: buildLocalBootstrap() };
+  },
+
+  callTableService(body) {
+    const db = loadLocalDb();
+    if (!Array.isArray(db.tableServiceRequests)) db.tableServiceRequests = [];
+    const tbl = (db.tables || []).find(t => t.id === body.table_id);
+    const newReq = {
+      id: `REQ-${Date.now()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
+      table_id: body.table_id,
+      table_name: tbl ? tbl.name : `โต๊ะ ${body.table_id}`,
+      zone_name: tbl ? tbl.zone_name : '',
+      request_type: body.request_type || 'CALL_STAFF',
+      note: (body.note || '').trim(),
+      status: 'PENDING',
+      created_at: new Date().toISOString()
+    };
+    db.tableServiceRequests = db.tableServiceRequests.filter(r => !(r.table_id === body.table_id && r.request_type === newReq.request_type));
+    db.tableServiceRequests.unshift(newReq);
+    if (db.tableServiceRequests.length > 50) db.tableServiceRequests = db.tableServiceRequests.slice(0, 50);
+    saveLocalDb(db);
+    return { success: true, request: newReq, tableServiceRequests: db.tableServiceRequests, data: buildLocalBootstrap() };
+  },
+
+  dismissTableService(body) {
+    const db = loadLocalDb();
+    if (!Array.isArray(db.tableServiceRequests)) db.tableServiceRequests = [];
+    if (body.id) {
+      db.tableServiceRequests = db.tableServiceRequests.filter(r => r.id !== body.id);
+    } else if (body.table_id) {
+      db.tableServiceRequests = db.tableServiceRequests.filter(r => {
+        if (r.table_id !== body.table_id) return true;
+        if (body.request_type && r.request_type !== body.request_type) return true;
+        return false;
+      });
+    }
+    saveLocalDb(db);
+    return { success: true, tableServiceRequests: db.tableServiceRequests, data: buildLocalBootstrap() };
+  },
+
+  getCustomerOrders(phone, billIds, tableId) {
+    const boot = buildLocalBootstrap();
+    const cleanPhone = (phone || '').replace(/\D/g, '');
+    const ids = Array.isArray(billIds) ? billIds : [];
+    return (boot.allBills || []).filter(o => {
+      if (ids.length > 0 && ids.includes(o.id)) return true;
+      if (tableId && o.table_id === tableId && o.status === 'OPEN') return true;
+      if (cleanPhone && cleanPhone.length >= 8) {
+        const text = ((o.bill_note || '') + ' ' + (o.bill_title || '')).replace(/\D/g, '');
+        if (text.includes(cleanPhone)) return true;
+      }
+      return false;
+    });
   }
 };
 
