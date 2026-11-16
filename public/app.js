@@ -8831,24 +8831,9 @@ function render() {
   }
 }
 
-// Initialize SSE, Auto-Sync Polling (for Vercel Serverless across MacBook & Mobile), and Visibility Sync
+// Initialize Bootstrap, Auto-Sync Polling (for Vercel Serverless across MacBook & Mobile), and Visibility Sync
 window.addEventListener('DOMContentLoaded', () => {
   fetchBootstrap(false);
-  try {
-    const evtSource = new EventSource('/api/events');
-    evtSource.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg && msg.type && msg.type !== 'connected') {
-          fetchBootstrap(true);
-        }
-      } catch {
-        // ignore
-      }
-    };
-  } catch {
-    // ignore if SSE not supported
-  }
 
   // ซิงค์อัตโนมัติเป็นระยะเฉพาะเมื่อเปิด "หน้าจอครัว (KDS)" เท่านั้น (ทุก 7 วินาที)
   // โดยเช็คเฉพาะ Signature ของรายการครัวขนาดเล็กก่อน และวาดหน้าจอใหม่เฉพาะเมื่อมีออเดอร์ครัวเปลี่ยนแปลงจริง!

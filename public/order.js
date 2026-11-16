@@ -1142,8 +1142,14 @@ function saveOrderToMyHistory(orderObj) {
 }
 
 function startLivePolling(orderId) {
-  if (orderState.pollTimer) clearInterval(orderState.pollTimer);
-  orderState.pollTimer = setInterval(async () => {
+  if (orderState.pollTimer) {
+    clearInterval(orderState.pollTimer);
+    orderState.pollTimer = null;
+  }
+  if (!orderId) return;
+
+  const checkStatus = async () => {
+    if (document.visibilityState === 'hidden') return;
     try {
       const res = await fetch(`/api/bootstrap?_t=${Date.now()}`, { cache: 'no-store' });
       const json = await res.json().catch(() => null);
@@ -1154,6 +1160,16 @@ function startLivePolling(orderId) {
           const kdsItems = found.items ? found.items.filter(i => i.item_type === 'FOOD') : [];
           if (found.status === 'PAID') {
             orderState.activeOrder.status = 'COMPLETED';
+            if (orderState.pollTimer) {
+              clearInterval(orderState.pollTimer);
+              orderState.pollTimer = null;
+            }
+          } else if (found.status === 'CANCELLED' || found.status === 'VOIDED') {
+            orderState.activeOrder.status = 'CANCELLED';
+            if (orderState.pollTimer) {
+              clearInterval(orderState.pollTimer);
+              orderState.pollTimer = null;
+            }
           } else if (kdsItems.some(i => i.kitchen_status === 'COOKING')) {
             orderState.activeOrder.status = 'COOKING';
           } else if (kdsItems.every(i => i.kitchen_status === 'SERVED') && kdsItems.length > 0) {
@@ -1163,8 +1179,19 @@ function startLivePolling(orderId) {
         }
       }
     } catch {}
-  }, 4000);
+  };
+
+  orderState.pollTimer = setInterval(checkStatus, 8500);
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && orderState.activeOrder && orderState.activeOrder.id) {
+    const isFinished = orderState.activeOrder.status === 'COMPLETED' || orderState.activeOrder.status === 'CANCELLED';
+    if (!isFinished && !orderState.pollTimer) {
+      startLivePolling(orderState.activeOrder.id);
+    }
+  }
+});
 
 // Get Pixel Sprite Icon for products
 function getSpriteIcon(item) {
