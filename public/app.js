@@ -2014,6 +2014,60 @@ async function handleReturnTableItem(orderItemId, mode) {
   showToast(mode === 'VOID_WASTE' ? '🗑️ ตัดเป็นของเสียและหักยอดออกจากบิลแล้ว' : '↩️ คืนสินค้ากลับเข้าสต็อกและหักยอดบิลเรียบร้อย');
 }
 
+// รวมรายการสินค้าหรือเมนูที่เหมือนกัน (ชื่อ/รหัสเดียวกัน + ตัวเลือกเสริมเหมือนกัน + ราคาต่อหน่วยเท่ากัน + สถานะเดียวกัน)
+// เพื่อแสดงจำนวนรวมในหน้าเช็คบิล, ใบเสร็จรับเงิน, การ์ดบิล และแถบบิลแคชเชียร์โดยไม่ต้องบวกเลขทีละบรรทัด
+function groupBillItems(rawItems) {
+  if (!Array.isArray(rawItems) || rawItems.length === 0) return [];
+  const map = new Map();
+
+  for (const it of rawItems) {
+    if (!it) continue;
+    const status = it.item_status || 'ACTIVE';
+    const itemName = String(it.product_name || it.name || 'สินค้า').trim();
+    const prodKey = it.product_id || itemName;
+    const uPrice = Number(it.unit_price ?? it.price ?? 0);
+    const rawMods = Array.isArray(it.modifiers) ? it.modifiers : [];
+    const modList = rawMods.map(m => (typeof m === 'object' && m !== null ? (m.name || '') : String(m))).filter(Boolean);
+    const modKey = modList.slice().sort().join('|');
+    const noteKey = String(it.special_instructions || '').trim();
+    const key = `${status}::${prodKey}::${uPrice}::${modKey}::${noteKey}`;
+
+    const qty = Number(it.quantity) || 1;
+    const kSt = it.kitchen_status || '';
+
+    if (map.has(key)) {
+      const existing = map.get(key);
+      existing.quantity += qty;
+      existing.merged_count += 1;
+      existing.id = it.id || existing.id;
+      existing.item_ids.push(it.id);
+      if (kSt === 'SERVED') existing.served_qty += qty;
+      else if (kSt === 'COOKING') existing.cooking_qty += qty;
+      else existing.pending_qty += qty;
+
+      if (existing.served_qty === existing.quantity) existing.kitchen_status = 'SERVED';
+      else if (existing.cooking_qty > 0 || existing.served_qty > 0) existing.kitchen_status = 'COOKING';
+    } else {
+      map.set(key, {
+        ...it,
+        product_name: itemName,
+        name: itemName,
+        unit_price: uPrice,
+        quantity: qty,
+        modifiers: modList,
+        item_status: status,
+        merged_count: 1,
+        item_ids: [it.id],
+        served_qty: kSt === 'SERVED' ? qty : 0,
+        cooking_qty: kSt === 'COOKING' ? qty : 0,
+        pending_qty: (kSt !== 'SERVED' && kSt !== 'COOKING') ? qty : 0
+      });
+    }
+  }
+
+  return Array.from(map.values());
+}
+
 function getCheckoutCustomerObj() {
   if (!state.data || !state.data.customers) return null;
   const cid = state.checkoutModalOrder?.customerId || state.checkoutModalOrder?.customer_id || state.selectedCustomerId;
@@ -3735,11 +3789,11 @@ function renderFloatingBillAndDrawer() {
             ${activeOrd && committedItems.length > 0 ? `
               <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px; padding-top:10px; border-top:1px solid var(--ttl-rule);">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <span class="ttl-k">📌 รายการที่บันทึก/ส่งเข้าบิลนี้แล้ว (${committedActiveCount} ชิ้น)</span>
+                  <span class="ttl-k">📌 รายการในบิล (${groupBillItems(committedItems.filter(i => i.item_status === 'ACTIVE')).length} รายการ • รวม ${committedActiveCount} ชิ้น)</span>
                   <span style="font-size:12px; font-weight:700;">${formatMoney(committedTotal)}</span>
                 </div>
 
-                ${committedItems.map(item => {
+                ${groupBillItems(committedItems).map(item => {
                   const pObj = (state.data?.products || []).find(x => x.id === item.product_id);
                   const sInfo = getProductStockInfo(pObj);
                   const isOos = sInfo.isOutOfStock && item.item_status === 'ACTIVE';
@@ -3751,7 +3805,8 @@ function renderFloatingBillAndDrawer() {
                           ${item.item_type === 'FOOD' ? `ครัว: ${item.kitchen_status}` : 'ของชำ'}
                         </span>
                         ${isOos ? '<span class="ttl-tag ttl-tag-danger" style="margin-right:4px;">🚨 สต็อกหมด!</span>' : ''}
-                        ${item.product_name} × ${item.quantity}
+                        ${item.product_name} <b style="color:var(--ttl-accent);">× ${item.quantity}</b>
+                        ${item.merged_count > 1 ? `<small style="color:var(--ttl-muted); font-weight:500;">(รวม ${item.merged_count} รอบ)</small>` : ''}
                       </div>
                       <div class="bill-item-price">
                         ${item.item_status === 'ACTIVE' ? formatMoney(item.unit_price * item.quantity) : 'ยกเลิกแล้ว'}
@@ -4017,21 +4072,29 @@ function renderBillsView() {
 
                 <!-- Items list inside Bill Card -->
                 <div style="padding:10px; border-radius:10px; background:var(--ttl-page); display:flex; flex-direction:column; gap:5px; max-height:190px; overflow-y:auto;">
-                  <div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--ttl-muted);">
-                    <span>รายการสินค้า (${activeItems.length} รายการปกติ)</span>
-                    <button type="button" style="color:var(--ttl-gold); font-weight:600; font-size:11.5px;" onclick="state.editingBillMetaOrder = ${JSON.stringify({ id: b.id, bill_title: b.bill_title || '', bill_note: b.bill_note || '', customer_id: b.customer_id || '' }).replace(/"/g, '&quot;')}; render();">
-                      ✏️ แก้ชื่อบิล/โน้ต/สมาชิก
-                    </button>
-                  </div>
-                  ${items.map(it => `
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; font-size:12.5px; padding-top:4px; border-top:1px solid var(--ttl-rule); ${it.item_status !== 'ACTIVE' ? 'text-decoration:line-through; opacity:0.5;' : ''}">
-                      <div style="flex:1; word-break:break-word;">
-                        <span>${it.item_type === 'FOOD' ? '🍳' : '📦'} ${it.product_name} × ${it.quantity}</span>
-                        ${it.modifiers && it.modifiers.length > 0 ? `<small style="color:var(--ttl-gold); display:block;">+ ${it.modifiers.join(', ')}</small>` : ''}
+                  ${(function() {
+                    const groupedBillItems = groupBillItems(items);
+                    const groupedActive = groupedBillItems.filter(i => i.item_status === 'ACTIVE');
+                    const totalActiveQty = groupedActive.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+                    return `
+                      <div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--ttl-muted);">
+                        <span>รายการสินค้า (${groupedActive.length} รายการ • รวม ${totalActiveQty} ชิ้น)</span>
+                        <button type="button" style="color:var(--ttl-gold); font-weight:600; font-size:11.5px;" onclick="state.editingBillMetaOrder = ${JSON.stringify({ id: b.id, bill_title: b.bill_title || '', bill_note: b.bill_note || '', customer_id: b.customer_id || '' }).replace(/"/g, '&quot;')}; render();">
+                          ✏️ แก้ชื่อบิล/โน้ต/สมาชิก
+                        </button>
                       </div>
-                      <b style="font-variant-numeric:tabular-nums; flex-shrink:0;">${formatMoney(it.unit_price * it.quantity)}</b>
-                    </div>
-                  `).join('')}
+                      ${groupedBillItems.map(it => `
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; font-size:12.5px; padding-top:4px; border-top:1px solid var(--ttl-rule); ${it.item_status !== 'ACTIVE' ? 'text-decoration:line-through; opacity:0.5;' : ''}">
+                          <div style="flex:1; word-break:break-word;">
+                            <span>${it.item_type === 'FOOD' ? '🍳' : '📦'} ${it.product_name} <b style="color:var(--ttl-accent);">× ${it.quantity}</b></span>
+                            ${it.merged_count > 1 ? `<small style="color:var(--ttl-muted);"> (รวม ${it.merged_count} รอบ)</small>` : ''}
+                            ${it.modifiers && it.modifiers.length > 0 ? `<small style="color:var(--ttl-gold); display:block;">+ ${it.modifiers.join(', ')}</small>` : ''}
+                          </div>
+                          <b style="font-variant-numeric:tabular-nums; flex-shrink:0;">${formatMoney(it.unit_price * it.quantity)}</b>
+                        </div>
+                      `).join('')}
+                    `;
+                  })()}
                 </div>
 
                 <div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:auto; padding-top:4px;">
@@ -4205,24 +4268,32 @@ function renderTablesView() {
                 <div style="font-size:11.5px; color:var(--ttl-muted);">🕒 เปิดโต๊ะเมื่อ: ${formatDateTimeThai(ord.created_at)}</div>
                 ${ord.bill_note ? `<div style="font-size:12px; color:var(--ttl-gold);">📝 โน้ต: ${ord.bill_note}</div>` : ''}
                 <div style="padding:10px; border-radius:10px; background:var(--ttl-page); display:flex; flex-direction:column; gap:6px;">
-                  <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--ttl-muted);">
-                    <span>เลขบิล: ${ord.id}</span>
-                    <span>${activeItems.length} รายการ</span>
-                  </div>
-                  ${ord.items.map(it => `
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; font-size:13px; padding-top:4px; border-top:1px solid var(--ttl-rule); ${it.item_status !== 'ACTIVE' ? 'text-decoration:line-through; opacity:0.5;' : ''}">
-                      <div style="flex:1; word-break:break-word;">
-                        <span>${it.item_type === 'FOOD' ? '🍳' : '📦'} ${it.product_name} × ${it.quantity}</span>
-                        ${it.modifiers && it.modifiers.length > 0 ? `<small style="color:var(--ttl-gold); display:block;">+ ${it.modifiers.join(', ')}</small>` : ''}
+                  ${(function() {
+                    const groupedTableItems = groupBillItems(ord.items);
+                    const groupedTableActive = groupedTableItems.filter(i => i.item_status === 'ACTIVE');
+                    const totalTableQty = groupedTableActive.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+                    return `
+                      <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--ttl-muted);">
+                        <span>เลขบิล: ${ord.id}</span>
+                        <span>${groupedTableActive.length} รายการ (รวม ${totalTableQty} ชิ้น)</span>
                       </div>
-                      <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
-                        <b>${formatMoney(it.unit_price * it.quantity)}</b>
-                        ${it.item_status === 'ACTIVE' ? `
-                          <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:24px; padding:0 7px; font-size:10.5px;" onclick="handleReturnTableItem('${it.id}', 'RETURNED_RESTOCK')">↩ คืน</button>
-                        ` : ''}
-                      </div>
-                    </div>
-                  `).join('')}
+                      ${groupedTableItems.map(it => `
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; font-size:13px; padding-top:4px; border-top:1px solid var(--ttl-rule); ${it.item_status !== 'ACTIVE' ? 'text-decoration:line-through; opacity:0.5;' : ''}">
+                          <div style="flex:1; word-break:break-word;">
+                            <span>${it.item_type === 'FOOD' ? '🍳' : '📦'} ${it.product_name} <b style="color:var(--ttl-accent);">× ${it.quantity}</b></span>
+                            ${it.merged_count > 1 ? `<small style="color:var(--ttl-muted);"> (รวม ${it.merged_count} รอบ)</small>` : ''}
+                            ${it.modifiers && it.modifiers.length > 0 ? `<small style="color:var(--ttl-gold); display:block;">+ ${it.modifiers.join(', ')}</small>` : ''}
+                          </div>
+                          <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+                            <b>${formatMoney(it.unit_price * it.quantity)}</b>
+                            ${it.item_status === 'ACTIVE' ? `
+                              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:24px; padding:0 7px; font-size:10.5px;" onclick="handleReturnTableItem('${it.id}', 'RETURNED_RESTOCK')">↩ คืน</button>
+                            ` : ''}
+                          </div>
+                        </div>
+                      `).join('')}
+                    `;
+                  })()}
                 </div>
 
                 <div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:auto; padding-top:6px;">
@@ -5658,6 +5729,8 @@ function renderModals() {
     const cusObj = getCheckoutCustomerObj();
     const allCustomers = state.data.customers || [];
     const activeItems = (co.items || []).filter(i => !i.item_status || i.item_status === 'ACTIVE');
+    const groupedCheckoutItems = groupBillItems(activeItems);
+    const totalCheckoutQty = groupedCheckoutItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
 
     const manualDiscount = Math.max(0, Number(state.checkoutDiscount) || 0);
     const redeemPts = Math.max(0, Number(state.checkoutRedeemPoints) || 0);
@@ -5691,30 +5764,37 @@ function renderModals() {
           <div class="ttl-k">TREASURY CHECKOUT • รีเช็ครายการ & รับชำระเงิน</div>
           <h3 style="margin:4px 0 10px; font-size:20px;">${co.label}</h3>
 
-          <!-- กล่องแสดงรายการสินค้าและเมนูในบิลเพื่อรีเช็คความถูกต้องก่อนชำระเงิน -->
+          <!-- กล่องแสดงรายการสินค้าและเมนูในบิลเพื่อรีเช็คความถูกต้องก่อนชำระเงิน (รวมจำนวนเมนูที่ซ้ำกันให้อัตโนมัติ) -->
           <div style="padding:12px 14px; border-radius:12px; background:var(--ttl-page); border:1px solid var(--ttl-rule); margin-bottom:12px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:8px;">
               <span style="font-size:12.5px; font-weight:700; color:var(--ttl-ink);">
-                📋 รีเช็ครายการสินค้าและเมนูในบิล (${activeItems.length} รายการ)
+                📋 สรุปรายการในบิล (${groupedCheckoutItems.length} รายการ • รวม ${totalCheckoutQty} ชิ้น/จาน)
               </span>
               <span style="font-size:12px; color:var(--ttl-muted);">ยอดรวมก่อนลด: <b>${formatMoney(co.subtotal)}</b></span>
             </div>
-            ${activeItems.length === 0 ? `
+            ${groupedCheckoutItems.length === 0 ? `
               <div style="font-size:12px; color:var(--ttl-muted); padding:8px 0;">ไม่มีรายการสินค้าในบิล</div>
             ` : `
-              <div style="display:flex; flex-direction:column; gap:6px; max-height:175px; overflow-y:auto; padding-right:4px;">
-                ${activeItems.map((it, idx) => {
+              <div style="display:flex; flex-direction:column; gap:6px; max-height:190px; overflow-y:auto; padding-right:4px;">
+                ${groupedCheckoutItems.map((it, idx) => {
                   const itemName = it.product_name || it.name || 'สินค้า';
                   const qty = Number(it.quantity) || 1;
                   const uPrice = Number(it.unit_price) || 0;
-                  const mods = Array.isArray(it.modifiers) && it.modifiers.length > 0 ? ` (${it.modifiers.join(', ')})` : '';
+                  const mods = Array.isArray(it.modifiers) && it.modifiers.length > 0 ? ` (+${it.modifiers.join(', ')})` : '';
                   return `
-                    <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:5px 8px; border-radius:8px; background:var(--ttl-paper); border:1px solid var(--ttl-rule);">
-                      <div>
-                        <span style="font-weight:600;">${idx + 1}. ${it.item_type === 'FOOD' ? '🍳' : '📦'} ${itemName}${mods}</span>
-                        <span style="color:var(--ttl-muted); font-size:12px; margin-left:6px;">${formatMoney(uPrice)} × ${qty}</span>
+                    <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:6px 10px; border-radius:8px; background:var(--ttl-paper); border:1px solid var(--ttl-rule);">
+                      <div style="flex:1; padding-right:8px;">
+                        <span style="font-weight:700;">${idx + 1}. ${it.item_type === 'FOOD' ? '🍳' : '📦'} ${itemName}</span>
+                        ${mods ? `<span style="color:var(--ttl-gold); font-size:12px; font-weight:600;">${mods}</span>` : ''}
+                        ${it.merged_count > 1 ? `<span style="font-size:11px; color:var(--ttl-muted); margin-left:4px;">(รวมจาก ${it.merged_count} รอบสั่ง)</span>` : ''}
                       </div>
-                      <b style="font-variant-numeric:tabular-nums;">${formatMoney(uPrice * qty)}</b>
+                      <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+                        <span style="font-size:12px; color:var(--ttl-muted);">${formatMoney(uPrice)}</span>
+                        <span style="background:color-mix(in srgb, var(--ttl-accent) 14%, transparent); color:var(--ttl-accent); font-weight:800; font-size:12.5px; padding:2px 8px; border-radius:999px;">
+                          × ${qty}
+                        </span>
+                        <b style="font-variant-numeric:tabular-nums; min-width:56px; text-align:right;">${formatMoney(uPrice * qty)}</b>
+                      </div>
                     </div>
                   `;
                 }).join('')}
@@ -6711,6 +6791,8 @@ function renderModals() {
   if (state.invoiceModalOrder) {
     const inv = state.invoiceModalOrder;
     const items = (inv.items || []).filter(i => i.item_status === 'ACTIVE');
+    const groupedInvoiceItems = groupBillItems(items);
+    const totalInvoiceQty = groupedInvoiceItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
     html += `
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.invoiceModalOrder=null; render();}">
         <div class="ttl-modal" style="max-width:460px;">
@@ -6725,11 +6807,20 @@ function renderModals() {
             ${inv.customer_name ? `<div style="font-size:12.5px; margin-top:4px; font-weight:600;">👤 ลูกค้าสมาชิก: ${inv.customer_name}</div>` : ''}
           </div>
 
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:11.5px; font-weight:700; color:var(--ttl-muted); margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid var(--ttl-rule);">
+            <span>รายการ (${groupedInvoiceItems.length} รายการ • รวม ${totalInvoiceQty} ชิ้น/จาน)</span>
+            <span>จำนวนเงิน</span>
+          </div>
+
           <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:14px; max-height:240px; overflow-y:auto;">
-            ${items.map(it => `
-              <div style="display:flex; justify-content:space-between; font-size:13px;">
-                <span>${it.product_name} × ${it.quantity} ${it.modifiers?.length ? `(${it.modifiers.join(',')})` : ''}</span>
-                <b>${formatMoney(it.unit_price * it.quantity)}</b>
+            ${groupedInvoiceItems.map((it, idx) => `
+              <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; gap:8px;">
+                <span style="flex:1;">
+                  ${idx + 1}. ${it.product_name} <b style="color:var(--ttl-accent);">× ${it.quantity}</b>
+                  ${it.modifiers?.length ? `<small style="color:var(--ttl-gold);"> (${it.modifiers.join(', ')})</small>` : ''}
+                  ${it.merged_count > 1 ? `<small style="color:var(--ttl-muted);"> (รวม ${it.merged_count} รอบ)</small>` : ''}
+                </span>
+                <b style="font-variant-numeric:tabular-nums; flex-shrink:0;">${formatMoney(it.unit_price * it.quantity)}</b>
               </div>
             `).join('')}
           </div>

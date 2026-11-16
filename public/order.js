@@ -650,6 +650,59 @@ function getProductQtyInCart(productId) {
     .reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
 }
 
+// รวมรายการสินค้าหรือเมนูที่เหมือนกัน (ชื่อ/รหัสเดียวกัน + ตัวเลือกเสริมเหมือนกัน + ราคาเท่ากัน + โน้ตเดียวกัน)
+// เพื่อแสดงจำนวนรวมในหน้าเช็คบิล, สถานะบิลโต๊ะ และใบเสร็จของลูกค้าโดยไม่ต้องบวกเลขเอง
+function groupCustomerOrderItems(rawItems) {
+  if (!Array.isArray(rawItems) || rawItems.length === 0) return [];
+  const map = new Map();
+
+  for (const it of rawItems) {
+    if (!it) continue;
+    const status = it.item_status || 'ACTIVE';
+    const itemName = String(it.product_name || it.name || 'สินค้า').trim();
+    const prodKey = it.product_id || itemName;
+    const rawMods = Array.isArray(it.modifiers) ? it.modifiers : [];
+    const modNames = rawMods.map(m => (typeof m === 'object' && m !== null ? (m.name || '') : String(m))).filter(Boolean);
+    const modExtra = rawMods.reduce((s, m) => s + (typeof m === 'object' && m !== null ? (Number(m.extra_price) || 0) : 0), 0);
+    const uPrice = Number(it.unit_price ?? it.price ?? 0) + modExtra;
+    const modKey = modNames.slice().sort().join('|');
+    const noteKey = String(it.special_instructions || '').trim();
+    const key = `${status}::${prodKey}::${uPrice}::${modKey}::${noteKey}`;
+
+    const qty = Number(it.quantity) || 1;
+    const kSt = it.kitchen_status || '';
+
+    if (map.has(key)) {
+      const existing = map.get(key);
+      existing.quantity += qty;
+      existing.merged_count += 1;
+      if (kSt === 'SERVED') existing.served_qty += qty;
+      else if (kSt === 'COOKING') existing.cooking_qty += qty;
+      else existing.pending_qty += qty;
+
+      if (existing.served_qty === existing.quantity) existing.kitchen_status = 'SERVED';
+      else if (existing.cooking_qty > 0 || existing.served_qty > 0) existing.kitchen_status = 'COOKING';
+    } else {
+      map.set(key, {
+        ...it,
+        product_name: itemName,
+        name: itemName,
+        unit_price: uPrice,
+        quantity: qty,
+        modifiers: modNames,
+        special_instructions: noteKey,
+        item_status: status,
+        merged_count: 1,
+        served_qty: kSt === 'SERVED' ? qty : 0,
+        cooking_qty: kSt === 'COOKING' ? qty : 0,
+        pending_qty: (kSt !== 'SERVED' && kSt !== 'COOKING') ? qty : 0
+      });
+    }
+  }
+
+  return Array.from(map.values());
+}
+
 // แสดงแถบแจ้งเตือนสถานะกำลังดำเนินการ (Loading / Toast) เพื่อป้องกันการกดซ้ำ
 let coToastTimer = null;
 function showOrderToast(message, isBusy = false) {
@@ -848,16 +901,32 @@ function confirmFoodModifiers() {
   const p = orderState.foodModalProduct;
   if (!p) return;
 
-  orderState.cart.push({
-    product_id: p.id,
-    name: p.name,
-    item_type: 'FOOD',
-    unit_price: Number(p.price) || 0,
-    image_url: p.image_url || '',
-    quantity: orderState.foodModalQty || 1,
-    modifiers: [...orderState.foodModalModifiers],
-    special_instructions: orderState.foodModalNote.trim()
+  const newMods = [...orderState.foodModalModifiers];
+  const newModKey = newMods.map(m => m.id || m.name).slice().sort().join('|');
+  const newNote = orderState.foodModalNote.trim();
+  const addQty = orderState.foodModalQty || 1;
+
+  const existing = orderState.cart.find(it => {
+    if (it.product_id !== p.id) return false;
+    const itModKey = (it.modifiers || []).map(m => (typeof m === 'object' && m !== null ? (m.id || m.name) : String(m))).slice().sort().join('|');
+    const itNote = String(it.special_instructions || '').trim();
+    return itModKey === newModKey && itNote === newNote;
   });
+
+  if (existing) {
+    existing.quantity += addQty;
+  } else {
+    orderState.cart.push({
+      product_id: p.id,
+      name: p.name,
+      item_type: 'FOOD',
+      unit_price: Number(p.price) || 0,
+      image_url: p.image_url || '',
+      quantity: addQty,
+      modifiers: newMods,
+      special_instructions: newNote
+    });
+  }
 
   orderState.foodModalProduct = null;
   renderCartAndModals();
@@ -2632,6 +2701,8 @@ function renderFoodModifierModal() {
 // ==========================================================================
 function renderCartModal() {
   const subtotal = getCartSubtotal();
+  const groupedCart = groupCustomerOrderItems(orderState.cart);
+  const totalCartQty = getCartCount();
 
   return `
     <div class="co-modal-backdrop" onclick="if(event.target===this){orderState.showCartModal=false; renderCartAndModals();}">
@@ -2639,7 +2710,7 @@ function renderCartModal() {
         <div class="co-modal-header">
           <div>
             <div class="co-label" style="color:#0d9488;">MY CART</div>
-            <h3 style="margin:2px 0 0; font-size:17px;">🛒 ตะกร้าสินค้าของคุณ</h3>
+            <h3 style="margin:2px 0 0; font-size:17px;">🛒 ตะกร้าสินค้าของคุณ (${groupedCart.length} รายการ • รวม ${totalCartQty} ชิ้น)</h3>
           </div>
           <button type="button" class="co-close-btn" onclick="orderState.showCartModal=false; renderCartAndModals();">✕</button>
         </div>
@@ -2659,7 +2730,7 @@ function renderCartModal() {
                   <div style="display:flex; align-items:center; gap:8px;">
                     ${it.image_url ? `<img src="${it.image_url}" alt="" style="width:40px; height:40px; object-fit:cover; border-radius:6px; border:1px solid var(--co-border); flex-shrink:0;" />` : ''}
                     <div>
-                      <div style="font-weight:700; font-size:13px;">${it.name}</div>
+                      <div style="font-weight:700; font-size:13px;">${it.name} <span style="color:#0d9488; font-weight:800;">× ${it.quantity}</span></div>
                       ${modList ? `<div style="font-size:11px; color:#0d9488;">+ ${modList}</div>` : ''}
                       ${it.special_instructions ? `<div style="font-size:10.5px; color:#b45309;">📝 ${it.special_instructions}</div>` : ''}
                       <div style="font-size:12px; font-weight:800; color:#0f3238; margin-top:2px;">${formatMoney(lineTotal)}</div>
@@ -2700,6 +2771,8 @@ function renderCheckoutModal() {
   const disc = getPointsDiscountBaht(orderState.redeemPoints);
   const netTotal = getCartNetTotal();
   const m = orderState.member;
+  const groupedCart = groupCustomerOrderItems(orderState.cart);
+  const totalCartQty = groupedCart.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
 
   return `
     <div class="co-modal-backdrop" onclick="if(event.target===this){orderState.showCheckoutModal=false; renderCartAndModals();}">
@@ -2710,6 +2783,26 @@ function renderCheckoutModal() {
             <h3 style="margin:2px 0 0; font-size:17px;">💳 ชำระเงิน & ยืนยันคำสั่งซื้อ</h3>
           </div>
           <button type="button" class="co-close-btn" onclick="orderState.showCheckoutModal=false; renderCartAndModals();">✕</button>
+        </div>
+
+        <!-- กล่องสรุปรวมจำนวนรายการที่สั่งเพื่อรีเช็คก่อนยืนยัน -->
+        <div style="background:#f8fafc; border:1px solid var(--co-border); border-radius:12px; padding:10px 12px; margin-bottom:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; font-weight:800; color:var(--co-ink); margin-bottom:6px; padding-bottom:4px; border-bottom:1px dashed var(--co-border);">
+            <span>📋 สรุปรายการที่สั่ง (${groupedCart.length} รายการ)</span>
+            <span style="color:#0d9488;">รวม ${totalCartQty} ชิ้น/จาน</span>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:5px; max-height:140px; overflow-y:auto;">
+            ${groupedCart.map((it, idx) => `
+              <div style="display:flex; justify-content:space-between; align-items:center; font-size:12.5px; gap:8px;">
+                <span style="flex:1;">
+                  ${idx + 1}. <b>${it.name}</b>
+                  ${it.modifiers && it.modifiers.length > 0 ? `<small style="color:#0d9488;"> (+${it.modifiers.join(', ')})</small>` : ''}
+                </span>
+                <span style="background:#ccfbf1; color:#0f766e; font-weight:800; font-size:11.5px; padding:1px 7px; border-radius:999px;">× ${it.quantity}</span>
+                <b style="min-width:52px; text-align:right;">${formatMoney(it.unit_price * it.quantity)}</b>
+              </div>
+            `).join('')}
+          </div>
         </div>
 
         <!-- Loyalty Points Redemption Block (ห้ามใช้ซ้อนกับโปรโมชั่น) -->
@@ -2983,13 +3076,22 @@ function renderLiveTrackerView() {
 
         <!-- Order Items Summary Card -->
         <div style="background:#f8fafc; border:1px solid var(--co-border); border-radius:12px; padding:14px; text-align:left; margin:20px 0;">
-          <div style="font-weight:700; font-size:13px; margin-bottom:8px; color:var(--co-ink);">รายการในคำสั่งซื้อ:</div>
-          ${(ord.items || []).map(it => `
-            <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;">
-              <span>• ${it.name} x${it.quantity}</span>
-              <span style="font-weight:700;">${formatMoney(it.unit_price * it.quantity)}</span>
-            </div>
-          `).join('')}
+          ${(function() {
+            const groupedOrdItems = groupCustomerOrderItems(ord.items || []);
+            const totalOrdQty = groupedOrdItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+            return `
+              <div style="display:flex; justify-content:space-between; align-items:center; font-weight:700; font-size:13px; margin-bottom:8px; color:var(--co-ink);">
+                <span>รายการในคำสั่งซื้อ (${groupedOrdItems.length} รายการ):</span>
+                <span style="color:#0d9488;">รวม ${totalOrdQty} ชิ้น/จาน</span>
+              </div>
+              ${groupedOrdItems.map(it => `
+                <div style="display:flex; justify-content:space-between; align-items:center; font-size:12.5px; margin-bottom:4px;">
+                  <span>• ${it.name}${it.modifiers?.length ? ` (+${it.modifiers.join(', ')})` : ''} <b style="color:#0d9488;">× ${it.quantity}</b></span>
+                  <span style="font-weight:700;">${formatMoney(it.unit_price * it.quantity)}</span>
+                </div>
+              `).join('')}
+            `;
+          })()}
           <div style="border-top:1px dashed var(--co-border); margin-top:8px; padding-top:8px; display:flex; justify-content:space-between; font-weight:800; font-size:14px;">
             <span>ยอดชำระ (${ord.paymentMethod === 'QR_PROMPTPAY' ? 'สแกน QR' : 'เงินสด'}):</span>
             <span style="color:#0d9488;">${formatMoney(ord.netTotal)}</span>
@@ -3202,6 +3304,8 @@ function renderTableBillModal() {
   const bill = orderState.tableBillData;
   const items = bill?.items || [];
   const activeItems = items.filter(i => i.item_status === 'ACTIVE' || !i.item_status);
+  const groupedItems = groupCustomerOrderItems(activeItems);
+  const totalQty = groupedItems.reduce((sum, it) => sum + (Number(it.quantity) || 1), 0);
   const subtotal = activeItems.reduce((sum, it) => sum + (Number(it.unit_price || it.price || 0) * (it.quantity || 1)), 0);
 
   return `
@@ -3235,17 +3339,22 @@ function renderTableBillModal() {
               </div>
             </div>
 
-            <div style="font-size:13px; font-weight:800; margin-bottom:8px; color:var(--co-ink);">
-              รายการอาหารที่สั่ง (${activeItems.length} รายการ):
+            <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; font-weight:800; margin-bottom:8px; color:var(--co-ink);">
+              <span>รายการที่สั่ง (${groupedItems.length} รายการ):</span>
+              <span style="color:#0d9488; background:#ccfbf1; padding:2px 8px; border-radius:999px; font-size:12px;">รวมทั้งหมด ${totalQty} ชิ้น/จาน</span>
             </div>
 
             <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
-              ${activeItems.map(it => {
+              ${groupedItems.map((it, idx) => {
                 const kStatus = it.kitchen_status;
                 let kLabel = '⏳ ได้รับออเดอร์';
                 let kColor = '#0284c7';
                 let kBg = '#e0f2fe';
-                if (kStatus === 'COOKING') {
+                if (it.served_qty > 0 && it.served_qty < it.quantity) {
+                  kLabel = `🍽️ เสิร์ฟแล้ว ${it.served_qty}/${it.quantity}`;
+                  kColor = '#d97706';
+                  kBg = '#fef3c7';
+                } else if (kStatus === 'COOKING') {
                   kLabel = '🍳 กำลังปรุง';
                   kColor = '#d97706';
                   kBg = '#fef3c7';
@@ -3260,13 +3369,14 @@ function renderTableBillModal() {
                   <div style="background:#fff; border:1px solid var(--co-border); border-radius:10px; padding:10px 12px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
                     <div style="flex:1;">
                       <div style="font-weight:700; font-size:13.5px; color:var(--co-ink);">
-                        ${it.product_name || it.name} × ${it.quantity}
+                        ${idx + 1}. ${it.product_name || it.name} <span style="color:#0d9488; font-weight:800;">× ${it.quantity}</span>
+                        ${it.merged_count > 1 ? `<small style="color:var(--co-muted); font-weight:600; font-size:11px;"> (รวม ${it.merged_count} รอบ)</small>` : ''}
                       </div>
                       ${it.modifiers && it.modifiers.length > 0 ? `
                         <div style="font-size:11px; color:#d97706; margin-top:2px;">+ ${it.modifiers.join(', ')}</div>
                       ` : ''}
                     </div>
-                    <div style="text-align:right;">
+                    <div style="text-align:right; flex-shrink:0;">
                       <div style="font-weight:800; font-size:13.5px; color:#0f172a;">${formatMoney(price)}</div>
                       <span style="font-size:10px; font-weight:700; color:${kColor}; background:${kBg}; padding:2px 6px; border-radius:4px; display:inline-block; margin-top:2px;">
                         ${kLabel}
@@ -3450,16 +3560,21 @@ function reorderPastOrder(orderId) {
     const prod = allProds.find(p => p.id === pid || p.name === (it.product_name || it.name));
     if (prod) {
       const qty = Number(it.quantity) || 1;
-      orderState.cart.push({
-        product_id: prod.id,
-        name: prod.name,
-        unit_price: prod.price,
-        image_url: prod.image_url || '',
-        item_type: prod.item_type,
-        quantity: qty,
-        modifiers: [],
-        special_instructions: ''
-      });
+      const existing = orderState.cart.find(c => c.product_id === prod.id && (!c.modifiers || c.modifiers.length === 0) && !c.special_instructions);
+      if (existing) {
+        existing.quantity += qty;
+      } else {
+        orderState.cart.push({
+          product_id: prod.id,
+          name: prod.name,
+          unit_price: prod.price,
+          image_url: prod.image_url || '',
+          item_type: prod.item_type,
+          quantity: qty,
+          modifiers: [],
+          special_instructions: ''
+        });
+      }
       addedCount += qty;
     }
   });
@@ -3628,17 +3743,30 @@ function renderMyOrdersModal() {
                         </div>
                       ` : ''}
 
-                      <!-- Item List Summary -->
+                      <!-- Item List Summary (รวมจำนวนสินค้าหรือเมนูที่เหมือนกันให้อัตโนมัติ) -->
                       <div style="background:#f8fafc; border-radius:8px; padding:8px 10px; margin:8px 0; font-size:12px;">
-                        ${items.map(it => {
-                          const kSt = it.kitchen_status === 'SERVED' ? ' <span style="color:#16a34a; font-weight:700;">(เสิร์ฟแล้ว)</span>' : (it.kitchen_status === 'COOKING' ? ' <span style="color:#d97706; font-weight:700;">(กำลังปรุง)</span>' : '');
+                        ${(function() {
+                          const groupedOrdItems = groupCustomerOrderItems(items);
+                          const totalOrdQty = groupedOrdItems.reduce((s, i) => s + (Number(i.quantity) || 1), 0);
                           return `
-                            <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
-                              <span>• ${it.product_name || it.name} × ${it.quantity}${!isDone ? kSt : ''}</span>
-                              <span style="font-weight:700;">${formatMoney(Number(it.unit_price || it.price || 0) * (it.quantity || 1))}</span>
+                            <div style="display:flex; justify-content:space-between; align-items:center; font-size:11px; font-weight:700; color:var(--co-muted); margin-bottom:5px; padding-bottom:4px; border-bottom:1px dashed var(--co-border);">
+                              <span>รายการที่สั่ง (${groupedOrdItems.length} รายการ)</span>
+                              <span style="color:#0d9488;">รวม ${totalOrdQty} ชิ้น/จาน</span>
                             </div>
+                            ${groupedOrdItems.map(it => {
+                              const kSt = it.kitchen_status === 'SERVED'
+                                ? ' <span style="color:#16a34a; font-weight:700;">(เสิร์ฟแล้ว)</span>'
+                                : (it.kitchen_status === 'COOKING' ? ' <span style="color:#d97706; font-weight:700;">(กำลังปรุง)</span>' : '');
+                              const mods = it.modifiers && it.modifiers.length > 0 ? ` (+${it.modifiers.join(', ')})` : '';
+                              return `
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; gap:6px;">
+                                  <span style="flex:1;">• ${it.product_name || it.name}${mods} <b style="color:#0d9488;">× ${it.quantity}</b>${it.merged_count > 1 ? ` <small style="color:var(--co-muted);">(รวม ${it.merged_count} รอบ)</small>` : ''}${!isDone ? kSt : ''}</span>
+                                  <span style="font-weight:700; flex-shrink:0;">${formatMoney(Number(it.unit_price || it.price || 0) * (it.quantity || 1))}</span>
+                                </div>
+                              `;
+                            }).join('')}
                           `;
-                        }).join('')}
+                        })()}
                       </div>
 
                       <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px dashed var(--co-border);">
