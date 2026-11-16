@@ -432,16 +432,26 @@ module.exports = async (req, res) => {
       let orderRound = 1;
       let contextLabel = bill_title ? `บิล: ${bill_title}` : 'ขายหน้าร้าน (Walk-in)';
 
-      if (settle_immediately) {
-        const oos = [];
+      // ตรวจสอบสต็อกสินค้าของชำสำหรับรายการใหม่ที่จะเพิ่มเข้าบิล (ห้ามสั่งเกินสต็อกที่มี)
+      if (Array.isArray(items) && items.length > 0) {
+        const requestedPerProd = new Map();
         for (const it of items) {
           const p = data.products.find(x => x.id === it.product_id);
-          if (p && p.item_type === 'GROCERY' && p.track_stock && Number(p.stock_qty) <= 0) {
-            oos.push(p.name);
+          if (p && p.item_type === 'GROCERY' && p.track_stock !== false) {
+            const q = Math.max(1, Number(it.quantity) || 1);
+            requestedPerProd.set(p.id, (requestedPerProd.get(p.id) || 0) + q);
           }
         }
-        if (oos.length > 0) {
-          return send(400, { error: `ไม่สามารถเช็คบิลได้ เนื่องจากมีสินค้าสต็อกหมดในบิล: ${oos.join(', ')} กรุณานำออกจากบิลก่อนครับ` });
+        for (const [pid, reqQty] of requestedPerProd.entries()) {
+          const p = data.products.find(x => x.id === pid);
+          const currentStock = Number(p?.stock_qty) || 0;
+          if (currentStock < reqQty) {
+            if (currentStock <= 0) {
+              return send(400, { error: `สินค้า "${p.name}" หมดสต็อกแล้ว ไม่สามารถบันทึกเข้าบิลได้` });
+            } else {
+              return send(400, { error: `สินค้า "${p.name}" สต็อกไม่เพียงพอ (คงเหลือ ${currentStock} ${p.unit || 'ชิ้น'} แต่สั่ง ${reqQty})` });
+            }
+          }
         }
       }
 

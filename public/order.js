@@ -853,6 +853,20 @@ function addToCartDirect(product, qty = 1) {
     openFoodModifierModal(product);
     return;
   }
+  if (product.item_type === 'GROCERY' && product.track_stock !== false) {
+    const currentStock = Number(product.stock_qty) || 0;
+    if (currentStock <= 0) {
+      alert(`ขออภัยครับ สินค้า "${product.name}" หมดชั่วคราว`);
+      return;
+    }
+    const inCartQty = orderState.cart
+      .filter(it => it.product_id === product.id)
+      .reduce((sum, it) => sum + Number(it.quantity || 0), 0);
+    if (inCartQty + qty > currentStock) {
+      alert(`ขออภัยครับ สินค้า "${product.name}" มีคงเหลือ ${currentStock} ${product.unit || 'ชิ้น'} (ในตะกร้ามีแล้ว ${inCartQty}) ไม่สามารถเพิ่มเกินได้`);
+      return;
+    }
+  }
   const existing = orderState.cart.find(it => it.product_id === product.id && (!it.modifiers || it.modifiers.length === 0));
   if (existing) {
     existing.quantity += qty;
@@ -933,9 +947,24 @@ function confirmFoodModifiers() {
 }
 
 function updateCartQty(index, delta) {
-  if (!orderState.cart[index]) return;
-  orderState.cart[index].quantity += delta;
-  if (orderState.cart[index].quantity <= 0) {
+  const item = orderState.cart[index];
+  if (!item) return;
+  if (delta > 0) {
+    const products = orderState.data?.products || [];
+    const prod = products.find(p => p.id === item.product_id);
+    if (prod && prod.item_type === 'GROCERY' && prod.track_stock !== false) {
+      const currentStock = Number(prod.stock_qty) || 0;
+      const inCartQty = orderState.cart
+        .filter(it => it.product_id === item.product_id)
+        .reduce((sum, it) => sum + Number(it.quantity || 0), 0);
+      if (inCartQty + delta > currentStock) {
+        alert(`ขออภัยครับ สินค้า "${prod.name}" คงเหลือ ${currentStock} ${prod.unit || 'ชิ้น'} ไม่สามารถเพิ่มเกินสต็อกได้`);
+        return;
+      }
+    }
+  }
+  item.quantity += delta;
+  if (item.quantity <= 0) {
     orderState.cart.splice(index, 1);
   }
   renderCartAndModals();
@@ -3586,7 +3615,21 @@ function reorderPastOrder(orderId) {
     const pid = it.product_id;
     const prod = allProds.find(p => p.id === pid || p.name === (it.product_name || it.name));
     if (prod) {
-      const qty = Number(it.quantity) || 1;
+      if (prod.item_type === 'GROCERY' && prod.track_stock !== false) {
+        const curStock = Number(prod.stock_qty) || 0;
+        if (curStock <= 0) return;
+      }
+      const rawQty = Number(it.quantity) || 1;
+      let qty = rawQty;
+      if (prod.item_type === 'GROCERY' && prod.track_stock !== false) {
+        const curStock = Number(prod.stock_qty) || 0;
+        const alreadyInCart = orderState.cart
+          .filter(c => c.product_id === prod.id)
+          .reduce((sum, c) => sum + Number(c.quantity || 0), 0);
+        const available = Math.max(0, curStock - alreadyInCart);
+        if (available <= 0) return;
+        qty = Math.min(rawQty, available);
+      }
       const existing = orderState.cart.find(c => c.product_id === prod.id && (!c.modifiers || c.modifiers.length === 0) && !c.special_instructions);
       if (existing) {
         existing.quantity += qty;

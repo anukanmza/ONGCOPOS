@@ -804,6 +804,29 @@ window.LocalPosEngine = {
     let orderRound = 1;
     let contextLabel = bill_title ? `บิล: ${bill_title}` : 'ขายหน้าร้าน (Walk-in)';
 
+    // ตรวจสอบสต็อกสินค้าของชำสำหรับรายการใหม่ที่จะเพิ่มเข้าบิล
+    if (Array.isArray(items) && items.length > 0) {
+      const requestedPerProd = new Map();
+      for (const it of items) {
+        const p = db.products.find(x => x.id === it.product_id);
+        if (p && p.item_type === 'GROCERY' && p.track_stock !== false) {
+          const q = Math.max(1, Number(it.quantity) || 1);
+          requestedPerProd.set(p.id, (requestedPerProd.get(p.id) || 0) + q);
+        }
+      }
+      for (const [pid, reqQty] of requestedPerProd.entries()) {
+        const p = db.products.find(x => x.id === pid);
+        const currentStock = Number(p?.stock_qty) || 0;
+        if (currentStock < reqQty) {
+          if (currentStock <= 0) {
+            return { error: `สินค้า "${p.name}" หมดสต็อกแล้ว ไม่สามารถบันทึกเข้าบิลได้` };
+          } else {
+            return { error: `สินค้า "${p.name}" สต็อกไม่เพียงพอ (คงเหลือ ${currentStock} ${p.unit || 'ชิ้น'} แต่สั่ง ${reqQty})` };
+          }
+        }
+      }
+    }
+
     if (existingOrderId) {
       const existing = db.orders.find(o => o.id === existingOrderId);
       if (existing) {

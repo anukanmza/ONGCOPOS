@@ -551,7 +551,7 @@ function getProductStockInfo(p) {
   if (!p) return { isOutOfStock: false, isLowStock: false, label: '', badgeClass: '', rowStyle: '', cardStyle: '' };
   const thresh = (p.low_stock_threshold !== undefined && p.low_stock_threshold !== null) ? Number(p.low_stock_threshold) : 5;
   
-  if (p.item_type === 'GROCERY') {
+  if (p.item_type === 'GROCERY' && p.track_stock !== false) {
     const qty = Number(p.stock_qty) || 0;
     if (qty <= 0) {
       return {
@@ -560,7 +560,7 @@ function getProductStockInfo(p) {
         label: `🚨 หมดสต็อก (${qty} ${p.unit})`,
         badgeClass: 'ttl-tag-danger',
         rowStyle: 'background:#fef2f2; border-left:4px solid #ef4444;',
-        cardStyle: 'border:1.5px solid #ef4444; background:#fef2f2;'
+        cardStyle: 'border:1.5px solid #ef4444; background:#fef2f2; opacity:0.68;'
       };
     }
     if (qty <= thresh) {
@@ -1571,8 +1571,10 @@ async function analyzeVoiceCommand(text) {
     syncCurrentBillMetaFromContext();
   }
 
+  const addedItems = [];
+  const oosItems = [];
   for (const i of pv.items) {
-    addToCartDirect({
+    const ok = addToCartDirect({
       product_id: i.product_id,
       name: i.name,
       item_type: i.item_type,
@@ -1583,9 +1585,14 @@ async function analyzeVoiceCommand(text) {
       send_to_kitchen: Boolean(i.send_to_kitchen),
       input_source: 'VOICE'
     });
+    if (ok) {
+      addedItems.push(i);
+    } else {
+      oosItems.push(i.name);
+    }
   }
 
-  const summaryNames = pv.items.map(i => `${i.name}${i.modifiers?.length ? ' (' + i.modifiers.join(',') + ')' : ''} x${i.quantity}`).join(', ');
+  const summaryNames = addedItems.map(i => `${i.name}${i.modifiers?.length ? ' (' + i.modifiers.join(',') + ')' : ''} x${i.quantity}`).join(', ');
   state.lastVoiceSummary = {
     text: summaryNames,
     total: pv.total_preview,
@@ -1595,10 +1602,51 @@ async function analyzeVoiceCommand(text) {
   };
   state.voiceText = '';
   render();
-  showToast(`🎙️ เพิ่ม ${summaryNames} เข้าบิล (รายการใหม่) แล้ว!`);
+  if (addedItems.length > 0) {
+    showToast(`🎙️ เพิ่ม ${summaryNames} เข้าบิลแล้ว!${oosItems.length > 0 ? ` (⚠️ ข้ามรายการหมด: ${oosItems.join(', ')})` : ''}`);
+  } else if (oosItems.length > 0) {
+    showToast(`🚨 ไม่สามารถเพิ่มได้เนื่องจากสินค้าหมดสต็อก: ${oosItems.join(', ')}`);
+  }
+}
+
+function getProductDraftCartQty(productId) {
+  return state.cart
+    .filter(c => c.product_id === productId)
+    .reduce((sum, c) => sum + Number(c.quantity || 0), 0);
+}
+
+function incrementCartItemQty(idx) {
+  const item = state.cart[idx];
+  if (!item) return;
+  const prod = state.data?.products?.find(p => p.id === item.product_id);
+  if (prod && prod.item_type === 'GROCERY' && prod.track_stock !== false) {
+    const currentStock = Number(prod.stock_qty) || 0;
+    const totalInCart = getProductDraftCartQty(item.product_id);
+    if (totalInCart + 1 > currentStock) {
+      showToast(`⚠️ สินค้า "${prod.name}" คงเหลือ ${currentStock} ${prod.unit || 'ชิ้น'} ไม่สามารถเพิ่มเกินสต็อกได้`);
+      return;
+    }
+  }
+  item.quantity++;
+  render();
 }
 
 function addToCartDirect(itemObj) {
+  const prod = state.data?.products?.find(p => p.id === itemObj.product_id);
+  if (prod && prod.item_type === 'GROCERY' && prod.track_stock !== false) {
+    const currentStock = Number(prod.stock_qty) || 0;
+    if (currentStock <= 0) {
+      showToast(`🚨 สินค้า "${prod.name}" หมดสต็อกแล้ว! ไม่สามารถเพิ่มเข้าบิลได้`);
+      return false;
+    }
+    const alreadyInCartQty = getProductDraftCartQty(prod.id);
+    const qtyToAdd = Math.max(1, Number(itemObj.quantity) || 1);
+    if (alreadyInCartQty + qtyToAdd > currentStock) {
+      showToast(`⚠️ สินค้า "${prod.name}" คงเหลือ ${currentStock} ${prod.unit || 'ชิ้น'} (ในบิลมีแล้ว ${alreadyInCartQty}) ไม่สามารถเพิ่มเกินสต็อกได้`);
+      return false;
+    }
+  }
+
   const modKey = (itemObj.modifiers || []).slice().sort().join('|');
   const existing = state.cart.find(c => c.product_id === itemObj.product_id && c.modKey === modKey);
   if (existing) {
@@ -1618,12 +1666,18 @@ function addToCartDirect(itemObj) {
       input_source: itemObj.input_source || 'TOUCH'
     });
   }
+  return true;
 }
 
 function handleProductCardClick(productId) {
   if (!state.data) return;
   const prod = state.data.products.find(p => p.id === productId);
   if (!prod) return;
+
+  if (prod.item_type === 'GROCERY' && prod.track_stock !== false && Number(prod.stock_qty) <= 0) {
+    showToast(`🚨 สินค้า "${prod.name}" หมดสต็อกแล้ว! ไม่สามารถเพิ่มเข้าบิลได้`);
+    return;
+  }
 
   if (prod.item_type === 'FOOD') {
     let groupIds = [];
@@ -1638,7 +1692,7 @@ function handleProductCardClick(productId) {
 
     // หากไม่มีกลุ่มตัวเลือกหรือไม่มีตัวเลือกย่อย ให้หยอดลงบิลทันทีไม่ต้องเปิด popup
     if (!hasOptions) {
-      addToCartDirect({
+      const ok = addToCartDirect({
         product_id: prod.id,
         name: prod.name,
         item_type: prod.item_type,
@@ -1649,8 +1703,10 @@ function handleProductCardClick(productId) {
         send_to_kitchen: prod.send_to_kitchen !== false,
         input_source: 'TOUCH'
       });
-      render();
-      showToast(`+ เพิ่ม "${prod.name}" เข้าบิลแล้ว`);
+      if (ok) {
+        render();
+        showToast(`+ เพิ่ม "${prod.name}" เข้าบิลแล้ว`);
+      }
       return;
     }
 
@@ -1659,7 +1715,7 @@ function handleProductCardClick(productId) {
     state.modifierQty = 1;
     render();
   } else {
-    addToCartDirect({
+    const ok = addToCartDirect({
       product_id: prod.id,
       name: prod.name,
       item_type: prod.item_type,
@@ -1670,8 +1726,10 @@ function handleProductCardClick(productId) {
       send_to_kitchen: prod.send_to_kitchen,
       input_source: 'TOUCH'
     });
-    render();
-    showToast(`+ เพิ่ม "${prod.name}" เข้าบิลแล้ว`);
+    if (ok) {
+      render();
+      showToast(`+ เพิ่ม "${prod.name}" เข้าบิลแล้ว`);
+    }
   }
 }
 
@@ -1684,7 +1742,11 @@ function handleBarcodeScan(barcodeStr) {
     showToast(`⚠️ ไม่พบรหัสบาร์โค้ด "${code}"`);
     return;
   }
-  addToCartDirect({
+  if (prod.item_type === 'GROCERY' && prod.track_stock !== false && Number(prod.stock_qty) <= 0) {
+    showToast(`🚨 สินค้า "${prod.name}" (${code}) หมดสต็อกแล้ว! ไม่สามารถเพิ่มเข้าบิลได้`);
+    return;
+  }
+  const ok = addToCartDirect({
     product_id: prod.id,
     name: prod.name,
     item_type: prod.item_type,
@@ -1695,9 +1757,11 @@ function handleBarcodeScan(barcodeStr) {
     send_to_kitchen: prod.send_to_kitchen,
     input_source: 'BARCODE'
   });
-  state.searchQuery = '';
-  render();
-  showToast(`🔫 ยิงบาร์โค้ด "${prod.name}" (${formatMoney(prod.price)}) เข้าบิลแล้ว`);
+  if (ok) {
+    state.searchQuery = '';
+    render();
+    showToast(`🔫 ยิงบาร์โค้ด "${prod.name}" (${formatMoney(prod.price)}) เข้าบิลแล้ว`);
+  }
 }
 
 function getSelectedCustomerObj() {
@@ -2141,11 +2205,6 @@ function setCheckoutRedeemPoints(pts) {
 
 async function openCheckoutForCurrentBill() {
   const activeOrd = getActiveContextOrder();
-  const oos = getBillOutOfStockAlerts(state.cart, activeOrd ? activeOrd.items : []);
-  if (oos.length > 0) {
-    showToast(`🚨 ไม่สามารถเช็คบิลได้: ${oos.map(o => o.name).join(', ')} สต็อกหมด! กรุณาลบออกจากบิลก่อนครับ`);
-    return;
-  }
   const draftTotal = state.cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
 
   // If there is an open order AND new unsent draft items, commit the draft items into that order first
@@ -2196,11 +2255,6 @@ function openCheckoutModalByOrderId(orderId) {
   if (!state.data) return;
   const ord = (state.data.allBills || []).find(b => b.id === orderId);
   if (!ord) return;
-  const oos = getBillOutOfStockAlerts([], ord.items || []);
-  if (oos.length > 0) {
-    showToast(`🚨 ไม่สามารถเช็คบิลได้: ${oos.map(o => o.name).join(', ')} สต็อกหมด! กรุณาลบออกจากบิลก่อนครับ`);
-    return;
-  }
 
   const activeItems = (ord.items || []).filter(i => i.item_status === 'ACTIVE');
   state.checkoutModalOrder = {
@@ -2233,11 +2287,6 @@ function openCheckoutModalForTable(tableId) {
 async function confirmCheckoutPayment() {
   const co = state.checkoutModalOrder;
   if (!co) return;
-  const oos = getBillOutOfStockAlerts(co.mode === 'CART' ? state.cart : [], co.orderId ? (state.data?.allBills?.find(b => b.id === co.orderId)?.items || []) : []);
-  if (oos.length > 0) {
-    showToast(`🚨 ไม่สามารถเช็คบิลได้: ${oos.map(o => o.name).join(', ')} สต็อกหมด! กรุณาลบออกจากบิลก่อนครับ`);
-    return;
-  }
   const cus = getCheckoutCustomerObj();
   const cfg = getLoyaltySettings();
   const redeemPts = cus ? Math.max(0, Math.floor(Number(state.checkoutRedeemPoints) || 0)) : 0;
@@ -3551,7 +3600,7 @@ function renderPosView() {
                   ${formatMoney(p.price)}<small style="font-weight:400; font-size:11px; color:var(--ttl-muted);">/${p.unit}</small>
                 </span>
                 <span style="font-size:11.5px; color:${sInfo.isOutOfStock ? '#dc2626' : 'var(--ttl-gold)'}; font-weight:700;">
-                  ${sInfo.isOutOfStock ? '⚠️ สั่ง' : '+ เพิ่ม'}
+                  ${sInfo.isOutOfStock ? '❌ หมดสต็อก' : '+ เพิ่ม'}
                 </span>
               </div>
             </button>
@@ -3580,9 +3629,6 @@ function renderFloatingBillAndDrawer() {
 
   const totalCount = draftCount + committedActiveCount;
   const grandTotal = draftTotal + committedTotal;
-
-  const billOosAlerts = getBillOutOfStockAlerts(state.cart, committedItems);
-  const hasOutOfStock = billOosAlerts.length > 0;
 
   const billLabel = state.billTitle.trim()
     || (activeOrd && activeOrd.bill_title)
@@ -3776,7 +3822,7 @@ function renderFloatingBillAndDrawer() {
                       <div class="qty-stepper">
                         <button type="button" onclick="state.cart[${idx}].quantity > 1 ? state.cart[${idx}].quantity-- : state.cart.splice(${idx},1); render();">−</button>
                         <span>${c.quantity}</span>
-                        <button type="button" onclick="state.cart[${idx}].quantity++; render();">+</button>
+                        <button type="button" onclick="incrementCartItemQty(${idx})">+</button>
                       </div>
                       <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-danger-outline" style="height:26px; padding:0 8px; font-size:11px;" onclick="state.cart.splice(${idx},1); render();">ลบ</button>
                     </div>
@@ -3794,17 +3840,13 @@ function renderFloatingBillAndDrawer() {
                 </div>
 
                 ${groupBillItems(committedItems).map(item => {
-                  const pObj = (state.data?.products || []).find(x => x.id === item.product_id);
-                  const sInfo = getProductStockInfo(pObj);
-                  const isOos = sInfo.isOutOfStock && item.item_status === 'ACTIVE';
                   return `
-                  <div class="bill-item-row" data-status="${item.item_status}" style="${isOos ? 'border:1.5px solid #ef4444; background:#fef2f2;' : ''}">
+                  <div class="bill-item-row" data-status="${item.item_status}">
                     <div class="bill-item-top">
                       <div class="bill-item-title">
                         <span class="ttl-tag ${item.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}" style="margin-right:4px;">
                           ${item.item_type === 'FOOD' ? `ครัว: ${item.kitchen_status}` : 'ของชำ'}
                         </span>
-                        ${isOos ? '<span class="ttl-tag ttl-tag-danger" style="margin-right:4px;">🚨 สต็อกหมด!</span>' : ''}
                         ${item.product_name} <b style="color:var(--ttl-accent);">× ${item.quantity}</b>
                         ${item.merged_count > 1 ? `<small style="color:var(--ttl-muted); font-weight:500;">(รวม ${item.merged_count} รอบ)</small>` : ''}
                       </div>
@@ -3861,13 +3903,6 @@ function renderFloatingBillAndDrawer() {
               </span>
             </div>
 
-            ${hasOutOfStock ? `
-              <div style="padding:10px 12px; border-radius:10px; background:#fef2f2; border:1px solid #f87171; color:#991b1b; font-size:12px; font-weight:600; margin-bottom:10px; line-height:1.4;">
-                🚨 มีสินค้า/เมนูสต็อกหมดในบิล: <b>${billOosAlerts.map(a => a.name).join(', ')}</b><br>
-                <span style="font-weight:400; font-size:11px; color:#7f1d1d;">⚠️ ล็อกปุ่มเช็คบิล: กรุณาลบรายการที่หมดออกก่อนรับชำระเงิน</span>
-              </div>
-            ` : ''}
-
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
               ${state.posMode === 'DINE_IN' ? `
                 <button
@@ -3892,9 +3927,8 @@ function renderFloatingBillAndDrawer() {
               <button
                 type="button"
                 class="ttl-btn ttl-btn-dark"
-                style="width:100%; ${hasOutOfStock ? 'opacity:0.4; cursor:not-allowed; background:#9ca3af; border-color:#9ca3af;' : ''}"
-                ${grandTotal <= 0 || hasOutOfStock ? 'disabled' : ''}
-                title="${hasOutOfStock ? 'ไม่สามารถเช็คบิลได้เนื่องจากมีสินค้าสต็อกหมดในบิล' : ''}"
+                style="width:100%;"
+                ${grandTotal <= 0 ? 'disabled' : ''}
                 onclick="openCheckoutForCurrentBill()"
               >
                 💰 เช็คบิล (${formatMoney(grandTotal)})
