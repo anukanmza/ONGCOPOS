@@ -598,7 +598,7 @@ module.exports = async (req, res) => {
           modifiers_json: modNames,
           recipe_snapshot_json: recipeSnapshot,
           item_status: 'ACTIVE',
-          kitchen_status: prod.send_to_kitchen ? 'PENDING' : 'NONE',
+          kitchen_status: prod.send_to_kitchen ? 'PENDING' : ((order_type === 'DINE_IN' || Boolean(table_id)) ? 'PENDING' : 'SERVED'),
           input_source: it.input_source || input_source || 'TOUCH',
           created_at: now
         });
@@ -795,8 +795,21 @@ module.exports = async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/kds/status') {
-      const { order_item_id, kitchen_status } = body;
-      await sbPatchOrderItemSafe(order_item_id, { kitchen_status });
+      const { order_item_id, order_item_ids, order_id, kitchen_status = 'SERVED' } = body;
+      const patchTasks = [];
+      if (Array.isArray(order_item_ids) && order_item_ids.length > 0) {
+        for (const iid of order_item_ids) {
+          if (iid) patchTasks.push(sbPatchOrderItemSafe(iid, { kitchen_status }));
+        }
+      } else if (order_id) {
+        const items = await sbRest(`order_items?order_id=eq.${encodeURIComponent(order_id)}&item_status=eq.ACTIVE`);
+        for (const it of (items || [])) {
+          patchTasks.push(sbPatchOrderItemSafe(it.id, { kitchen_status }));
+        }
+      } else if (order_item_id) {
+        patchTasks.push(sbPatchOrderItemSafe(order_item_id, { kitchen_status }));
+      }
+      await Promise.all(patchTasks);
       return send(200, { success: true, data: await getSupabaseBootstrapData() });
     }
 

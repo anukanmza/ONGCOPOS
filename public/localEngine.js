@@ -904,7 +904,7 @@ window.LocalPosEngine = {
         modifiers: modNames,
         recipe_snapshot: recipeSnapshot,
         item_status: 'ACTIVE',
-        kitchen_status: prod.send_to_kitchen ? 'PENDING' : 'NONE',
+        kitchen_status: prod.send_to_kitchen ? 'PENDING' : ((order_type === 'DINE_IN' || Boolean(table_id)) ? 'PENDING' : 'SERVED'),
         input_source: it.input_source || input_source || 'TOUCH',
         created_at: now
       });
@@ -1240,11 +1240,20 @@ window.LocalPosEngine = {
 
   updateKds(body) {
     const db = loadLocalDb();
-    const item = db.orderItems.find(i => i.id === body.order_item_id);
-    if (item) {
-      item.kitchen_status = body.kitchen_status;
-      saveLocalDb(db);
+    const { order_item_id, order_item_ids, order_id, kitchen_status = 'SERVED' } = body;
+    if (Array.isArray(order_item_ids) && order_item_ids.length > 0) {
+      db.orderItems.forEach(i => {
+        if (order_item_ids.includes(i.id)) i.kitchen_status = kitchen_status;
+      });
+    } else if (order_id) {
+      db.orderItems.forEach(i => {
+        if (i.order_id === order_id && i.item_status === 'ACTIVE') i.kitchen_status = kitchen_status;
+      });
+    } else if (order_item_id) {
+      const item = db.orderItems.find(i => i.id === order_item_id);
+      if (item) item.kitchen_status = kitchen_status;
     }
+    saveLocalDb(db);
     return { success: true, data: buildLocalBootstrap() };
   },
 

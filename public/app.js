@@ -3014,6 +3014,29 @@ async function updateKdsStatus(orderItemId, nextStatus) {
   }
 }
 
+async function handleServeTableItem(orderItemIds, orderId = null) {
+  try {
+    let payload = { kitchen_status: 'SERVED' };
+    if (Array.isArray(orderItemIds) && orderItemIds.length > 0) {
+      payload.order_item_ids = orderItemIds;
+    } else if (typeof orderItemIds === 'string' && orderItemIds) {
+      payload.order_item_id = orderItemIds;
+    } else if (orderId) {
+      payload.order_id = orderId;
+    } else {
+      return;
+    }
+    const out = await apiCall('/api/kds/status', 'POST', payload);
+    if (out && out.data) state.data = out.data;
+    render();
+    showToast('✅ บันทึกเสิร์ฟถึงโต๊ะเรียบร้อยแล้ว');
+  } catch (err) {
+    console.error('handleServeTableItem error:', err);
+    showToast('❌ ไม่สามารถบันทึกสถานะเสิร์ฟได้: ' + (err.message || 'เกิดข้อผิดพลาด'));
+  }
+}
+window.handleServeTableItem = handleServeTableItem;
+
 // ============================================================================
 // STOCK-IN DRAFT, VOICE STOCK-IN & RECEIPT DETAIL/EDIT/DELETE HELPERS
 // ============================================================================
@@ -3832,20 +3855,40 @@ function renderFloatingBillAndDrawer() {
             </div>
 
             <!-- SECTION 2: COMMITTED ITEMS IN THIS OPEN BILL / TABLE -->
-            ${activeOrd && committedItems.length > 0 ? `
+            ${activeOrd && committedItems.length > 0 ? (() => {
+              const committedActive = committedItems.filter(i => i.item_status === 'ACTIVE');
+              const unservedCount = committedActive.filter(i => i.kitchen_status !== 'SERVED').reduce((s, i) => s + (Number(i.quantity) || 1), 0);
+              return `
               <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px; padding-top:10px; border-top:1px solid var(--ttl-rule);">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <span class="ttl-k">📌 รายการในบิล (${groupBillItems(committedItems.filter(i => i.item_status === 'ACTIVE')).length} รายการ • รวม ${committedActiveCount} ชิ้น)</span>
-                  <span style="font-size:12px; font-weight:700;">${formatMoney(committedTotal)}</span>
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                  <span class="ttl-k">📌 รายการในบิล (${groupBillItems(committedActive).length} รายการ • รวม ${committedActiveCount} ชิ้น)</span>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    ${unservedCount > 0 ? `
+                      <button
+                        type="button"
+                        class="ttl-btn ttl-btn-sm ttl-btn-gold"
+                        style="height:26px; padding:0 8px; font-size:11.5px; font-weight:700;"
+                        onclick="handleServeTableItem(null, '${activeOrd.id}')"
+                      >
+                        ✓ เสิร์ฟครบทั้งหมด (${unservedCount})
+                      </button>
+                    ` : `
+                      <span class="ttl-tag" style="background:#dcfce7; color:#15803d; font-weight:700; font-size:11px;">✅ เสิร์ฟครบแล้ว</span>
+                    `}
+                    <span style="font-size:12px; font-weight:700;">${formatMoney(committedTotal)}</span>
+                  </div>
                 </div>
 
                 ${groupBillItems(committedItems).map(item => {
+                  const itemIdsJson = JSON.stringify(item.item_ids || [item.id]).replace(/"/g, '&quot;');
+                  const isFullyServed = item.served_qty === item.quantity;
+                  const isPartiallyServed = item.served_qty > 0 && item.served_qty < item.quantity;
                   return `
                   <div class="bill-item-row" data-status="${item.item_status}">
                     <div class="bill-item-top">
                       <div class="bill-item-title">
                         <span class="ttl-tag ${item.item_type === 'FOOD' ? 'ttl-tag-food' : 'ttl-tag-grocery'}" style="margin-right:4px;">
-                          ${item.item_type === 'FOOD' ? `ครัว: ${item.kitchen_status}` : 'ของชำ'}
+                          ${item.item_type === 'FOOD' ? (item.kitchen_status === 'COOKING' ? '🍳 กำลังปรุง' : (isFullyServed ? '✅ เสิร์ฟแล้ว' : '🍳 ครัว')) : '📦 ของชำ'}
                         </span>
                         ${item.product_name} <b style="color:var(--ttl-accent);">× ${item.quantity}</b>
                         ${item.merged_count > 1 ? `<small style="color:var(--ttl-muted); font-weight:500;">(รวม ${item.merged_count} รอบ)</small>` : ''}
@@ -3860,21 +3903,47 @@ function renderFloatingBillAndDrawer() {
                     ` : ''}
 
                     ${item.item_status === 'ACTIVE' ? `
-                      <div class="bill-item-bottom" style="padding-top:4px; border-top:1px dashed var(--ttl-rule);">
-                        <span style="font-size:11px; color:var(--ttl-muted);">คืน/ยกเลิก:</span>
-                        <div style="display:flex; gap:4px; flex-wrap:wrap;">
+                      <div class="bill-item-bottom" style="padding-top:4px; border-top:1px dashed var(--ttl-rule); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px;">
+                        <div style="display:flex; align-items:center; gap:6px;">
+                          ${isFullyServed ? `
+                            <span class="ttl-tag" style="background:#dcfce7; color:#15803d; font-weight:700; font-size:11px;">✅ เสิร์ฟแล้ว</span>
+                          ` : isPartiallyServed ? `
+                            <span class="ttl-tag" style="background:#fef08a; color:#854d0e; font-weight:700; font-size:11px;">🍽️ เสิร์ฟ ${item.served_qty}/${item.quantity}</span>
+                            <button
+                              type="button"
+                              class="ttl-btn ttl-btn-sm ttl-btn-success"
+                              style="height:24px; padding:0 8px; font-size:11px; font-weight:700;"
+                              onclick="handleServeTableItem(${itemIdsJson})"
+                            >
+                              ✓ เสิร์ฟ
+                            </button>
+                          ` : `
+                            <span class="ttl-tag" style="background:#fee2e2; color:#b91c1c; font-weight:700; font-size:11px;">⏳ รอเสิร์ฟ</span>
+                            <button
+                              type="button"
+                              class="ttl-btn ttl-btn-sm ttl-btn-success"
+                              style="height:24px; padding:0 8px; font-size:11px; font-weight:700;"
+                              onclick="handleServeTableItem(${itemIdsJson})"
+                            >
+                              ✓ เสิร์ฟ
+                            </button>
+                          `}
+                        </div>
+
+                        <div style="display:flex; gap:4px; align-items:center;">
+                          <span style="font-size:11px; color:var(--ttl-muted);">คืน/ยกเลิก:</span>
                           <button
                             type="button"
                             class="ttl-btn ttl-btn-sm ttl-btn-ghost"
-                            style="height:25px; padding:0 8px; font-size:11px;"
+                            style="height:24px; padding:0 7px; font-size:11px;"
                             onclick="handleReturnTableItem('${item.id}', 'RETURNED_RESTOCK')"
                           >
-                            ↩ คืนสต็อก
+                            ↩ คืน
                           </button>
                           <button
                             type="button"
                             class="ttl-btn ttl-btn-sm ttl-btn-danger-outline"
-                            style="height:25px; padding:0 8px; font-size:11px;"
+                            style="height:24px; padding:0 7px; font-size:11px;"
                             onclick="handleReturnTableItem('${item.id}', 'VOID_WASTE')"
                           >
                             ✕ ของเสีย
@@ -3889,7 +3958,7 @@ function renderFloatingBillAndDrawer() {
                   </div>
                 `;}).join('')}
               </div>
-            ` : ''}
+            `;})() : ''}
           </div>
 
           <!-- Drawer Footer Actions -->
@@ -4306,26 +4375,70 @@ function renderTablesView() {
                     const groupedTableItems = groupBillItems(ord.items);
                     const groupedTableActive = groupedTableItems.filter(i => i.item_status === 'ACTIVE');
                     const totalTableQty = groupedTableActive.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+                    const unservedTableItems = ord.items.filter(i => i.item_status === 'ACTIVE' && i.kitchen_status !== 'SERVED');
+                    const unservedTableCount = unservedTableItems.reduce((s, i) => s + (Number(i.quantity) || 1), 0);
                     return `
+                      ${unservedTableCount > 0 ? `
+                        <div style="background:#fef2f2; border:1px solid #f87171; border-radius:8px; padding:6px 10px; display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                          <span style="font-size:11.5px; font-weight:700; color:#b91c1c;">🚨 รอเสิร์ฟ ${unservedTableCount} ชิ้น</span>
+                          <button
+                            type="button"
+                            class="ttl-btn ttl-btn-sm ttl-btn-gold"
+                            style="height:24px; padding:0 8px; font-size:11px; font-weight:700;"
+                            onclick="handleServeTableItem(null, '${ord.id}')"
+                          >
+                            ✓ เสิร์ฟครบทั้งหมด
+                          </button>
+                        </div>
+                      ` : `
+                        <div style="background:#f0fdf4; border:1px solid #86efac; border-radius:8px; padding:4px 10px; display:flex; justify-content:space-between; align-items:center;">
+                          <span style="font-size:11.5px; font-weight:700; color:#15803d;">✅ เสิร์ฟครบถึงโต๊ะแล้ว</span>
+                        </div>
+                      `}
                       <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--ttl-muted);">
                         <span>เลขบิล: ${ord.id}</span>
                         <span>${groupedTableActive.length} รายการ (รวม ${totalTableQty} ชิ้น)</span>
                       </div>
-                      ${groupedTableItems.map(it => `
+                      ${groupedTableItems.map(it => {
+                        const itemIdsJson = JSON.stringify(it.item_ids || [it.id]).replace(/"/g, '&quot;');
+                        const isFullyServed = it.served_qty === it.quantity;
+                        const isPartiallyServed = it.served_qty > 0 && it.served_qty < it.quantity;
+                        return `
                         <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; font-size:13px; padding-top:4px; border-top:1px solid var(--ttl-rule); ${it.item_status !== 'ACTIVE' ? 'text-decoration:line-through; opacity:0.5;' : ''}">
                           <div style="flex:1; word-break:break-word;">
                             <span>${it.item_type === 'FOOD' ? '🍳' : '📦'} ${it.product_name} <b style="color:var(--ttl-accent);">× ${it.quantity}</b></span>
                             ${it.merged_count > 1 ? `<small style="color:var(--ttl-muted);"> (รวม ${it.merged_count} รอบ)</small>` : ''}
                             ${it.modifiers && it.modifiers.length > 0 ? `<small style="color:var(--ttl-gold); display:block;">+ ${it.modifiers.join(', ')}</small>` : ''}
+                            ${it.item_status === 'ACTIVE' ? `
+                              <div style="margin-top:2px;">
+                                ${isFullyServed ? `
+                                  <span class="ttl-tag" style="background:#dcfce7; color:#15803d; font-size:10px; font-weight:700;">✅ เสิร์ฟแล้ว</span>
+                                ` : isPartiallyServed ? `
+                                  <span class="ttl-tag" style="background:#fef08a; color:#854d0e; font-size:10px; font-weight:700;">🍽️ เสิร์ฟ ${it.served_qty}/${it.quantity}</span>
+                                ` : `
+                                  <span class="ttl-tag" style="background:#fee2e2; color:#b91c1c; font-size:10px; font-weight:700;">⏳ รอเสิร์ฟ</span>
+                                `}
+                              </div>
+                            ` : ''}
                           </div>
-                          <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+                          <div style="display:flex; align-items:center; gap:4px; flex-shrink:0;">
                             <b>${formatMoney(it.unit_price * it.quantity)}</b>
                             ${it.item_status === 'ACTIVE' ? `
-                              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:24px; padding:0 7px; font-size:10.5px;" onclick="handleReturnTableItem('${it.id}', 'RETURNED_RESTOCK')">↩ คืน</button>
+                              ${!isFullyServed ? `
+                                <button
+                                  type="button"
+                                  class="ttl-btn ttl-btn-sm ttl-btn-success"
+                                  style="height:24px; padding:0 6px; font-size:10.5px; font-weight:700;"
+                                  onclick="handleServeTableItem(${itemIdsJson})"
+                                >
+                                  ✓ เสิร์ฟ
+                                </button>
+                              ` : ''}
+                              <button type="button" class="ttl-btn ttl-btn-sm ttl-btn-ghost" style="height:24px; padding:0 6px; font-size:10.5px;" onclick="handleReturnTableItem('${it.id}', 'RETURNED_RESTOCK')">↩ คืน</button>
                             ` : ''}
                           </div>
                         </div>
-                      `).join('')}
+                      `;}).join('')}
                     `;
                   })()}
                 </div>

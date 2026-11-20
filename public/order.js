@@ -1180,13 +1180,14 @@ function startLivePolling(orderId) {
   const checkStatus = async () => {
     if (document.visibilityState === 'hidden') return;
     try {
-      const res = await fetch(`/api/bootstrap?_t=${Date.now()}`, { cache: 'no-store' });
+      // Use targeted endpoint to avoid fetching heavy bootstrap database
+      const res = await fetch(`/api/customer/orders?bill_ids=${encodeURIComponent(orderId)}&_t=${Date.now()}`, { cache: 'no-store' });
       const json = await res.json().catch(() => null);
-      if (json && Array.isArray(json.allBills)) {
-        const found = json.allBills.find(b => b.id === orderId);
+      if (json && Array.isArray(json.orders)) {
+        const found = json.orders.find(b => b.id === orderId);
         if (found) {
           orderState.activeOrder.backendStatus = found.status;
-          const kdsItems = found.items ? found.items.filter(i => i.item_type === 'FOOD') : [];
+          const activeItems = found.items ? found.items.filter(i => i.item_status === 'ACTIVE' || !i.item_status) : [];
           if (found.status === 'PAID') {
             orderState.activeOrder.status = 'COMPLETED';
             if (orderState.pollTimer) {
@@ -1199,10 +1200,15 @@ function startLivePolling(orderId) {
               clearInterval(orderState.pollTimer);
               orderState.pollTimer = null;
             }
-          } else if (kdsItems.some(i => i.kitchen_status === 'COOKING')) {
-            orderState.activeOrder.status = 'COOKING';
-          } else if (kdsItems.every(i => i.kitchen_status === 'SERVED') && kdsItems.length > 0) {
+          } else if (activeItems.length > 0 && activeItems.every(i => i.kitchen_status === 'SERVED')) {
             orderState.activeOrder.status = 'DELIVERING';
+          } else if (activeItems.some(i => i.kitchen_status === 'COOKING')) {
+            orderState.activeOrder.status = 'COOKING';
+          }
+
+          if (orderState.showTableBillModal && orderState.tableId && found.table_id === orderState.tableId) {
+            orderState.tableBillData = found;
+            renderModalsOnly();
           }
           render();
         }
@@ -3321,6 +3327,31 @@ async function requestTableService(type) {
 // TABLE BILL STATUS MODAL
 // ==========================================================================
 
+let tableBillPollTimer = null;
+
+async function refreshTableBillData() {
+  if (!orderState.tableId || !orderState.showTableBillModal) return;
+  try {
+    const res = await fetch(`/api/customer/orders?table_id=${encodeURIComponent(orderState.tableId)}&_t=${Date.now()}`);
+    const json = await res.json().catch(() => null);
+    if (res.ok && json && Array.isArray(json.orders)) {
+      // เลือกเฉพาะบิลที่เปิดอยู่ (OPEN) เท่านั้น ป้องกันเห็นบิลลูกค้าคนก่อนหน้า
+      const openBill = json.orders.find(o => o.status === 'OPEN' || (o.status !== 'PAID' && o.status !== 'CANCELLED' && o.status !== 'VOIDED'));
+      orderState.tableBillData = openBill || null;
+      renderModalsOnly();
+      return;
+    }
+  } catch {}
+
+  const tbl = (orderState.data?.tables || []).find(t => t.id === orderState.tableId);
+  if (tbl && tbl.active_order && (tbl.active_order.status === 'OPEN' || (tbl.active_order.status !== 'PAID' && tbl.active_order.status !== 'CANCELLED'))) {
+    orderState.tableBillData = tbl.active_order;
+  } else {
+    orderState.tableBillData = null;
+  }
+  renderModalsOnly();
+}
+
 async function openTableBillModal() {
   if (!orderState.tableId) {
     alert('กรุณาเลือกโต๊ะก่อนดูสถานะบิล');
@@ -3330,27 +3361,22 @@ async function openTableBillModal() {
   orderState.tableBillData = null;
   renderModalsOnly();
 
-  try {
-    const res = await fetch(`/api/customer/orders?table_id=${encodeURIComponent(orderState.tableId)}&_t=${Date.now()}`);
-    const json = await res.json().catch(() => null);
-    if (res.ok && json && Array.isArray(json.orders)) {
-      // เลือกบิลที่ยังเปิดอยู่ (OPEN) ก่อน ถ้าไม่มีค่อยเอาบิลล่าสุด
-      const openBill = json.orders.find(o => o.status !== 'PAID' && o.status !== 'CANCELLED' && o.status !== 'VOIDED');
-      orderState.tableBillData = openBill || json.orders[0] || null;
-      renderModalsOnly();
-      return;
-    }
-  } catch {}
+  await refreshTableBillData();
 
-  const tbl = (orderState.data?.tables || []).find(t => t.id === orderState.tableId);
-  if (tbl && tbl.active_order) {
-    orderState.tableBillData = tbl.active_order;
-  }
-  renderModalsOnly();
+  if (tableBillPollTimer) clearInterval(tableBillPollTimer);
+  tableBillPollTimer = setInterval(() => {
+    if (orderState.showTableBillModal && document.visibilityState === 'visible') {
+      refreshTableBillData();
+    }
+  }, 6500);
 }
 
 function closeTableBillModal() {
   orderState.showTableBillModal = false;
+  if (tableBillPollTimer) {
+    clearInterval(tableBillPollTimer);
+    tableBillPollTimer = null;
+  }
   renderModalsOnly();
 }
 
@@ -3363,6 +3389,44 @@ function renderTableBillModal() {
   const groupedItems = groupCustomerOrderItems(activeItems);
   const totalQty = groupedItems.reduce((sum, it) => sum + (Number(it.quantity) || 1), 0);
   const subtotal = activeItems.reduce((sum, it) => sum + (Number(it.unit_price || it.price || 0) * (it.quantity || 1)), 0);
+
+  const unservedCount = activeItems.filter(i => i.kitchen_status !== 'SERVED').reduce((sum, it) => sum + (Number(it.quantity) || 1), 0);
+  const servedCount = totalQty - unservedCount;
+
+  let overallBannerHtml = '';
+  if (bill && totalQty > 0) {
+    if (unservedCount === 0) {
+      overallBannerHtml = `
+        <div style="background:#f0fdf4; border:1.5px solid #86efac; border-radius:10px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+          <span style="font-size:20px;">✅</span>
+          <div>
+            <div style="font-weight:800; font-size:13.5px; color:#166534;">เสิร์ฟครบทุกรายการแล้ว</div>
+            <div style="font-size:11.5px; color:#15803d;">อาหารและเครื่องดื่มครบถ้วนแล้ว ขอให้อร่อยกับมื้ออาหารครับ!</div>
+          </div>
+        </div>
+      `;
+    } else if (servedCount > 0) {
+      overallBannerHtml = `
+        <div style="background:#fefce8; border:1.5px solid #fde047; border-radius:10px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+          <span style="font-size:20px;">🍽️</span>
+          <div>
+            <div style="font-weight:800; font-size:13.5px; color:#854d0e;">เสิร์ฟแล้ว ${servedCount}/${totalQty} ชิ้น</div>
+            <div style="font-size:11.5px; color:#a16207;">กำลังจัดเตรียมและนำมาเสิร์ฟอีก ${unservedCount} ชิ้นที่เหลือ...</div>
+          </div>
+        </div>
+      `;
+    } else {
+      overallBannerHtml = `
+        <div style="background:#eff6ff; border:1.5px solid #bfdbfe; border-radius:10px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+          <span style="font-size:20px;">⏳</span>
+          <div>
+            <div style="font-weight:800; font-size:13.5px; color:#1e40af;">กำลังจัดเตรียมออเดอร์</div>
+            <div style="font-size:11.5px; color:#2563eb;">ครัวและพนักงานกำลังเตรียมอาหาร/เครื่องดื่ม และจะนำมาเสิร์ฟถึงโต๊ะครับ</div>
+          </div>
+        </div>
+      `;
+    }
+  }
 
   return `
     <div class="co-modal-backdrop" onclick="if(event.target===this) closeTableBillModal();">
@@ -3395,6 +3459,8 @@ function renderTableBillModal() {
               </div>
             </div>
 
+            ${overallBannerHtml}
+
             <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; font-weight:800; margin-bottom:8px; color:var(--co-ink);">
               <span>รายการที่สั่ง (${groupedItems.length} รายการ):</span>
               <span style="color:#0d9488; background:#ccfbf1; padding:2px 8px; border-radius:999px; font-size:12px;">รวมทั้งหมด ${totalQty} ชิ้น/จาน</span>
@@ -3403,21 +3469,32 @@ function renderTableBillModal() {
             <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
               ${groupedItems.map((it, idx) => {
                 const kStatus = it.kitchen_status;
-                let kLabel = '⏳ ได้รับออเดอร์';
+                let kLabel = '⏳ รอคิวในครัว';
                 let kColor = '#0284c7';
                 let kBg = '#e0f2fe';
-                if (it.served_qty > 0 && it.served_qty < it.quantity) {
+
+                if (it.served_qty === it.quantity) {
+                  kLabel = '✅ เสิร์ฟถึงโต๊ะแล้ว';
+                  kColor = '#16a34a';
+                  kBg = '#dcfce7';
+                } else if (it.served_qty > 0) {
                   kLabel = `🍽️ เสิร์ฟแล้ว ${it.served_qty}/${it.quantity}`;
                   kColor = '#d97706';
                   kBg = '#fef3c7';
-                } else if (kStatus === 'COOKING') {
-                  kLabel = '🍳 กำลังปรุง';
-                  kColor = '#d97706';
-                  kBg = '#fef3c7';
-                } else if (kStatus === 'SERVED') {
-                  kLabel = '🍽️ เสิร์ฟแล้ว';
-                  kColor = '#16a34a';
-                  kBg = '#dcfce7';
+                } else if (it.item_type === 'FOOD') {
+                  if (kStatus === 'COOKING') {
+                    kLabel = '🍳 กำลังปรุง';
+                    kColor = '#ea580c';
+                    kBg = '#ffedd5';
+                  } else {
+                    kLabel = '⏳ รอคิวในครัว';
+                    kColor = '#0284c7';
+                    kBg = '#e0f2fe';
+                  }
+                } else {
+                  kLabel = '⏳ รอหยิบส่งโต๊ะ';
+                  kColor = '#2563eb';
+                  kBg = '#eff6ff';
                 }
                 const price = Number(it.unit_price || it.price || 0) * (it.quantity || 1);
 
@@ -3434,7 +3511,7 @@ function renderTableBillModal() {
                     </div>
                     <div style="text-align:right; flex-shrink:0;">
                       <div style="font-weight:800; font-size:13.5px; color:#0f172a;">${formatMoney(price)}</div>
-                      <span style="font-size:10px; font-weight:700; color:${kColor}; background:${kBg}; padding:2px 6px; border-radius:4px; display:inline-block; margin-top:2px;">
+                      <span style="font-size:10.5px; font-weight:700; color:${kColor}; background:${kBg}; padding:3px 8px; border-radius:4px; display:inline-block; margin-top:2px;">
                         ${kLabel}
                       </span>
                     </div>
@@ -3583,7 +3660,7 @@ function getResolvedMyOrders() {
     const myPhone = (orderState.customerPhone || localStorage.getItem('co_customer_phone') || '').replace(/\D/g, '');
     allBills.forEach(b => {
       if (mergedMap.has(b.id)) return;
-      const matchTable = orderState.isTableLocked && orderState.tableId && b.table_id === orderState.tableId;
+      const matchTable = orderState.isTableLocked && orderState.tableId && b.table_id === orderState.tableId && b.status === 'OPEN';
       const matchPhone = myPhone.length >= 8 && (
         String(b.customer_name || '').includes(myPhone) ||
         String(b.bill_note || '').includes(myPhone) ||
