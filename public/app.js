@@ -5525,8 +5525,17 @@ function renderDashboardView() {
     }
 
     const activeItems = (b.items || []).filter(i => i.item_status === 'ACTIVE');
+    if (activeItems.length === 0 && Number(b.total_cost) > 0) {
+      if (b.order_type === 'DINE_IN') {
+        foodRevenue += billTotal;
+        foodCost += Number(b.total_cost);
+      } else {
+        groceryRevenue += billTotal;
+        groceryCost += Number(b.total_cost);
+      }
+    }
     for (const it of activeItems) {
-      const qty = Number(it.quantity) || 0;
+      const qty = Math.max(0, (Number(it.quantity) || 0) - (Number(it.returned_qty) || 0));
       const rev = (Number(it.unit_price) || 0) * qty;
       const cost = (Number(it.unit_cost) || 0) * qty;
       if (it.item_type === 'GROCERY') {

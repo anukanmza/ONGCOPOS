@@ -1687,21 +1687,23 @@ module.exports = async (req, res) => {
       const billIds = (req.query?.bill_ids || '').split(',').map(s => s.trim()).filter(Boolean);
       const tableId = req.query?.table_id;
 
-      const [allRecentOrders, allTables, allCustomers] = await Promise.all([
-        sbRest("orders?select=*&order=created_at.desc&limit=200"),
-        sbRest("dining_tables?select=id,name,zone_name"),
-        sbRest("customers?select=id,phone").catch(() => [])
-      ]);
-      const allOrderIds = (allRecentOrders || []).map(o => o.id);
-      let allItems = [];
-      if (allOrderIds.length > 0) {
-        allItems = await sbRest(`order_items?select=*&order_id=in.(${allOrderIds.map(encodeURIComponent).join(',')})&order=created_at.asc`);
+      let ordersQuery = "orders?select=*&order=created_at.desc&limit=500";
+      if (billIds.length > 0 && !phone && !tableId) {
+        ordersQuery = `orders?select=*&id=in.(${billIds.map(encodeURIComponent).join(',')})&order=created_at.desc`;
+      } else if (tableId && !phone && billIds.length === 0) {
+        ordersQuery = `orders?select=*&table_id=eq.${encodeURIComponent(tableId)}&status=eq.OPEN&order=created_at.desc`;
       }
+
+      const [allRecentOrders, allTables, allCustomers] = await Promise.all([
+        sbRest(ordersQuery),
+        sbRest("dining_tables?select=id,name,zone_name"),
+        phone ? sbRest("customers?select=id,phone").catch(() => []) : Promise.resolve([])
+      ]);
 
       const tableMap = new Map((allTables || []).map(t => [t.id, t]));
       const customerPhoneMap = new Map((allCustomers || []).map(c => [c.id, (c.phone || '').replace(/\D/g, '')]));
 
-      const matched = (allRecentOrders || []).filter(o => {
+      const matchedOrders = (allRecentOrders || []).filter(o => {
         if (billIds.length > 0 && billIds.includes(o.id)) return true;
         if (tableId && o.table_id === tableId && o.status === 'OPEN') return true;
         if (phone && phone.length >= 6) {
@@ -1713,7 +1715,15 @@ module.exports = async (req, res) => {
           if (digits.includes(phone)) return true;
         }
         return false;
-      }).map(o => {
+      });
+
+      const matchedOrderIds = matchedOrders.map(o => o.id);
+      let allItems = [];
+      if (matchedOrderIds.length > 0) {
+        allItems = await sbRest(`order_items?select=*&order_id=in.(${matchedOrderIds.map(encodeURIComponent).join(',')})&order=created_at.asc`);
+      }
+
+      const matched = matchedOrders.map(o => {
         const tbl = o.table_id ? tableMap.get(o.table_id) : null;
         return {
           ...o,

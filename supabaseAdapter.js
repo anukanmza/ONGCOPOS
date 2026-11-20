@@ -319,6 +319,53 @@ async function sbRest(tableAndQuery, options = {}) {
   return text ? JSON.parse(text) : [];
 }
 
+// ดึงข้อมูลแบบแบ่งหน้าอัตโนมัติ (ข้ามข้อจำกัด PostgREST max_rows = 1000 ต่อ 1 Request)
+async function sbRestPaginated(baseQuery, { pageSize = 1000, maxRows = 50000, initialPages = 1 } = {}) {
+  const cleanQuery = baseQuery.replace(/[&?]limit=\d+/gi, '').replace(/[&?]offset=\d+/gi, '');
+  const sep = cleanQuery.includes('?') ? '&' : '?';
+  const firstBatchCount = Math.max(1, Math.min(initialPages, Math.ceil(maxRows / pageSize)));
+
+  const initialPromises = [];
+  for (let p = 0; p < firstBatchCount; p++) {
+    const offset = p * pageSize;
+    initialPromises.push(sbRest(`${cleanQuery}${sep}limit=${pageSize}&offset=${offset}`));
+  }
+
+  const initialPagesData = await Promise.all(initialPromises);
+  const allRows = [];
+  for (const pageRows of initialPagesData) {
+    if (Array.isArray(pageRows) && pageRows.length > 0) {
+      allRows.push(...pageRows);
+    }
+  }
+
+  const lastInitialPage = initialPagesData[initialPagesData.length - 1];
+  let nextOffset = firstBatchCount * pageSize;
+  let keepFetching = Array.isArray(lastInitialPage) && lastInitialPage.length === pageSize && allRows.length < maxRows;
+
+  while (keepFetching && nextOffset < maxRows) {
+    const pageRows = await sbRest(`${cleanQuery}${sep}limit=${pageSize}&offset=${nextOffset}`);
+    if (!Array.isArray(pageRows) || pageRows.length === 0) break;
+    allRows.push(...pageRows);
+    if (pageRows.length < pageSize) break;
+    nextOffset += pageSize;
+  }
+
+  if (allRows.length > 0 && allRows[0] && allRows[0].id !== undefined) {
+    const seen = new Set();
+    const deduped = [];
+    for (const r of allRows) {
+      if (r && r.id !== undefined) {
+        if (seen.has(r.id)) continue;
+        seen.add(r.id);
+      }
+      deduped.push(r);
+    }
+    return deduped;
+  }
+  return allRows;
+}
+
 function ensureArray(val) {
   if (Array.isArray(val)) return val;
   if (typeof val === 'string') {
@@ -339,7 +386,7 @@ function computeKdsSyncSig(items) {
 function computeAllSyncSig({ orders = [], orderItems = [], tables = [], products = [], ingredients = [], customers = [], receipts = [], expenses = [] }) {
   const ordPart = orders.slice(0, 30).map(o => `${o.id}:${o.status}:${Number(o.total_amount || 0)}:${o.table_id || ''}:${o.bill_title || ''}:${o.customer_id || ''}`).join(',');
   const itemPart = [...orderItems]
-    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || String(a.id || '').localeCompare(String(b.id || '')))
     .slice(0, 60)
     .map(i => `${i.id}:${i.item_status}:${i.kitchen_status}:${Number(i.quantity)}:${Number(i.returned_qty || 0)}`)
     .join(',');
@@ -363,13 +410,13 @@ async function getSupabaseSyncCheck(scope = 'kds', clientSig = '') {
 
   let customers = [];
   const [orders, orderItems, tables, products, ingredients, receipts, expenses] = await Promise.all([
-    sbRest('orders?select=id,status,total_amount,table_id,bill_title,customer_id,created_at&order=created_at.desc&limit=30'),
-    sbRest('order_items?select=id,item_status,kitchen_status,quantity,returned_qty,created_at&order=created_at.desc&limit=60'),
+    sbRest('orders?select=id,status,total_amount,table_id,bill_title,customer_id,created_at&order=created_at.desc,id.asc&limit=30'),
+    sbRest('order_items?select=id,item_status,kitchen_status,quantity,returned_qty,created_at&order=created_at.desc,id.asc&limit=60'),
     sbRest('dining_tables?select=id,status,current_order_id&order=id.asc'),
     sbRest('products?select=id,stock_qty,price&is_active=eq.true&order=item_type.desc,id.asc'),
     sbRest('ingredients?select=id,current_qty&order=id.asc'),
-    sbRest('stock_in_receipts?select=id,total_cost&order=created_at.desc&limit=10'),
-    sbRest('expenses?select=id,amount&order=created_at.desc&limit=10')
+    sbRest('stock_in_receipts?select=id,total_cost&order=created_at.desc,id.asc&limit=10'),
+    sbRest('expenses?select=id,amount&order=created_at.desc,id.asc&limit=10')
   ]);
   try {
     customers = await sbRest('customers?select=id,points,total_spent,tier&order=total_spent.desc,created_at.desc');
@@ -406,12 +453,12 @@ async function getSupabaseBootstrapData() {
     sbRest('ingredients?select=*&order=id.asc'),
     sbRest('recipe_items?select=*'),
     sbRest('dining_tables?select=*&order=id.asc'),
-    sbRest('orders?select=*&order=created_at.desc&limit=1000'),
-    sbRest('order_items?select=*&order=created_at.desc&limit=5000'),
-    sbRest('stock_in_receipts?select=*&order=created_at.desc&limit=300'),
-    sbRest('stock_in_items?select=*'),
+    sbRestPaginated('orders?select=*&order=created_at.desc,id.asc', { pageSize: 1000, maxRows: 20000, initialPages: 1 }),
+    sbRestPaginated('order_items?select=*&order=created_at.desc,id.asc', { pageSize: 1000, maxRows: 50000, initialPages: 3 }),
+    sbRestPaginated('stock_in_receipts?select=*&order=created_at.desc,id.asc', { pageSize: 1000, maxRows: 10000, initialPages: 1 }),
+    sbRestPaginated('stock_in_items?select=*&order=id.asc', { pageSize: 1000, maxRows: 20000, initialPages: 1 }),
     sbRest('inventory_logs?select=*&order=created_at.desc&limit=300'),
-    sbRest('expenses?select=*&order=created_at.desc&limit=500'),
+    sbRestPaginated('expenses?select=*&order=created_at.desc,id.asc', { pageSize: 1000, maxRows: 10000, initialPages: 1 }),
     sbRest('customers?select=*&order=total_spent.desc').catch(() => [
       { id: 'CUS-001', name: 'ป้าสมศรี (ซอย 3)', phone: '081-234-5678', tier: 'VIP', points: 120, total_spent: 3450, note: 'ชอบสั่งกะเพราเผ็ดน้อย' },
       { id: 'CUS-002', name: 'พี่เอก (ช่างแอร์)', phone: '089-876-5432', tier: 'ขาประจำ', points: 45, total_spent: 1120, note: 'ซื้อน้ำแข็งและเครื่องดื่มประจำ' }
@@ -533,9 +580,19 @@ async function getSupabaseBootstrapData() {
     recipe_snapshot: ensureArray(it.recipe_snapshot_json)
   }));
 
+  const itemsByOrderId = new Map();
+  for (const it of normalizedItems) {
+    let arr = itemsByOrderId.get(it.order_id);
+    if (!arr) {
+      arr = [];
+      itemsByOrderId.set(it.order_id, arr);
+    }
+    arr.push(it);
+  }
+
   const tables = rawTables.map(t => {
     const activeOrder = openOrders.find(o => o.id === t.current_order_id || (o.table_id === t.id && o.status === 'OPEN')) || null;
-    const items = activeOrder ? normalizedItems.filter(i => i.order_id === activeOrder.id) : [];
+    const items = activeOrder ? (itemsByOrderId.get(activeOrder.id) || []) : [];
     return {
       ...t,
       voice_aliases: ensureArray(t.voice_aliases),
@@ -619,6 +676,18 @@ async function getSupabaseBootstrapData() {
       paidRevenue += amt;
       if (o.payment_method === 'QR_PROMPTPAY') qrRevenue += amt;
       else cashRevenue += amt;
+
+      const ordItems = itemsByOrderId.get(o.id) || [];
+      const activeOrdItems = ordItems.filter(i => i.item_status === 'ACTIVE');
+      if (activeOrdItems.length === 0 && Number(o.total_cost) > 0) {
+        if (o.order_type === 'DINE_IN') {
+          foodRevenue += amt;
+          foodCost += Number(o.total_cost);
+        } else {
+          groceryRevenue += amt;
+          groceryCost += Number(o.total_cost);
+        }
+      }
     } else if (o.status === 'OPEN') {
       openTableRevenue += amt;
     }
@@ -771,7 +840,7 @@ async function getSupabaseBootstrapData() {
       total_cost: Number(o.total_cost || 0),
       table_name: tbl ? tbl.name : null,
       zone_name: tbl ? tbl.zone_name : null,
-      items: normalizedItems.filter(i => i.order_id === o.id)
+      items: itemsByOrderId.get(o.id) || []
     };
   });
 
@@ -852,6 +921,7 @@ module.exports = {
   setRuntimeSupabaseConfig,
   getSupabaseConfig,
   sbRest,
+  sbRestPaginated,
   computeKdsSyncSig,
   computeAllSyncSig,
   getSupabaseSyncCheck,
