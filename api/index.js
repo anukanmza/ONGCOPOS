@@ -89,7 +89,7 @@ async function recalculateSupabaseOrderTotals(orderId) {
     }
   }
 
-  const orders = await sbRest(`orders?select=discount,bill_note&id=eq.${encodeURIComponent(orderId)}`);
+  const orders = await sbRest(`orders?select=*&id=eq.${encodeURIComponent(orderId)}`);
   const discount = orders[0] ? Number(orders[0].discount || 0) : 0;
   const deliveryFee = orders[0] ? extractDeliveryFeeFromNote(orders[0].bill_note) : 0;
   const totalAmount = Math.max(0, subtotal + deliveryFee - discount);
@@ -1859,44 +1859,22 @@ module.exports = async (req, res) => {
 
       const now = new Date().toISOString();
       const newOrderId = `ORD-${Date.now().toString().slice(-6)}`;
-      try {
-        await sbRest('orders', {
-          method: 'POST',
-          body: {
-            id: newOrderId,
-            order_type: 'RETAIL',
-            table_id: null,
-            bill_title: new_bill_title || `แยกจ่ายจาก ${srcOrd.bill_title || srcOrd.id}`,
-            bill_note: `แยกบิลจาก ${srcOrd.id}`,
-            customer_id: srcOrd.customer_id || null,
-            customer_name: srcOrd.customer_name || '',
-            status: 'OPEN',
-            subtotal: 0,
-            discount: Number(discount) || 0,
-            total_amount: 0,
-            total_cost: 0,
-            payment_method: 'CASH',
-            created_at: now
-          }
-        });
-      } catch {
-        // Fallback if bill_title / customer columns were not yet migrated on remote Supabase
-        await sbRest('orders', {
-          method: 'POST',
-          body: {
-            id: newOrderId,
-            order_type: 'RETAIL',
-            table_id: null,
-            status: 'OPEN',
-            subtotal: 0,
-            discount: Number(discount) || 0,
-            total_amount: 0,
-            total_cost: 0,
-            payment_method: 'CASH',
-            created_at: now
-          }
-        });
-      }
+      await sbInsertOrderSafe({
+        id: newOrderId,
+        order_type: 'RETAIL',
+        table_id: null,
+        bill_title: new_bill_title || `แยกจ่ายจาก ${srcOrd.bill_title || srcOrd.id}`,
+        bill_note: `แยกบิลจาก ${srcOrd.id}`,
+        customer_id: srcOrd.customer_id || null,
+        customer_name: srcOrd.customer_name || '',
+        status: 'OPEN',
+        subtotal: 0,
+        discount: 0,
+        total_amount: 0,
+        total_cost: 0,
+        payment_method: 'CASH',
+        created_at: now
+      });
 
       const items = await sbRest(`order_items?select=*&order_id=eq.${encodeURIComponent(source_order_id)}&item_status=eq.ACTIVE`);
       for (const sp of split_items) {

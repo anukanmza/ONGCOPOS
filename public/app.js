@@ -1923,24 +1923,47 @@ async function submitTransferOrder(action, targetTableId = null, targetOrderId =
 
 function openSplitBillModal(orderId) {
   const allBills = state.data?.allBills || [];
-  const ord = allBills.find(b => b.id === orderId);
-  if (!ord) return;
+  const tables = state.data?.tables || [];
+  const ord = allBills.find(b => b.id === orderId)
+    || tables.map(t => t.active_order).find(o => o && o.id === orderId);
+  if (!ord) {
+    showToast('⚠️ ไม่พบบิลที่ต้องการแยกจ่าย');
+    return;
+  }
   state.splitModalOrder = ord;
   state.splitQtyMap = {};
-  state.splitNewTitle = `${ord.bill_title || ord.id} (แยกจ่าย)`;
+  state.splitNewTitle = `${ord.bill_title || ord.table_name || ord.id} (แยกจ่าย)`;
   render();
 }
+window.openSplitBillModal = openSplitBillModal;
 
 async function submitSplitBill(payImmediately = false) {
   const ord = state.splitModalOrder;
   if (!ord) return;
-  const splitItems = Object.entries(state.splitQtyMap)
-    .filter(([, q]) => Number(q) > 0)
-    .map(([itemId, q]) => ({
-      order_item_id: itemId,
-      split_qty: Number(q),
-      quantity: Number(q)
-    }));
+
+  const activeItems = (ord.items || []).filter(i => i.item_status === 'ACTIVE');
+  const groupedActive = groupBillItems(activeItems);
+  const splitItems = [];
+
+  for (const g of groupedActive) {
+    let remainingToSplit = Math.min(g.quantity, Math.max(0, Number(state.splitQtyMap[g.id]) || 0));
+    if (remainingToSplit <= 0) continue;
+    const rawIds = Array.isArray(g.item_ids) && g.item_ids.length > 0 ? g.item_ids : [g.id];
+    for (const rawId of rawIds) {
+      if (remainingToSplit <= 0) break;
+      const rawIt = activeItems.find(x => x.id === rawId);
+      if (!rawIt) continue;
+      const avail = Math.max(0, Number(rawIt.quantity) || 0);
+      if (avail <= 0) continue;
+      const take = Math.min(avail, remainingToSplit);
+      splitItems.push({
+        order_item_id: rawIt.id,
+        split_qty: take,
+        quantity: take
+      });
+      remainingToSplit -= take;
+    }
+  }
 
   if (splitItems.length === 0) {
     showToast('⚠️ กรุณาเลือกจำนวนรายการที่ต้องการแยกบิลอย่างน้อย 1 รายการ');
@@ -1953,7 +1976,11 @@ async function submitSplitBill(payImmediately = false) {
     new_bill_title: state.splitNewTitle.trim() || `${ord.bill_title || ord.id} (แยกจ่าย)`
   });
 
-  if (out && out.data) state.data = out.data;
+  if (!out || out.error) {
+    return;
+  }
+
+  if (out.data) state.data = out.data;
   const newOrderId = out?.newOrderId;
   state.splitModalOrder = null;
   state.splitQtyMap = {};
@@ -1983,6 +2010,7 @@ async function submitSplitBill(payImmediately = false) {
   render();
   showToast(`✂️ แยกบิลสำเร็จ! บิลที่แยกออกพร้อมใช้งานในรายการบิลแล้ว`);
 }
+window.submitSplitBill = submitSplitBill;
 
 function renderDrawerMemberMatchListHtml(queryText) {
   const customers = state.data?.customers || [];
@@ -7115,8 +7143,9 @@ function renderModals() {
   if (state.splitModalOrder) {
     const sord = state.splitModalOrder;
     const activeItems = (sord.items || []).filter(i => i.item_status === 'ACTIVE');
+    const groupedActive = groupBillItems(activeItems);
     let splitPreviewTotal = 0;
-    for (const it of activeItems) {
+    for (const it of groupedActive) {
       const q = Number(state.splitQtyMap[it.id]) || 0;
       splitPreviewTotal += q * it.unit_price;
     }
@@ -7125,7 +7154,7 @@ function renderModals() {
       <div class="ttl-modal-backdrop" onclick="if(event.target===this){state.splitModalOrder=null; render();}">
         <div class="ttl-modal">
           <div class="ttl-k">SPLIT BILL • แยกบิล / แยกจ่าย</div>
-          <h3 style="margin:4px 0 8px;">✂️ แยกรายการจาก "${sord.bill_title || sord.id}"</h3>
+          <h3 style="margin:4px 0 8px;">✂️ แยกรายการจาก "${sord.bill_title || sord.table_name || sord.id}"</h3>
           <p style="margin:0 0 12px; font-size:12.5px; color:var(--ttl-muted);">
             กดปุ่ม + หรือกด "เลือกทั้งรายการ" เพื่อเลือกจำนวนสินค้าที่ต้องการแยกไปจ่ายอีกบิล ระบบจะหักออกจากบิลหลักให้อัตโนมัติทันที
           </p>
@@ -7136,12 +7165,15 @@ function renderModals() {
           </div>
 
           <div style="display:flex; flex-direction:column; gap:8px; max-height:250px; overflow-y:auto; margin-bottom:14px;">
-            ${activeItems.map(it => {
+            ${groupedActive.map(it => {
               const selQty = Number(state.splitQtyMap[it.id]) || 0;
               return `
                 <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border-radius:10px; border:1px solid ${selQty > 0 ? 'var(--ttl-gold)' : 'var(--ttl-rule)'}; background:${selQty > 0 ? 'color-mix(in srgb, var(--ttl-gold) 8%, var(--ttl-page))' : 'var(--ttl-page)'};">
                   <div>
-                    <div style="font-weight:600; font-size:13.5px;">${it.product_name} ${it.modifiers?.length ? `<small>(${it.modifiers.join(',')})</small>` : ''}</div>
+                    <div style="font-weight:600; font-size:13.5px;">
+                      ${it.product_name} ${it.modifiers?.length ? `<small>(${it.modifiers.join(',')})</small>` : ''}
+                      ${it.merged_count > 1 ? `<small style="color:var(--ttl-muted); font-weight:500;">(รวม ${it.merged_count} รอบ)</small>` : ''}
+                    </div>
                     <div style="font-size:11.5px; color:var(--ttl-muted);">${formatMoney(it.unit_price)} • มีในบิล ${it.quantity} ชิ้น</div>
                   </div>
                   <div style="display:flex; align-items:center; gap:6px;">
